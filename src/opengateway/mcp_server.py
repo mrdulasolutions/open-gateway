@@ -14,9 +14,18 @@ DEFAULT_HARNESS = os.environ.get("OPENGATEWAY_HARNESS", "mcp")
 DEFAULT_AGENT_NAME = os.environ.get("OPENGATEWAY_AGENT_NAME", "")
 
 
+def _auth_token() -> str:
+    """Master token or device API key (ogk_…) for public / Railway hubs."""
+    return (
+        os.environ.get("OPENGATEWAY_AUTH_TOKEN")
+        or os.environ.get("OPENGATEWAY_TOKEN")
+        or ""
+    ).strip()
+
+
 def _auth_headers() -> dict[str, str]:
-    """Bearer token for public / Tailscale gateways (OPENGATEWAY_AUTH_TOKEN)."""
-    token = (os.environ.get("OPENGATEWAY_AUTH_TOKEN") or "").strip()
+    """Bearer token for public / Tailscale / Railway gateways."""
+    token = _auth_token()
     if not token:
         return {}
     return {"Authorization": f"Bearer {token}"}
@@ -27,12 +36,13 @@ mcp = FastMCP(
     instructions=(
         "OpenGateway multi-agent collaboration tools. Use these to work with other agents "
         "(Claude Code, Grok, Cursor, ACP agents) on the same project.\n\n"
-        "For public gateways set OPENGATEWAY_URL + OPENGATEWAY_AUTH_TOKEN in the MCP env.\n\n"
+        "For public / Railway hubs set OPENGATEWAY_URL + OPENGATEWAY_AUTH_TOKEN in the MCP env "
+        "(device key ogk_… from Live Ops, or master token). Restart the harness after config changes.\n\n"
         "Typical flow:\n"
         "1. create_room (or list_rooms + join existing)\n"
-        "2. join_room with your agent name and harness\n"
+        "2. join_room — save the returned `id` (also `participant_id`) for later calls\n"
         "3. create_task / claim_task for work items\n"
-        "4. post_message to coordinate; poll_messages to hear others\n"
+        "4. post_message(from_participant_id=your id) to coordinate; poll_messages to hear others\n"
         "5. share_artifact for files/results; complete_task when done\n"
         "6. room_snapshot anytime for full state"
     ),
@@ -60,7 +70,18 @@ def _json(resp: httpx.Response) -> Any:
             detail = e.response.json()
         except Exception:
             pass
-        return {"error": str(e), "detail": detail, "status_code": e.response.status_code}
+        out: dict[str, Any] = {
+            "error": str(e),
+            "detail": detail,
+            "status_code": e.response.status_code,
+        }
+        if e.response.status_code == 401 and not _auth_token():
+            out["hint"] = (
+                "Set OPENGATEWAY_AUTH_TOKEN in the MCP server env "
+                "(device API key from Live Ops → Mint agent token, or master token). "
+                "Restart the harness after changing config."
+            )
+        return out
     return resp.json()
 
 
@@ -113,7 +134,7 @@ def join_room(
     capabilities: str = "",
     participant_id: str = "",
 ) -> str:
-    """Join a room. Returns your participant_id — save it for later tool calls.
+    """Join a room. Save field `id` (aliased as `participant_id`) for post_message and other tools.
 
     Args:
         room_id: Room UUID from create_room or list_rooms.
@@ -133,7 +154,11 @@ def join_room(
     if participant_id:
         body["participant_id"] = participant_id
     with _client() as c:
-        return _dumps(_json(c.post(f"/v1/rooms/{room_id}/join", json=body)))
+        data = _json(c.post(f"/v1/rooms/{room_id}/join", json=body))
+        # Hub returns participant under `id`; alias for agents that expect participant_id.
+        if isinstance(data, dict) and data.get("id") and "participant_id" not in data:
+            data = {**data, "participant_id": data["id"]}
+        return _dumps(data)
 
 
 @mcp.tool()
@@ -167,7 +192,8 @@ def post_message(
 
     Args:
         room_id: Room UUID.
-        from_participant_id: Your participant id from join_room.
+        from_participant_id: Your participant id from join_room (`id` or `participant_id`).
+            Must match a prior join — empty/wrong id returns 400 Unknown from_participant_id.
         content: Message body (markdown/plain).
         to_participant_id: Optional — set to DM a specific participant.
         nudge_all: Force nudge all online agents even without “everyone” in the text.

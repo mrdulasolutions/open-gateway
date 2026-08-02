@@ -20,4 +20,6 @@ jobs:
       - name: Install + test
         run: |
           uv sync --all-extras
+          # MCP 2.x removed mcp.server.fastmcp — pin is mcp>=1.0,<2; fail CI if import breaks
+          uv run python -c "from mcp.server.fastmcp import FastMCP; import opengateway.mcp_server"
           uv run pytest tests/ -q

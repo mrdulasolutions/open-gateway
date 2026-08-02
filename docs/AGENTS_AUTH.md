@@ -114,7 +114,11 @@ On **Tailscale Serve** with identity trust, localhost Serve headers can identify
 
 | Symptom | Fix |
 |---------|-----|
-| MCP tools 401 | Set `OPENGATEWAY_AUTH_TOKEN` to a valid key; restart harness |
+| MCP handshake failed / process exits | Pin `mcp>=1.0,<2` and `uv sync` — MCP Python SDK 2.x removed `FastMCP` |
+| MCP tools 401 | Set `OPENGATEWAY_AUTH_TOKEN` in **MCP client** env (not only hub); restart harness |
+| `/ping` OK but `/v1/*` 401 | Token missing on client — hub allowlists `/ping` without auth |
+| `Unknown from_participant_id` | Use `id` (or `participant_id`) returned by `join_room` in `post_message` |
+| Tools missing mid-session | Config write does not reload MCP — **restart** Grok / Claude / Cursor |
 | “Cannot list keys” in UI | Browser token is not admin — paste **master** token |
 | Agent joins but UI empty | UI token missing/wrong — paste same or master in Settings |
 | Create token 403 | Device key cannot mint keys — use master |

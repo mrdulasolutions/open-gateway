@@ -5,12 +5,13 @@
       "args": [
         "run",
         "--directory",
-        "/Users/mrdulasolutions/Code/OpenGateway",
+        "/path/to/open-gateway",
         "opengateway",
         "mcp"
       ],
       "env": {
-        "OPENGATEWAY_URL": "http://127.0.0.1:8765",
+        "OPENGATEWAY_URL": "https://open-gateway-production.up.railway.app",
+        "OPENGATEWAY_AUTH_TOKEN": "ogk_from_live_ops_ui",
         "OPENGATEWAY_HARNESS": "grok",
         "OPENGATEWAY_AGENT_NAME": "grok"
       }

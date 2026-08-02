@@ -5,8 +5,11 @@
 #   OPENGATEWAY_URL = "http://127.0.0.1:8765"
 # Railway / public:
 #   OPENGATEWAY_URL = "https://open-gateway-production.up.railway.app"
-#   OPENGATEWAY_AUTH_TOKEN = "ogk_…"   # mint in Live Ops → Settings → Create agent token
+#   OPENGATEWAY_AUTH_TOKEN = "ogk_…"   # mint in Live Ops → Mint agent token
 # See docs/AGENTS_AUTH.md
+#
+# Install once: git clone + `uv sync` in the repo, or:
+#   uv tool install git+https://github.com/mrdulasolutions/open-gateway.git
 
 [mcp_servers.opengateway]
 command = "uv"
@@ -21,9 +24,9 @@ args = [
 #   command = "opengateway"
 #   args = ["mcp"]
 env = {
-  OPENGATEWAY_URL = "http://127.0.0.1:8765",
-  # Required for public / Railway / LAN / serve / funnel:
-  # OPENGATEWAY_AUTH_TOKEN = "ogk_from_live_ops_ui",
+  OPENGATEWAY_URL = "https://open-gateway-production.up.railway.app",
+  # Required for public / Railway (require_auth):
+  OPENGATEWAY_AUTH_TOKEN = "ogk_from_live_ops_ui",
   OPENGATEWAY_HARNESS = "grok",
   OPENGATEWAY_AGENT_NAME = "grok",
 }

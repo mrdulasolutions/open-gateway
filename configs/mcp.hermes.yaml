@@ -1,14 +1,17 @@
 # Merge under mcp_servers: in ~/.hermes/config.yaml
+# RESTART Hermes after edits. Public hubs need OPENGATEWAY_AUTH_TOKEN.
+# See docs/AGENTS_AUTH.md
 
   opengateway:
-    command: /Users/mrdulasolutions/.local/bin/uv
+    command: uv
     args:
       - run
       - --directory
-      - /Users/mrdulasolutions/Code/OpenGateway
+      - /path/to/open-gateway
       - opengateway
       - mcp
     env:
-      OPENGATEWAY_URL: http://127.0.0.1:8765
+      OPENGATEWAY_URL: https://open-gateway-production.up.railway.app
+      OPENGATEWAY_AUTH_TOKEN: ogk_from_live_ops_ui
       OPENGATEWAY_HARNESS: hermes
       OPENGATEWAY_AGENT_NAME: hermes
