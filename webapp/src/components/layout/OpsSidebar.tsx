@@ -771,6 +771,36 @@ function PairQrModal({
     };
   }, [gateway.base_url, roomId]);
 
+  const networkHint = (() => {
+    switch (gateway.network) {
+      case "lan":
+        return {
+          title: "Same Wi‑Fi required",
+          body: `Your phone must be on the same Wi‑Fi / LAN as this computer. Scanning from a different network (guest Wi‑Fi, cellular, other SSID) will load nothing. Target: ${gateway.base_url}`,
+        };
+      case "tailscale":
+        return {
+          title: "Same Tailscale tailnet required",
+          body: "Phone needs Tailscale installed and logged into the same tailnet (or use Tailscale Serve MagicDNS). Cellular-only without Tailscale will not reach this gateway.",
+        };
+      case "funnel":
+        return {
+          title: "Public Funnel URL",
+          body: "Funnel is internet-reachable. Phone can use any network, but you still need a strong auth token.",
+        };
+      case "loopback":
+        return {
+          title: "This gateway is loopback-only",
+          body: "Internal (127.0.0.1) cannot be opened from a phone. Switch to a LAN or Tailscale Serve gateway first.",
+        };
+      default:
+        return {
+          title: "Phone must reach this host",
+          body: `Phone needs network path to ${gateway.base_url}. Wrong Wi‑Fi or offline VPN will fail.`,
+        };
+    }
+  })();
+
   return (
     <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
       <div
@@ -796,6 +826,15 @@ function PairQrModal({
           >
             <X className="h-4 w-4" />
           </button>
+        </div>
+
+        <div className="mb-3 rounded-xl border border-amber-500/35 bg-amber-50 px-3 py-2.5 text-left dark:border-amber-500/30 dark:bg-amber-500/10">
+          <div className="text-xs font-semibold text-amber-950 dark:text-amber-100">
+            ⚠ {networkHint.title}
+          </div>
+          <p className="mt-1 text-[11px] leading-relaxed text-amber-900/90 dark:text-amber-100/85">
+            {networkHint.body}
+          </p>
         </div>
 
         {busy && (
