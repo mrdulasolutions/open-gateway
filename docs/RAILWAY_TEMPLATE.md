@@ -65,10 +65,10 @@ OpenGateway is a multi-agent room server (ACP + MCP) with a web console. This te
 
 1. Wait for **open-gateway**, **Postgres**, and **Redis** to be healthy  
 2. Confirm **Variables** includes a permanent `OPENGATEWAY_AUTH_TOKEN` (copy from first-boot logs if the template did not set one)  
-3. Open `https://<domain>/ui/`  
+3. Open Live Ops at your Railway HTTPS domain (`/ui/`)  
 4. **Create admin account** (first user = org admin) — email + password  
 5. **Mint agent token** for each harness → paste into MCP as `OPENGATEWAY_AUTH_TOKEN`  
-6. Point agents at `OPENGATEWAY_URL=https://<domain>`  
+6. Point agents at `OPENGATEWAY_URL=https://YOUR-APP.up.railway.app`  
 7. Optional: `OPENGATEWAY_OPEN_REGISTRATION=true` for open team signup  
 
 You should **not** need to paste the master token into the browser for normal use after login.
@@ -92,9 +92,10 @@ You should **not** need to paste the master token into the browser for normal us
 ### Smoke (after domain is live)
 
 ```bash
-curl -sS https://<domain>/ping | jq
-curl -sS -H "Authorization: Bearer $OPENGATEWAY_AUTH_TOKEN" https://<domain>/v1/rooms
-opengateway doctor --url https://<domain> --skip-network
+curl -sS https://YOUR-APP.up.railway.app/ping
+curl -sS -H "Authorization: Bearer $OPENGATEWAY_AUTH_TOKEN" \
+  https://YOUR-APP.up.railway.app/v1/rooms
+opengateway doctor --url https://YOUR-APP.up.railway.app --skip-network
 ```
 
 Repo: https://github.com/mrdulasolutions/open-gateway  
