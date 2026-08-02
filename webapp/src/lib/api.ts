@@ -1,0 +1,241 @@
+import type {
+  Bookmark,
+  DmThread,
+  Fork,
+  Ping,
+  Room,
+  Snapshot,
+  Participant,
+  RoomMessage,
+} from "./types";
+
+const API =
+  (import.meta.env.VITE_OPENGATEWAY_URL as string | undefined)?.replace(
+    /\/$/,
+    ""
+  ) ?? "";
+
+const TOKEN_KEY = "og_token";
+
+export function getAuthToken(): string {
+  return localStorage.getItem(TOKEN_KEY) || "";
+}
+
+export function setAuthToken(token: string) {
+  if (token) localStorage.setItem(TOKEN_KEY, token);
+  else localStorage.removeItem(TOKEN_KEY);
+}
+
+function authHeaders(extra?: HeadersInit): HeadersInit {
+  const t = getAuthToken();
+  return {
+    ...(t ? { Authorization: `Bearer ${t}` } : {}),
+    ...(extra || {}),
+  };
+}
+
+async function req<T>(path: string, init?: RequestInit): Promise<T> {
+  const isForm = init?.body instanceof FormData;
+  const res = await fetch(`${API}${path}`, {
+    ...init,
+    headers: authHeaders({
+      ...(isForm ? {} : { "Content-Type": "application/json" }),
+      ...(init?.headers || {}),
+    }),
+  });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      const j = await res.json();
+      detail = j.detail || JSON.stringify(j);
+    } catch {
+      /* ignore */
+    }
+    throw new Error(detail);
+  }
+  if (res.status === 204) return undefined as T;
+  return res.json() as Promise<T>;
+}
+
+export const api = {
+  base: API,
+  ping: () => req<Ping>("/ping"),
+  listRooms: () => req<{ rooms: Room[] }>("/v1/rooms"),
+  createRoom: (body: {
+    name: string;
+    goal?: string;
+    project_path?: string;
+    created_by?: string;
+  }) =>
+    req<Room>("/v1/rooms", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  snapshot: (roomId: string) => req<Snapshot>(`/v1/rooms/${roomId}/snapshot`),
+  join: (
+    roomId: string,
+    body: {
+      name: string;
+      harness?: string;
+      role?: string;
+      capabilities?: string[];
+      participant_id?: string;
+    }
+  ) =>
+    req<Participant>(`/v1/rooms/${roomId}/join`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  rename: (roomId: string, participantId: string, name: string) =>
+    req<Participant>(`/v1/rooms/${roomId}/participants/${participantId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ name }),
+    }),
+  updateParticipant: (
+    roomId: string,
+    participantId: string,
+    body: { name?: string; role?: string; capabilities?: string[] }
+  ) =>
+    req<Participant>(`/v1/rooms/${roomId}/participants/${participantId}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+  postMessage: (
+    roomId: string,
+    body: {
+      from_participant_id: string;
+      content: string;
+      nudge_all?: boolean;
+      to_participant_id?: string;
+      parts?: {
+        name?: string;
+        content_type: string;
+        content?: string;
+        content_url?: string;
+        content_encoding?: "plain" | "base64";
+      }[];
+      metadata?: Record<string, unknown>;
+    }
+  ) =>
+    req<RoomMessage | { message: RoomMessage; nudge_count: number }>(
+      `/v1/rooms/${roomId}/messages`,
+      {
+        method: "POST",
+        body: JSON.stringify(body),
+      }
+    ),
+  uploadFile: async (roomId: string, sharedBy: string, file: File) => {
+    const fd = new FormData();
+    fd.append("shared_by", sharedBy);
+    fd.append("file", file);
+    return req<{
+      id: string;
+      name: string;
+      content_type: string;
+      content_url?: string | null;
+    }>(`/v1/rooms/${roomId}/files`, { method: "POST", body: fd });
+  },
+  listBookmarks: (roomId: string) =>
+    req<{ bookmarks: Bookmark[] }>(`/v1/rooms/${roomId}/bookmarks`),
+  createBookmark: (
+    roomId: string,
+    body: {
+      message_id: string;
+      title: string;
+      excerpt?: string;
+      created_by: string;
+    }
+  ) =>
+    req<Bookmark>(`/v1/rooms/${roomId}/bookmarks`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  deleteBookmark: (roomId: string, bookmarkId: string) =>
+    req<{ status: string }>(`/v1/rooms/${roomId}/bookmarks/${bookmarkId}`, {
+      method: "DELETE",
+    }),
+  listForks: (roomId: string) =>
+    req<{ forks: Fork[] }>(`/v1/rooms/${roomId}/forks`),
+  createFork: (
+    roomId: string,
+    body: {
+      root_message_id: string;
+      title?: string;
+      note?: string;
+      created_by: string;
+      created_by_name?: string;
+    }
+  ) =>
+    req<Fork>(`/v1/rooms/${roomId}/forks`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  listDms: (roomId: string, participantId: string) =>
+    req<{ threads: DmThread[] }>(
+      `/v1/rooms/${roomId}/dms?participant_id=${encodeURIComponent(participantId)}`
+    ),
+  search: (q: string, limit = 40) =>
+    req<{
+      query: string;
+      hits: {
+        type: string;
+        score: number;
+        id: string;
+        title: string;
+        subtitle: string;
+        room_id?: string;
+        path?: string;
+      }[];
+      suggestions: { label: string; query: string; type?: string }[];
+    }>(`/v1/search?q=${encodeURIComponent(q)}&limit=${limit}`),
+  listGateways: () =>
+    req<{
+      gateways: {
+        id: string;
+        name: string;
+        mode: string;
+        network: string;
+        base_url: string;
+        require_auth: boolean;
+        is_self: boolean;
+        notes?: string;
+      }[];
+      self: Record<string, unknown>;
+      lan_ips: string[];
+      tips: Record<string, string>;
+    }>("/v1/gateways"),
+  registerGateway: (body: {
+    name: string;
+    mode?: string;
+    network?: string;
+    base_url: string;
+    require_auth?: boolean;
+    notes?: string;
+  }) =>
+    req(`/v1/gateways`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  eventsUrl: (roomId: string) => {
+    const t = getAuthToken();
+    const base = `${API}/v1/rooms/${roomId}/events`;
+    return t ? `${base}?token=${encodeURIComponent(t)}` : base;
+  },
+  fileUrl: (roomId: string, fileId: string) =>
+    `${API}/v1/rooms/${roomId}/files/${fileId}/download`,
+};
+
+export function isAllCall(text: string): boolean {
+  const t = text.toLowerCase();
+  return [
+    "everyone",
+    "everybody",
+    "@all",
+    "@everyone",
+    "all agents",
+    "hey all",
+    "hey everyone",
+    "all of you",
+    "you all",
+  ].some((n) => t.includes(n));
+}

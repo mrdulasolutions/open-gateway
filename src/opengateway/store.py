@@ -1,14 +1,18 @@
-"""In-memory collaboration store with async-safe locks and event fan-out."""
+"""Collaboration store with optional SQLite persistence and event fan-out."""
 
 from __future__ import annotations
 
 import asyncio
 from collections import defaultdict, deque
-from typing import Any, Optional
+from pathlib import Path
+from typing import Any, Optional, Union
 
 from opengateway.models import (
     Artifact,
+    Bookmark,
+    Fork,
     GatewayEvent,
+    GatewayRecord,
     Participant,
     ParticipantStatus,
     RegisteredAgent,
@@ -20,23 +24,87 @@ from opengateway.models import (
     TaskStatus,
     utcnow,
 )
+from opengateway.persistence import SqlitePersistence, default_db_path
 
 
 class Store:
-    """Process-local store. Swap for Redis/Postgres later without changing handlers."""
+    """In-process store. When db_path is set, rooms and history survive restarts."""
 
-    def __init__(self, event_history: int = 2000) -> None:
+    def __init__(
+        self,
+        event_history: int = 2000,
+        db_path: Union[str, Path, None] = ...,  # type: ignore[assignment]
+    ) -> None:
         self._lock = asyncio.Lock()
         self.rooms: dict[str, Room] = {}
         self.participants: dict[str, Participant] = {}
         self.messages: dict[str, list[RoomMessage]] = defaultdict(list)
         self.tasks: dict[str, list[Task]] = defaultdict(list)
         self.artifacts: dict[str, list[Artifact]] = defaultdict(list)
+        self.bookmarks: dict[str, list[Bookmark]] = defaultdict(list)
+        self.forks: dict[str, list[Fork]] = defaultdict(list)
+        self.gateways: dict[str, GatewayRecord] = {}
         self.agents: dict[str, RegisteredAgent] = {}
         self.runs: dict[str, Run] = {}
         self._events: deque[GatewayEvent] = deque(maxlen=event_history)
         self._subscribers: list[asyncio.Queue[GatewayEvent]] = []
         self._seq = 0
+
+        # db_path=... means "use default from env"; None means memory-only
+        if db_path is ...:
+            resolved = default_db_path()
+        elif db_path is None:
+            resolved = None
+        else:
+            resolved = Path(db_path).expanduser()
+
+        self.db_path = resolved
+        self._db: Optional[SqlitePersistence] = None
+        if resolved is not None:
+            self._db = SqlitePersistence(resolved)
+            self._load_from_db()
+
+    @property
+    def persistent(self) -> bool:
+        return self._db is not None
+
+    def _load_from_db(self) -> None:
+        if not self._db:
+            return
+        data = self._db.load_all()
+        self.rooms = data["rooms"]
+        self.participants = data["participants"]
+        self.messages = defaultdict(list, data["messages"])
+        self.tasks = defaultdict(list, data["tasks"])
+        self.artifacts = defaultdict(list, data["artifacts"])
+        self.bookmarks = defaultdict(list, data.get("bookmarks") or {})
+        self.forks = defaultdict(list, data.get("forks") or {})
+        self.gateways = data.get("gateways") or {}
+        self.agents = data["agents"]
+
+    def _persist_room(self, room: Room) -> None:
+        if self._db:
+            self._db.save_room(room)
+
+    def _persist_participant(self, participant: Participant) -> None:
+        if self._db:
+            self._db.save_participant(participant)
+
+    def _persist_message(self, msg: RoomMessage) -> None:
+        if self._db:
+            self._db.save_message(msg)
+
+    def _persist_task(self, task: Task) -> None:
+        if self._db:
+            self._db.save_task(task)
+
+    def _persist_artifact(self, artifact: Artifact) -> None:
+        if self._db:
+            self._db.save_artifact(artifact)
+
+    def _persist_agent(self, agent: RegisteredAgent) -> None:
+        if self._db:
+            self._db.save_agent(agent)
 
     async def emit(self, event: GatewayEvent) -> GatewayEvent:
         async with self._lock:
@@ -85,6 +153,7 @@ class Store:
     async def create_room(self, room: Room) -> Room:
         async with self._lock:
             self.rooms[room.id] = room
+            self._persist_room(room)
         await self.emit(
             GatewayEvent(type="room", room_id=room.id, payload={"action": "created", "room": room.model_dump(mode="json")})
         )
@@ -100,6 +169,7 @@ class Store:
         room.updated_at = utcnow()
         async with self._lock:
             self.rooms[room.id] = room
+            self._persist_room(room)
         await self.emit(
             GatewayEvent(type="room", room_id=room.id, payload={"action": "updated", "room": room.model_dump(mode="json")})
         )
@@ -121,6 +191,8 @@ class Store:
             if room.status == RoomStatus.OPEN:
                 room.status = RoomStatus.ACTIVE
             room.updated_at = utcnow()
+            self._persist_participant(participant)
+            self._persist_room(room)
         await self.emit(
             GatewayEvent(
                 type="participant",
@@ -131,6 +203,7 @@ class Store:
         return participant
 
     async def leave_room(self, room_id: str, participant_id: str) -> Optional[Participant]:
+        """Soft-leave: mark offline but keep seat (prevents ghost re-joins)."""
         participant = self.participants.get(participant_id)
         room = self.rooms.get(room_id)
         if not participant or not room:
@@ -138,9 +211,10 @@ class Store:
         async with self._lock:
             participant.status = ParticipantStatus.OFFLINE
             participant.last_seen_at = utcnow()
-            if participant_id in room.participant_ids:
-                room.participant_ids.remove(participant_id)
+            # Keep participant_ids — rejoin reuses same identity
             room.updated_at = utcnow()
+            self._persist_participant(participant)
+            self._persist_room(room)
         await self.emit(
             GatewayEvent(
                 type="participant",
@@ -150,27 +224,102 @@ class Store:
         )
         return participant
 
+    def find_participant_by_identity(
+        self, room_id: str, name: str, harness: str
+    ) -> Optional[Participant]:
+        """Match existing seat by name+harness (case-insensitive name)."""
+        room = self.rooms.get(room_id)
+        if not room:
+            return None
+        n = name.strip().lower()
+        h = str(harness).lower()
+        for pid in room.participant_ids:
+            p = self.participants.get(pid)
+            if not p:
+                continue
+            if p.name.strip().lower() == n and str(p.harness.value if hasattr(p.harness, "value") else p.harness).lower() == h:
+                return p
+        return None
+
     async def list_participants(self, room_id: str) -> list[Participant]:
         room = self.rooms.get(room_id)
         if not room:
             return []
-        return [self.participants[pid] for pid in room.participant_ids if pid in self.participants]
+        # Deduplicate display list: one row per name+harness (prefer online, then newest)
+        seen: dict[str, Participant] = {}
+        for pid in room.participant_ids:
+            p = self.participants.get(pid)
+            if not p:
+                continue
+            key = f"{p.name.strip().lower()}::{p.harness.value if hasattr(p.harness, 'value') else p.harness}"
+            prev = seen.get(key)
+            if not prev:
+                seen[key] = p
+                continue
+            # Prefer online over offline
+            if prev.status != ParticipantStatus.ONLINE and p.status == ParticipantStatus.ONLINE:
+                seen[key] = p
+            elif prev.status == p.status and p.last_seen_at >= prev.last_seen_at:
+                seen[key] = p
+        return list(seen.values())
 
     async def get_participant(self, participant_id: str) -> Optional[Participant]:
         return self.participants.get(participant_id)
+
+    async def update_participant(
+        self,
+        participant_id: str,
+        *,
+        name: Optional[str] = None,
+        role: Optional[str] = None,
+        status: Optional[ParticipantStatus] = None,
+        capabilities: Optional[list[str]] = None,
+        metadata: Optional[dict[str, Any]] = None,
+    ) -> Optional[Participant]:
+        """Rename / patch a participant in place (no new id)."""
+        p = self.participants.get(participant_id)
+        if not p:
+            return None
+        if name is not None:
+            p.name = name.strip() or p.name
+        if role is not None:
+            p.role = role
+        if status is not None:
+            p.status = status
+        if capabilities is not None:
+            p.capabilities = capabilities
+        if metadata is not None:
+            p.metadata = {**p.metadata, **metadata}
+        p.last_seen_at = utcnow()
+        async with self._lock:
+            self._persist_participant(p)
+        await self.emit(
+            GatewayEvent(
+                type="participant",
+                room_id=p.room_id,
+                payload={"action": "updated", "participant": p.model_dump(mode="json")},
+            )
+        )
+        return p
 
     async def touch_participant(self, participant_id: str) -> None:
         p = self.participants.get(participant_id)
         if p:
             p.last_seen_at = utcnow()
             p.status = ParticipantStatus.ONLINE
+            # Debounced-ish: only persist status transitions are rare enough via join/leave;
+            # skip disk write on every long-poll touch.
 
     # ── Messages ───────────────────────────────────────────────────────────
 
     async def post_message(self, msg: RoomMessage) -> RoomMessage:
         async with self._lock:
             self.messages[msg.room_id].append(msg)
-            await self.touch_participant(msg.from_participant_id)
+            p = self.participants.get(msg.from_participant_id)
+            if p:
+                p.last_seen_at = utcnow()
+                p.status = ParticipantStatus.ONLINE
+            self._persist_message(msg)
         await self.emit(
             GatewayEvent(
                 type="message",
@@ -205,11 +354,53 @@ class Store:
             ]
         return items[-limit:]
 
+    async def wait_for_messages(
+        self,
+        room_id: str,
+        *,
+        since: Optional[str] = None,
+        for_participant: Optional[str] = None,
+        timeout: float = 30.0,
+        limit: int = 50,
+    ) -> list[RoomMessage]:
+        """Long-poll: return immediately if new messages exist, else wait up to timeout."""
+        existing = await self.list_messages(
+            room_id, since=since, for_participant=for_participant, limit=limit
+        )
+        if existing:
+            return existing
+
+        q = self.subscribe(maxsize=512)
+        deadline = asyncio.get_event_loop().time() + max(0.0, timeout)
+        try:
+            while True:
+                remaining = deadline - asyncio.get_event_loop().time()
+                if remaining <= 0:
+                    break
+                try:
+                    event = await asyncio.wait_for(q.get(), timeout=remaining)
+                except asyncio.TimeoutError:
+                    break
+                if event.type != "message" or event.room_id != room_id:
+                    continue
+                found = await self.list_messages(
+                    room_id, since=since, for_participant=for_participant, limit=limit
+                )
+                if found:
+                    return found
+        finally:
+            self.unsubscribe(q)
+
+        return await self.list_messages(
+            room_id, since=since, for_participant=for_participant, limit=limit
+        )
+
     # ── Tasks ──────────────────────────────────────────────────────────────
 
     async def create_task(self, task: Task) -> Task:
         async with self._lock:
             self.tasks[task.room_id].append(task)
+            self._persist_task(task)
         await self.emit(
             GatewayEvent(type="task", room_id=task.room_id, payload={"action": "created", "task": task.model_dump(mode="json")})
         )
@@ -235,6 +426,7 @@ class Store:
             if v is not None and hasattr(task, k):
                 setattr(task, k, v)
         task.updated_at = utcnow()
+        self._persist_task(task)
         await self.emit(
             GatewayEvent(
                 type="task",
@@ -249,6 +441,7 @@ class Store:
     async def share_artifact(self, artifact: Artifact) -> Artifact:
         async with self._lock:
             self.artifacts[artifact.room_id].append(artifact)
+            self._persist_artifact(artifact)
         await self.emit(
             GatewayEvent(
                 type="artifact",
@@ -261,11 +454,106 @@ class Store:
     async def list_artifacts(self, room_id: str) -> list[Artifact]:
         return list(self.artifacts.get(room_id, []))
 
+    # ── Bookmarks / forks ──────────────────────────────────────────────────
+
+    def _persist_bookmark(self, b: Bookmark) -> None:
+        if self._db:
+            self._db.save_bookmark(b)
+
+    def _persist_fork(self, f: Fork) -> None:
+        if self._db:
+            self._db.save_fork(f)
+
+    async def add_bookmark(self, bookmark: Bookmark) -> Bookmark:
+        async with self._lock:
+            # one bookmark per message per creator
+            existing = [
+                b
+                for b in self.bookmarks[bookmark.room_id]
+                if b.message_id == bookmark.message_id and b.created_by == bookmark.created_by
+            ]
+            if existing:
+                return existing[0]
+            self.bookmarks[bookmark.room_id].append(bookmark)
+            self._persist_bookmark(bookmark)
+        await self.emit(
+            GatewayEvent(
+                type="bookmark",
+                room_id=bookmark.room_id,
+                payload={"action": "created", "bookmark": bookmark.model_dump(mode="json")},
+            )
+        )
+        return bookmark
+
+    async def list_bookmarks(self, room_id: str) -> list[Bookmark]:
+        return list(self.bookmarks.get(room_id, []))
+
+    async def delete_bookmark(self, room_id: str, bookmark_id: str) -> bool:
+        items = self.bookmarks.get(room_id, [])
+        for i, b in enumerate(items):
+            if b.id == bookmark_id:
+                items.pop(i)
+                if self._db:
+                    self._db.delete_bookmark(bookmark_id)
+                await self.emit(
+                    GatewayEvent(
+                        type="bookmark",
+                        room_id=room_id,
+                        payload={"action": "deleted", "bookmark_id": bookmark_id},
+                    )
+                )
+                return True
+        return False
+
+    async def add_fork(self, fork: Fork) -> Fork:
+        async with self._lock:
+            self.forks[fork.room_id].append(fork)
+            self._persist_fork(fork)
+        await self.emit(
+            GatewayEvent(
+                type="fork",
+                room_id=fork.room_id,
+                payload={"action": "created", "fork": fork.model_dump(mode="json")},
+            )
+        )
+        return fork
+
+    async def list_forks(self, room_id: str) -> list[Fork]:
+        return list(self.forks.get(room_id, []))
+
+    async def get_message(self, room_id: str, message_id: str) -> Optional[RoomMessage]:
+        for m in self.messages.get(room_id, []):
+            if m.id == message_id:
+                return m
+        return None
+
+    # ── Gateway registry ───────────────────────────────────────────────────
+
+    async def upsert_gateway(self, gw: GatewayRecord) -> GatewayRecord:
+        async with self._lock:
+            self.gateways[gw.id] = gw
+            if self._db:
+                self._db.save_gateway(gw)
+        return gw
+
+    async def list_gateways(self) -> list[GatewayRecord]:
+        return list(self.gateways.values())
+
+    async def delete_gateway(self, gateway_id: str) -> bool:
+        async with self._lock:
+            if gateway_id in self.gateways:
+                del self.gateways[gateway_id]
+                if self._db:
+                    self._db.delete_gateway(gateway_id)
+                return True
+        return False
+
     # ── Agents / runs ──────────────────────────────────────────────────────
 
     async def register_agent(self, agent: RegisteredAgent) -> RegisteredAgent:
         async with self._lock:
             self.agents[agent.name] = agent
+            self._persist_agent(agent)
         await self.emit(
             GatewayEvent(type="system", payload={"action": "agent_registered", "agent": agent.model_dump(mode="json")})
         )
@@ -277,11 +565,17 @@ class Store:
     async def save_run(self, run: Run) -> Run:
         async with self._lock:
             self.runs[run.run_id] = run
+        # Runs are ephemeral (in-flight ACP); not required for room continuity
         return run
 
     async def get_run(self, run_id: str) -> Optional[Run]:
         return self.runs.get(run_id)
 
 
-# Singleton used by the HTTP and MCP servers
+def create_store(db_path: Union[str, Path, None] = ...) -> Store:  # type: ignore[assignment]
+    return Store(db_path=db_path)
+
+
+# Module default: respect OPENGATEWAY_DB / ~/.opengateway/state.db
+# Tests should construct Store(db_path=None) for isolation.
 store = Store()

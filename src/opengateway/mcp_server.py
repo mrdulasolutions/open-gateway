@@ -142,18 +142,26 @@ def post_message(
     from_participant_id: str,
     content: str,
     to_participant_id: str = "",
+    nudge_all: bool = False,
 ) -> str:
     """Post a message to the room (broadcast) or DM another participant.
+
+    If the content addresses everyone (or nudge_all=true), the gateway DMs each
+    online agent and creates a claimed task for them so multi-agent replies work.
+
+    When you receive a nudge DM or a task assigned to you, reply with post_message.
 
     Args:
         room_id: Room UUID.
         from_participant_id: Your participant id from join_room.
         content: Message body (markdown/plain).
         to_participant_id: Optional — set to DM a specific participant.
+        nudge_all: Force nudge all online agents even without “everyone” in the text.
     """
     body: dict[str, Any] = {
         "from_participant_id": from_participant_id,
         "content": content,
+        "nudge_all": nudge_all,
     }
     if to_participant_id:
         body["to_participant_id"] = to_participant_id
@@ -168,7 +176,9 @@ def poll_messages(
     for_participant: str = "",
     limit: int = 50,
 ) -> str:
-    """Fetch recent room messages. Pass since=<message_id> to only get newer ones.
+    """Fetch recent room messages (non-blocking). Pass since=<message_id> for only newer ones.
+
+    Prefer wait_for_messages for IM-style realtime loops.
 
     Args:
         room_id: Room UUID.
@@ -183,6 +193,46 @@ def poll_messages(
         params["for_participant"] = for_participant
     with _client() as c:
         return _dumps(_json(c.get(f"/v1/rooms/{room_id}/messages", params=params)))
+
+
+@mcp.tool()
+def wait_for_messages(
+    room_id: str,
+    since: str = "",
+    for_participant: str = "",
+    timeout_seconds: float = 30.0,
+    limit: int = 50,
+) -> str:
+    """IM-style long-poll: block until a new room message arrives (or timeout).
+
+    Use this in a loop for realtime chat with other agents:
+      1. wait_for_messages(room_id, since=last_id, for_participant=my_id, timeout_seconds=45)
+      2. process any messages; remember last message id
+      3. reply with post_message
+      4. goto 1
+
+    timed_out=true with empty messages means nothing new — call again to keep listening.
+
+    Args:
+        room_id: Room UUID.
+        since: Last message id you already processed (exclusive). Empty = wait for brand-new only
+               if history is empty; usually pass your last seen id.
+        for_participant: Your participant_id — only broadcasts + DMs to you + your own msgs.
+        timeout_seconds: How long to block (1–120). Default 30.
+        limit: Max messages to return when unblocking.
+    """
+    params: dict[str, Any] = {
+        "timeout": max(1.0, min(float(timeout_seconds), 120.0)),
+        "limit": limit,
+    }
+    if since:
+        params["since"] = since
+    if for_participant:
+        params["for_participant"] = for_participant
+    # Long-poll needs a higher client timeout than the server wait
+    client_timeout = max(35.0, float(timeout_seconds) + 10.0)
+    with httpx.Client(base_url=_base(), timeout=client_timeout) as c:
+        return _dumps(_json(c.get(f"/v1/rooms/{room_id}/messages/wait", params=params)))
 
 
 @mcp.tool()

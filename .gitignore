@@ -16,3 +16,8 @@ configs/applied-backups/*
 *.bak
 .env
 .env.*
+*.db
+*.db-journal
+.opengateway/
+webapp/node_modules/
+webapp/dist/

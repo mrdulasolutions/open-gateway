@@ -1,4 +1,4 @@
-"""OpenGateway CLI — serve, mcp, status, demo helpers."""
+"""OpenGateway CLI — serve, mcp, status, demo, realtime chat helpers."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import json
 import os
 import sys
 from typing import Optional
+from urllib.parse import urlparse
 
 import httpx
 import typer
@@ -21,26 +22,166 @@ app = typer.Typer(
 console = Console()
 
 
+def _base_url(url: Optional[str] = None) -> str:
+    return (url or os.environ.get("OPENGATEWAY_URL", "http://127.0.0.1:8765")).rstrip("/")
+
+
 @app.command()
 def serve(
-    host: str = typer.Option("127.0.0.1", help="Bind host"),
+    host: Optional[str] = typer.Option(
+        None,
+        help="Bind host (default: 127.0.0.1 internal/serve, 0.0.0.0 open public)",
+    ),
     port: int = typer.Option(8765, help="Bind port"),
+    mode: str = typer.Option(
+        "internal",
+        help="Mode: internal | public | serve (alias: tailscale) | funnel",
+    ),
+    network: Optional[str] = typer.Option(
+        None,
+        "--network",
+        help="Network label: loopback | lan | tailscale | funnel | public",
+    ),
+    via: Optional[str] = typer.Option(
+        None,
+        "--via",
+        help="Exposure path: serve (Tailscale Serve → localhost) | funnel | open",
+    ),
+    token: Optional[str] = typer.Option(
+        None,
+        help="Bearer auth token (required for public unless OPENGATEWAY_REQUIRE_AUTH=false)",
+    ),
+    public_url: Optional[str] = typer.Option(
+        None,
+        help="Advertised URL (e.g. https://mybox.tailnet.ts.net)",
+    ),
+    trust_tailscale_identity: Optional[bool] = typer.Option(
+        None,
+        "--trust-tailscale-identity/--no-trust-tailscale-identity",
+        help="Accept Tailscale-User-* headers when bound to localhost (Serve)",
+    ),
     reload: bool = typer.Option(False, help="Auto-reload on code changes"),
+    db: Optional[str] = typer.Option(
+        None,
+        help="SQLite path for room persistence (default: ~/.opengateway/state.db). "
+        "Use 'none' for memory-only.",
+    ),
 ) -> None:
-    """Start the OpenGateway HTTP server (ACP + collaboration API)."""
-    console.print(f"[bold green]OpenGateway[/] listening on http://{host}:{port}")
-    console.print("  ACP agents:  GET  /agents")
-    console.print("  ACP runs:    POST /runs")
-    console.print("  Rooms:       /v1/rooms")
-    console.print("  Docs:        /docs")
-    console.print("  MCP bridge:  opengateway mcp   (stdio, point harnesses at it)")
+    """Start the OpenGateway HTTP server (ACP + collaboration API).
+
+    Modes:
+      internal  — loopback only, multi-agent on this machine (default)
+      public    — network exposure + bearer auth
+      serve     — public via Tailscale Serve (bind 127.0.0.1, print serve cmd)
+      funnel    — public via Tailscale Funnel (bind 127.0.0.1, print funnel cmd)
+
+    Examples:
+      opengateway serve
+      opengateway serve --mode public --network tailscale --via serve --token $TOKEN
+      opengateway serve --mode serve --token $TOKEN
+    """
+    # Normalize serve/funnel aliases into mode + via
+    mode_l = (mode or "internal").lower()
+    if mode_l in {"serve", "tailscale", "tailnet"}:
+        os.environ["OPENGATEWAY_MODE"] = "public"
+        os.environ.setdefault("OPENGATEWAY_VIA", "serve")
+        os.environ.setdefault("OPENGATEWAY_NETWORK", "tailscale")
+    elif mode_l == "funnel":
+        os.environ["OPENGATEWAY_MODE"] = "public"
+        os.environ.setdefault("OPENGATEWAY_VIA", "funnel")
+        os.environ.setdefault("OPENGATEWAY_NETWORK", "funnel")
+    else:
+        os.environ["OPENGATEWAY_MODE"] = mode_l
+
+    os.environ["OPENGATEWAY_PORT"] = str(port)
+    if via:
+        os.environ["OPENGATEWAY_VIA"] = via
+    if network:
+        os.environ["OPENGATEWAY_NETWORK"] = network
+    if host:
+        os.environ["OPENGATEWAY_HOST"] = host
+    if token:
+        os.environ["OPENGATEWAY_AUTH_TOKEN"] = token
+    if public_url:
+        os.environ["OPENGATEWAY_PUBLIC_URL"] = public_url
+    if trust_tailscale_identity is not None:
+        os.environ["OPENGATEWAY_TRUST_TAILSCALE_IDENTITY"] = (
+            "true" if trust_tailscale_identity else "false"
+        )
+    if db is not None:
+        os.environ["OPENGATEWAY_DB"] = db
+
+    from opengateway.config import load_gateway_config, network_ui_label
+    from opengateway.persistence import default_db_path
+
+    cfg = load_gateway_config()
+    bind_host = host or cfg.host
+    db_path = default_db_path()
+    label = network_ui_label(cfg.network)
+    console.print(
+        f"[bold orange1]OpenGateway[/] {cfg.mode.value} · {label} · http://{bind_host}:{port}"
+    )
+    console.print(f"  [bold]Network:[/] {cfg.network} · advertised {cfg.base_url}")
+    if cfg.require_auth:
+        tok = cfg.auth_token or ""
+        masked = (tok[:8] + "…") if len(tok) > 10 else "(set)"
+        console.print(f"  [bold]Auth:[/] required · token {masked}")
+        console.print("  Clients: Authorization: Bearer $OPENGATEWAY_AUTH_TOKEN")
+        console.print("  SSE/EventSource may use ?token=$OPENGATEWAY_AUTH_TOKEN")
+    else:
+        console.print("  [yellow]Auth:[/] off")
+    if cfg.trust_tailscale_identity:
+        console.print(
+            "  [bold]Identity:[/] Tailscale-User-* headers trusted (localhost bind only)"
+        )
+    if cfg.tailscale_hostname:
+        console.print(f"  [bold]Tailscale:[/] {cfg.tailscale_hostname}")
+    if cfg.serve_hint:
+        console.print(f"  [bold cyan]Run:[/] {cfg.serve_hint}")
+        if cfg.network == "tailscale":
+            console.print(
+                "  [dim]Tailnet (Serve): edge TLS + ACLs; app stays on 127.0.0.1[/]"
+            )
+        elif cfg.network == "funnel":
+            console.print(
+                "  [yellow]Internet (Funnel): world-reachable — keep a strong token[/]"
+            )
+    if db_path:
+        console.print(f"  [bold]Persistence:[/] {db_path}")
+    else:
+        console.print("  [yellow]Persistence:[/] off (memory-only)")
+    console.print(f"  Web UI:      {cfg.base_url}/ui/")
+    console.print("  Gateways:   GET /v1/gateways")
+    console.print("  Search:     GET /v1/search?q=")
     uvicorn.run(
-        "opengateway.server:app",
-        host=host,
+        "opengateway.server:build_app",
+        factory=True,
+        host=bind_host,
         port=port,
         reload=reload,
         log_level="info",
     )
+
+
+@app.command()
+def ui(
+    url: str = typer.Option(None, help="Gateway base URL"),
+    no_open: bool = typer.Option(False, "--no-open", help="Print URL only"),
+) -> None:
+    """Open the Live Ops web UI in your browser."""
+    import webbrowser
+
+    base = _base_url(url)
+    target = f"{base}/ui/"
+    console.print(f"[bold green]OpenGateway UI[/] {target}")
+    try:
+        with httpx.Client(base_url=base, timeout=3.0) as c:
+            c.get("/ping").raise_for_status()
+    except Exception as e:
+        console.print(f"[yellow]Gateway may be down[/] ({e})")
+        console.print("Start it with: [bold]opengateway serve[/]")
+    if not no_open:
+        webbrowser.open(target)
 
 
 @app.command()
@@ -211,6 +352,329 @@ def demo(
         console.print("\n[bold]Facilitator summary[/]\n")
         console.print(summary)
         console.print(f"\n[bold]Snapshot:[/] {url}/v1/rooms/{room_id}/snapshot")
+
+
+def _fmt_time(iso: Optional[str]) -> str:
+    if not iso:
+        return "--:--:--"
+    # 2026-08-02T01:51:40.726939Z → 01:51:40
+    try:
+        return iso[11:19]
+    except Exception:
+        return iso[:8]
+
+
+def _print_message_line(m: dict) -> None:
+    body = ""
+    parts = (m.get("message") or {}).get("parts") or []
+    if parts:
+        body = parts[0].get("content") or ""
+    target = ""
+    if m.get("to_participant_id"):
+        target = f" [dim]→ dm[/]"
+    t = _fmt_time(m.get("created_at"))
+    name = m.get("from_name") or "?"
+    console.print(f"[dim]{t}[/] [bold cyan]{name}[/]{target}: {body}")
+
+
+def _print_event_line(event_type: str, payload: dict) -> None:
+    t = _fmt_time(payload.get("created_at"))
+    if event_type == "message" and "message" in payload.get("payload", payload):
+        # support both wrapped GatewayEvent and raw
+        inner = payload.get("payload", payload)
+        msg = inner.get("message") if isinstance(inner, dict) else None
+        if msg:
+            _print_message_line(msg)
+            return
+    if event_type == "participant":
+        action = (payload.get("payload") or {}).get("action", "")
+        p = (payload.get("payload") or {}).get("participant") or {}
+        name = p.get("name") or (payload.get("payload") or {}).get("participant_id", "?")
+        harness = p.get("harness", "")
+        if action == "joined":
+            console.print(f"[dim]{t}[/] [green]● joined[/]  {name} [dim]({harness})[/]")
+        elif action == "left":
+            console.print(f"[dim]{t}[/] [yellow]○ left[/]    {name}")
+        else:
+            console.print(f"[dim]{t}[/] [green]participant[/] {action} {name}")
+        return
+    if event_type == "task":
+        action = (payload.get("payload") or {}).get("action", "")
+        task = (payload.get("payload") or {}).get("task") or {}
+        console.print(
+            f"[dim]{t}[/] [magenta]task[/] {action}: {task.get('title', '?')} "
+            f"[dim]({task.get('status', '')})[/]"
+        )
+        return
+    if event_type == "artifact":
+        art = (payload.get("payload") or {}).get("artifact") or {}
+        console.print(f"[dim]{t}[/] [blue]artifact[/] {art.get('name', '?')}")
+        return
+    if event_type in {"ping", ""}:
+        return
+    console.print(f"[dim]{t}[/] [dim]{event_type}[/] {json.dumps(payload.get('payload', {}), default=str)[:120]}")
+
+
+@app.command("rooms")
+def list_rooms_cmd(
+    url: str = typer.Option(None, help="Gateway base URL"),
+) -> None:
+    """List collaboration rooms (ids for monitor/watch)."""
+    base = _base_url(url)
+    with httpx.Client(base_url=base, timeout=10.0) as c:
+        r = c.get("/v1/rooms")
+        r.raise_for_status()
+        rooms = r.json().get("rooms") or []
+    if not rooms:
+        console.print("[dim]No rooms. Create one: opengateway create-room NAME --goal '…'[/]")
+        return
+    table = Table(title="OpenGateway rooms")
+    table.add_column("ID")
+    table.add_column("Name")
+    table.add_column("Status")
+    table.add_column("Goal")
+    for room in rooms:
+        table.add_row(
+            room.get("id", ""),
+            room.get("name", ""),
+            room.get("status", ""),
+            (room.get("goal") or "")[:50],
+        )
+    console.print(table)
+
+
+@app.command()
+def monitor(
+    room_id: Optional[str] = typer.Argument(
+        None,
+        help="Room UUID. Omit to list rooms, or pass 'all' for global event feed.",
+    ),
+    url: str = typer.Option(None, help="Gateway base URL"),
+    history: int = typer.Option(15, help="How many recent messages to print first"),
+    messages_only: bool = typer.Option(False, "--messages-only", help="Hide joins/tasks/artifacts"),
+) -> None:
+    """Realtime CLI monitor for agent communication (SSE push). Ctrl-C to stop.
+
+    Examples:
+      opengateway rooms
+      opengateway monitor                         # list rooms
+      opengateway monitor ROOM_ID                 # live feed for one room
+      opengateway monitor all                     # all rooms / system events
+    """
+    base = _base_url(url)
+
+    if not room_id:
+        list_rooms_cmd(url=url)
+        console.print("\n[dim]Run: opengateway monitor <ROOM_ID>[/]")
+        return
+
+    # Resolve short / name match
+    with httpx.Client(base_url=base, timeout=10.0) as c:
+        rooms = c.get("/v1/rooms").json().get("rooms") or []
+        if room_id != "all":
+            match = next((r for r in rooms if r["id"] == room_id or r["id"].startswith(room_id)), None)
+            if not match:
+                match = next((r for r in rooms if r.get("name") == room_id), None)
+            if not match:
+                console.print(f"[red]Room not found:[/] {room_id}")
+                list_rooms_cmd(url=url)
+                raise typer.Exit(1)
+            room_id = match["id"]
+            console.print(
+                f"[bold green]● LIVE[/] [bold]{match.get('name')}[/]  "
+                f"[dim]{room_id}[/]\n"
+                f"  goal: {match.get('goal') or '(none)'}  ·  {base}\n"
+                f"  [dim]Ctrl-C to stop · shows messages, joins, tasks, artifacts[/]\n"
+            )
+            # History dump
+            if history > 0:
+                msgs = (
+                    c.get(f"/v1/rooms/{room_id}/messages", params={"limit": history})
+                    .json()
+                    .get("messages")
+                    or []
+                )
+                if msgs:
+                    console.print("[dim]── recent ──[/]")
+                    for m in msgs[-history:]:
+                        _print_message_line(m)
+                    console.print("[dim]── live ────[/]")
+            sse_url = f"{base}/v1/rooms/{room_id}/events"
+        else:
+            console.print(f"[bold green]● LIVE[/] all rooms  [dim]{base}[/]\n")
+            sse_url = f"{base}/v1/events/stream"
+
+    _run_sse_monitor(sse_url, messages_only=messages_only)
+
+
+@app.command()
+def watch(
+    room_id: str = typer.Argument(..., help="Room UUID or name"),
+    url: str = typer.Option(None, help="Gateway base URL"),
+    history: int = typer.Option(15, help="Recent messages to show first"),
+    messages_only: bool = typer.Option(False, "--messages-only"),
+) -> None:
+    """Alias for `monitor` — realtime tail of a room. Ctrl-C to stop."""
+    monitor(room_id=room_id, url=url, history=history, messages_only=messages_only)
+
+
+def _run_sse_monitor(sse_url: str, *, messages_only: bool = False) -> None:
+    """Connect to SSE and print events until Ctrl-C."""
+    try:
+        from httpx_sse import connect_sse
+    except ImportError:
+        console.print("[yellow]httpx-sse missing; falling back to long-poll[/]")
+        _run_longpoll_monitor(sse_url)
+        return
+
+    try:
+        with httpx.Client(timeout=None) as client:
+            with connect_sse(client, "GET", sse_url) as source:
+                for sse in source.iter_sse():
+                    if sse.event in {"ping", ""} and not sse.data:
+                        continue
+                    if sse.event == "ping":
+                        continue
+                    try:
+                        data = json.loads(sse.data) if sse.data else {}
+                    except json.JSONDecodeError:
+                        continue
+                    etype = sse.event or data.get("type") or "event"
+                    if messages_only and etype != "message":
+                        continue
+                    # GatewayEvent shape: {type, payload, created_at, room_id}
+                    if "payload" in data and etype == "message":
+                        msg = data["payload"].get("message")
+                        if msg:
+                            _print_message_line(msg)
+                            continue
+                    if etype == "message" and "message" in data:
+                        _print_message_line(data["message"])
+                        continue
+                    if not messages_only:
+                        _print_event_line(etype, data)
+    except KeyboardInterrupt:
+        console.print("\n[dim]monitor stopped[/]")
+    except httpx.HTTPError as e:
+        console.print(f"[red]SSE error:[/] {e}")
+        raise typer.Exit(1)
+
+
+def _run_longpoll_monitor(sse_url: str) -> None:
+    """Fallback if SSE client unavailable — only works for room message wait URLs."""
+    # Extract room id from .../rooms/{id}/events
+    parts = sse_url.rstrip("/").split("/")
+    if "rooms" not in parts:
+        console.print("[red]Long-poll fallback only supports a single room SSE URL[/]")
+        raise typer.Exit(1)
+    room_id = parts[parts.index("rooms") + 1]
+    base = sse_url.split("/v1/")[0]
+    cursor = None
+    try:
+        while True:
+            params: dict = {"timeout": 45, "limit": 50}
+            if cursor:
+                params["since"] = cursor
+            with httpx.Client(base_url=base, timeout=60) as c:
+                r = c.get(f"/v1/rooms/{room_id}/messages/wait", params=params)
+                r.raise_for_status()
+                data = r.json()
+            for m in data.get("messages") or []:
+                cursor = m["id"]
+                _print_message_line(m)
+    except KeyboardInterrupt:
+        console.print("\n[dim]monitor stopped[/]")
+
+
+@app.command()
+def chat(
+    room_id: str = typer.Argument(..., help="Room UUID"),
+    name: str = typer.Option("human", help="Your display name in the room"),
+    url: str = typer.Option(None, help="Gateway base URL"),
+    harness: str = typer.Option("human", help="Harness tag"),
+) -> None:
+    """Interactive IM over WebSocket. Type messages; remote agents appear live.
+
+    Requires: pip/uv websockets (comes with uvicorn). Join is automatic.
+    """
+    try:
+        import websockets  # type: ignore
+    except ImportError:
+        console.print("[red]Need websockets package: uv add websockets[/]")
+        raise typer.Exit(1)
+
+    import asyncio
+
+    base = _base_url(url)
+    # HTTP join first
+    with httpx.Client(base_url=base, timeout=15) as c:
+        c.get("/ping").raise_for_status()
+        p = c.post(
+            f"/v1/rooms/{room_id}/join",
+            json={"name": name, "harness": harness, "role": "contributor"},
+        )
+        p.raise_for_status()
+        participant = p.json()
+    pid = participant["id"]
+    console.print(f"[green]Joined[/] as {name} ({pid})")
+    console.print("[dim]Type a line + Enter to send. Ctrl-C to quit.[/]")
+
+    parsed = urlparse(base)
+    scheme = "wss" if parsed.scheme == "https" else "ws"
+    ws_url = f"{scheme}://{parsed.netloc}/v1/rooms/{room_id}/ws?participant_id={pid}"
+
+    async def run() -> None:
+        async with websockets.connect(ws_url) as ws:
+            # Drain + print incoming in background
+            stop = asyncio.Event()
+
+            async def reader() -> None:
+                try:
+                    async for raw in ws:
+                        data = json.loads(raw)
+                        if data.get("type") == "message":
+                            m = data["message"]
+                            if m.get("from_participant_id") == pid:
+                                continue  # skip own echo via bus
+                            body = ""
+                            parts = (m.get("message") or {}).get("parts") or []
+                            if parts:
+                                body = parts[0].get("content") or ""
+                            console.print(f"\n[cyan]{m.get('from_name')}[/]: {body}")
+                            console.print("> ", end="")
+                        elif data.get("type") == "hello_ok":
+                            pass
+                        elif data.get("type") == "error":
+                            console.print(f"[red]error:[/] {data.get('detail')}")
+                except Exception:
+                    stop.set()
+
+            reader_task = asyncio.create_task(reader())
+
+            loop = asyncio.get_event_loop()
+
+            def stdin_lines():
+                for line in sys.stdin:
+                    yield line.rstrip("\n")
+
+            try:
+                while not stop.is_set():
+                    console.print("> ", end="")
+                    line = await loop.run_in_executor(None, sys.stdin.readline)
+                    if not line:
+                        break
+                    text = line.rstrip("\n")
+                    if not text:
+                        continue
+                    if text in {"/quit", "/exit"}:
+                        break
+                    await ws.send(json.dumps({"type": "message", "content": text}))
+            except KeyboardInterrupt:
+                pass
+            finally:
+                reader_task.cancel()
+
+    asyncio.run(run())
 
 
 @app.callback()

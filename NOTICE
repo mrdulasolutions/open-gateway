@@ -1,0 +1,41 @@
+OpenGateway
+Copyright 2026 MR Dula Enterprise, LLC
+
+This product is licensed under the Apache License, Version 2.0.
+See the LICENSE file for the full text.
+
+-------------------------------------------------------------------------------
+Acknowledgments
+-------------------------------------------------------------------------------
+
+Agent Communication Protocol (ACP)
+  OpenGateway implements an ACP-compatible REST surface for agent discovery
+  and runs, and builds collaboration primitives on that foundation.
+
+  ACP was developed as an open standard for agent interoperability by the
+  BeeAI / i-am-bee community and is now part of A2A under the Linux Foundation.
+
+  - Spec & docs:  https://agentcommunicationprotocol.dev/
+  - Spec source:  https://github.com/i-am-bee/acp
+  - Migration:    https://github.com/orgs/i-am-bee/discussions/5
+
+  ACP, BeeAI, and A2A are trademarks of their respective owners. Use of the
+  protocol does not imply endorsement by the Linux Foundation, IBM, BeeAI,
+  or the ACP authors.
+
+Model Context Protocol (MCP)
+  OpenGateway exposes collaboration tools over stdio MCP so coding harnesses
+  can join rooms. MCP is developed by Anthropic and the MCP community.
+  - https://modelcontextprotocol.io/
+
+21st.dev Agent Chat
+  Live Ops UI chat patterns adapted from the 21st.dev component catalog
+  (serafimcloud/agent-chat).
+  - https://21st.dev/
+
+Tailscale
+  Optional multi-machine exposure via MagicDNS, Serve, and Funnel.
+  - https://tailscale.com/
+
+This product includes software developed by the open-source community.
+All third-party marks remain property of their owners.

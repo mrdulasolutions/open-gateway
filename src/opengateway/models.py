@@ -155,6 +155,33 @@ class Room(BaseModel):
     updated_at: datetime = Field(default_factory=utcnow)
 
 
+class Bookmark(BaseModel):
+    """Saved highlight / bookmark on a room message (outline-style)."""
+
+    id: str = Field(default_factory=new_id)
+    room_id: str
+    message_id: str
+    title: str
+    excerpt: str = ""
+    created_by: str
+    created_at: datetime = Field(default_factory=utcnow)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class Fork(BaseModel):
+    """Fork of a message / conversation branch."""
+
+    id: str = Field(default_factory=new_id)
+    room_id: str
+    root_message_id: str
+    title: str
+    created_by: str
+    created_by_name: str = ""
+    note: str = ""
+    created_at: datetime = Field(default_factory=utcnow)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 # ── Request / response DTOs ────────────────────────────────────────────────
 
 
@@ -175,6 +202,16 @@ class JoinRoomRequest(BaseModel):
     participant_id: Optional[str] = None  # re-join with known id
 
 
+class UpdateParticipantRequest(BaseModel):
+    """In-place identity update — rename without creating a new participant."""
+
+    name: Optional[str] = None
+    role: Optional[str] = None
+    status: Optional[ParticipantStatus] = None
+    capabilities: Optional[list[str]] = None
+    metadata: Optional[dict[str, Any]] = None
+
+
 class PostMessageRequest(BaseModel):
     from_participant_id: str
     content: str
@@ -183,6 +220,9 @@ class PostMessageRequest(BaseModel):
     role: Optional[str] = None  # defaults to agent/{from_name}
     metadata: dict[str, Any] = Field(default_factory=dict)
     parts: Optional[list[MessagePart]] = None
+    # When true (or content addresses everyone), nudge each other online agent
+    # with a DM + open task so multi-agent replies are more likely.
+    nudge_all: bool = False
 
 
 class CreateTaskRequest(BaseModel):
@@ -208,6 +248,48 @@ class ShareArtifactRequest(BaseModel):
     content_type: str = "text/plain"
     content_encoding: Literal["plain", "base64"] = "plain"
     description: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class CreateBookmarkRequest(BaseModel):
+    message_id: str
+    title: str
+    excerpt: str = ""
+    created_by: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class CreateForkRequest(BaseModel):
+    root_message_id: str
+    title: str = ""
+    note: str = ""
+    created_by: str
+    created_by_name: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class GatewayRecord(BaseModel):
+    """Known gateway (this node or a remote peer)."""
+
+    id: str = Field(default_factory=new_id)
+    name: str
+    mode: str = "internal"  # internal | public
+    network: str = "loopback"  # loopback | lan | tailscale | public
+    base_url: str
+    require_auth: bool = False
+    is_self: bool = False
+    notes: str = ""
+    created_at: datetime = Field(default_factory=utcnow)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class RegisterGatewayRequest(BaseModel):
+    name: str
+    mode: str = "public"
+    network: str = "public"
+    base_url: str
+    require_auth: bool = True
+    notes: str = ""
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 

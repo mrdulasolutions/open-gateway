@@ -1,0 +1,827 @@
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Moon, Sun, PanelRightOpen, PanelRightClose } from "lucide-react";
+import { AgentChat, type AgentMessage } from "@/components/agent-chat/AgentChat";
+import { GlobalSearch, type SearchHit } from "@/components/GlobalSearch";
+import { OpsSidebar, type LeftSection } from "@/components/layout/OpsSidebar";
+import { SideRail } from "@/components/layout/SideRail";
+import { api, getAuthToken, isAllCall, setAuthToken } from "@/lib/api";
+import { useTheme } from "@/hooks/useTheme";
+import {
+  getStoredName,
+  getStoredPid,
+  getStoredRole,
+  setStoredName,
+  setStoredPid,
+  setStoredRole,
+} from "@/lib/identity";
+import type {
+  Artifact,
+  Bookmark,
+  DmThread,
+  Fork,
+  Participant,
+  Ping,
+  Room,
+  RoomMessage,
+  Task,
+} from "@/lib/types";
+
+function roomMsgToAgent(
+  m: RoomMessage,
+  meId: string | null,
+  harnessMap: Record<string, string>
+): AgentMessage {
+  const parts: AgentMessage["parts"] = [];
+  for (const p of m.message?.parts || []) {
+    if (p.name || (p.content_type && !p.content_type.startsWith("text/"))) {
+      parts.push({
+        type: "file",
+        name: p.name || "file",
+        url: p.content_url
+          ? p.content_url.startsWith("http")
+            ? p.content_url
+            : `${api.base}${p.content_url}`
+          : undefined,
+        contentType: p.content_type,
+      });
+      if (p.content && p.content_type?.startsWith("text/")) {
+        parts.push({ type: "text", text: p.content });
+      }
+    } else if (p.content) {
+      parts.push({ type: "text", text: p.content });
+    }
+  }
+  if (parts.length === 0) parts.push({ type: "text", text: "" });
+
+  const isSystem = m.from_name === "system" || Boolean(m.metadata?.system);
+  const isMine = Boolean(meId && m.from_participant_id === meId);
+
+  if (isSystem) {
+    const text = parts
+      .filter((x): x is { type: "text"; text: string } => x.type === "text")
+      .map((x) => x.text)
+      .join("\n");
+    return {
+      id: m.id,
+      role: "system",
+      parts: [{ type: "text", text }],
+      createdAt: m.created_at,
+    };
+  }
+  return {
+    id: m.id,
+    role: isMine ? "user" : "assistant",
+    name: m.from_name,
+    harness: harnessMap[m.from_name] || (isMine ? "human" : "other"),
+    parts,
+    createdAt: m.created_at,
+  };
+}
+
+export default function App() {
+  const { theme, toggle: toggleTheme } = useTheme();
+  const [ping, setPing] = useState<Ping | null>(null);
+  const [rooms, setRooms] = useState<Room[]>([]);
+  const [roomId, setRoomId] = useState<string | null>(null);
+  const [room, setRoom] = useState<Room | null>(null);
+  const [messages, setMessages] = useState<RoomMessage[]>([]);
+  const [participants, setParticipants] = useState<Participant[]>([]);
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [artifacts, setArtifacts] = useState<Artifact[]>([]);
+  const [bookmarks, setBookmarks] = useState<Bookmark[]>([]);
+  const [forks, setForks] = useState<Fork[]>([]);
+  const [dmThreads, setDmThreads] = useState<DmThread[]>([]);
+  const [events, setEvents] = useState<string[]>([]);
+  const [displayName, setDisplayName] = useState(getStoredName());
+  const [displayRole, setDisplayRole] = useState(getStoredRole());
+  const [participantId, setParticipantId] = useState<string | null>(null);
+  const [live, setLive] = useState(false);
+  const [leftOpen, setLeftOpen] = useState(true);
+  const [railOpen, setRailOpen] = useState(true);
+  const [leftSection, setLeftSection] = useState<LeftSection>("rooms");
+  const [activeDmPeerId, setActiveDmPeerId] = useState<string | null>(null);
+  const [highlightMessageId, setHighlightMessageId] = useState<string | null>(
+    null
+  );
+  const [error, setError] = useState<{ message: string } | undefined>();
+  const [showNewRoom, setShowNewRoom] = useState(false);
+  const [gateways, setGateways] = useState<
+    {
+      id: string;
+      name: string;
+      mode: string;
+      network: string;
+      base_url: string;
+      require_auth: boolean;
+      is_self: boolean;
+      notes?: string;
+    }[]
+  >([]);
+  const [authToken, setAuthTokenState] = useState(getAuthToken());
+
+  const log = useCallback((line: string) => {
+    const t = new Date().toLocaleTimeString();
+    setEvents((prev) => [`${t}  ${line}`, ...prev].slice(0, 80));
+  }, []);
+
+  const harnessMap = useMemo(() => {
+    const m: Record<string, string> = {};
+    for (const p of participants) m[p.name] = p.harness;
+    return m;
+  }, [participants]);
+
+  // Public room: only broadcasts (no to). DM view: private thread only.
+  const visibleMessages = useMemo(() => {
+    if (!participantId) {
+      return messages.filter((m) => !m.to_participant_id);
+    }
+    if (!activeDmPeerId) {
+      return messages.filter((m) => !m.to_participant_id);
+    }
+    return messages.filter(
+      (m) =>
+        m.to_participant_id &&
+        ((m.from_participant_id === participantId &&
+          m.to_participant_id === activeDmPeerId) ||
+          (m.from_participant_id === activeDmPeerId &&
+            m.to_participant_id === participantId))
+    );
+  }, [messages, activeDmPeerId, participantId]);
+
+  const chatMessages = useMemo(
+    () =>
+      visibleMessages.map((m) => roomMsgToAgent(m, participantId, harnessMap)),
+    [visibleMessages, participantId, harnessMap]
+  );
+
+  const bookmarkedIds = useMemo(
+    () => new Set(bookmarks.map((b) => b.message_id)),
+    [bookmarks]
+  );
+
+  const mentionables = useMemo(() => {
+    const people = participants
+      .filter((p) => p.id !== participantId)
+      .map((p) => ({ id: p.id, name: p.name, harness: p.harness }));
+    // Synthetic @all — server treats "everyone" / "@all" as full nudge
+    return [
+      { id: "__all__", name: "all", harness: "broadcast" },
+      ...people,
+    ];
+  }, [participants, participantId]);
+
+  const refreshGateways = useCallback(async () => {
+    try {
+      const res = await api.listGateways();
+      setGateways(res.gateways || []);
+    } catch {
+      setGateways([]);
+    }
+  }, []);
+
+  const refreshPing = useCallback(async () => {
+    try {
+      setPing(await api.ping());
+      await refreshGateways();
+    } catch (e) {
+      setPing(null);
+      log(`ping failed: ${e instanceof Error ? e.message : e}`);
+    }
+  }, [log, refreshGateways]);
+
+  const refreshRooms = useCallback(async () => {
+    const { rooms: list } = await api.listRooms();
+    setRooms(list);
+    return list;
+  }, []);
+
+  const refreshDms = useCallback(
+    async (rid: string, pid: string) => {
+      try {
+        const { threads } = await api.listDms(rid, pid);
+        setDmThreads(threads);
+      } catch {
+        setDmThreads([]);
+      }
+    },
+    []
+  );
+
+  const refreshSnapshot = useCallback(
+    async (id: string) => {
+      const snap = await api.snapshot(id);
+      setRoom(snap.room);
+      setMessages(snap.messages || []);
+      setParticipants(snap.participants || []);
+      setTasks(snap.tasks || []);
+      setArtifacts(snap.artifacts || []);
+      setBookmarks(snap.bookmarks || []);
+      setForks(snap.forks || []);
+    },
+    []
+  );
+
+  const ensureJoined = useCallback(
+    async (id: string, name: string, existingPid?: string | null) => {
+      const pid = existingPid || getStoredPid(id);
+      const role = getStoredRole();
+      const p = await api.join(id, {
+        name: name.trim() || "human",
+        harness: "human",
+        role: role || "observer",
+        capabilities: ["monitor", "chat"],
+        participant_id: pid || undefined,
+      });
+      setParticipantId(p.id);
+      setStoredPid(id, p.id);
+      setStoredName(name.trim() || "human");
+      setDisplayRole(p.role || role || "observer");
+      if (p.role) setStoredRole(p.role);
+      log(`session ${p.id.slice(0, 8)}… as ${p.name}`);
+      await refreshDms(id, p.id);
+      return p;
+    },
+    [log, refreshDms]
+  );
+
+  const selectRoom = useCallback(
+    async (id: string) => {
+      setRoomId(id);
+      setActiveDmPeerId(null);
+      setLeftSection("rooms");
+      setError(undefined);
+      const name = getStoredName();
+      setDisplayName(name);
+      const pid = getStoredPid(id);
+      setParticipantId(pid);
+      await refreshSnapshot(id);
+      await ensureJoined(id, name, pid);
+      await refreshSnapshot(id);
+      window.location.hash = id;
+    },
+    [refreshSnapshot, ensureJoined]
+  );
+
+  useEffect(() => {
+    if (!roomId) return;
+    const es = new EventSource(api.eventsUrl(roomId));
+    es.onopen = () => {
+      setLive(true);
+      log("SSE connected");
+    };
+    es.onerror = () => {
+      setLive(false);
+      log("SSE reconnecting…");
+    };
+    const onMessage = (raw: string) => {
+      try {
+        const data = JSON.parse(raw);
+        const msg = data.payload?.message || data.message;
+        if (!msg?.id) return;
+        setMessages((prev) =>
+          prev.some((m) => m.id === msg.id) ? prev : [...prev, msg]
+        );
+        if (participantId) refreshDms(roomId, participantId);
+      } catch {
+        /* ignore */
+      }
+    };
+    const onSide = (type: string, raw: string) => {
+      try {
+        const data = JSON.parse(raw);
+        log(`${type}: ${data.payload?.action || ""}`);
+        refreshSnapshot(roomId).catch(() => {});
+      } catch {
+        /* ignore */
+      }
+    };
+    es.addEventListener("message", (ev) => onMessage(ev.data));
+    for (const t of [
+      "participant",
+      "task",
+      "artifact",
+      "room",
+      "bookmark",
+      "fork",
+    ]) {
+      es.addEventListener(t, (ev) => onSide(t, ev.data));
+    }
+    return () => {
+      es.close();
+      setLive(false);
+    };
+  }, [roomId, log, refreshSnapshot, refreshDms, participantId]);
+
+  useEffect(() => {
+    (async () => {
+      await refreshPing();
+      const list = await refreshRooms();
+      const hash = window.location.hash.replace(/^#/, "");
+      const pick =
+        list.find((r) => r.id === hash || r.name === hash) || list[0];
+      if (pick) await selectRoom(pick.id);
+    })().catch((e) =>
+      setError({ message: e instanceof Error ? e.message : String(e) })
+    );
+    const t = setInterval(refreshPing, 15000);
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const onSend = async ({
+    content,
+    files,
+    mentionIds,
+  }: {
+    role: "user";
+    content: string;
+    files: File[];
+    mentionIds: string[];
+  }) => {
+    if (!roomId || !participantId) return;
+    try {
+      const uploaded: {
+        id: string;
+        name: string;
+        content_type: string;
+        content_url?: string | null;
+      }[] = [];
+      for (const f of files) {
+        const art = await api.uploadFile(roomId, participantId, f);
+        uploaded.push(art);
+        log(`uploaded ${art.name}`);
+      }
+      const parts: {
+        name?: string;
+        content_type: string;
+        content?: string;
+        content_url?: string;
+      }[] = [];
+      if (content.trim()) {
+        parts.push({ content_type: "text/plain", content: content.trim() });
+      }
+      for (const u of uploaded) {
+        parts.push({
+          name: u.name,
+          content_type: u.content_type || "application/octet-stream",
+          content_url: u.content_url || api.fileUrl(roomId, u.id),
+        });
+      }
+
+      // @all (mention or text) → broadcast nudge; single @peer → DM
+      const allCall =
+        isAllCall(content) ||
+        mentionIds.includes("__all__") ||
+        mentionIds.some((id) => id === "__all__");
+      const peerMentions = mentionIds.filter((id) => id !== "__all__");
+      let to =
+        activeDmPeerId ||
+        (peerMentions.length === 1 && !allCall ? peerMentions[0] : undefined);
+
+      const res = await api.postMessage(roomId, {
+        from_participant_id: participantId,
+        content:
+          content.trim() ||
+          uploaded.map((u) => `📎 ${u.name}`).join("\n"),
+        nudge_all: !activeDmPeerId && allCall,
+        to_participant_id: to,
+        parts: parts.length ? parts : undefined,
+        metadata: uploaded.length
+          ? { files: uploaded.map((u) => u.id) }
+          : undefined,
+      });
+      if (res && typeof res === "object" && "nudge_count" in res) {
+        log(`nudged ${(res as { nudge_count: number }).nudge_count} agent(s)`);
+      }
+      await refreshSnapshot(roomId);
+      await refreshDms(roomId, participantId);
+    } catch (e) {
+      setError({ message: e instanceof Error ? e.message : String(e) });
+    }
+  };
+
+  const onNameChange = async (name: string) => {
+    setDisplayName(name);
+    if (!roomId || !participantId) return;
+    const next = name.trim() || "human";
+    try {
+      const p = await api.updateParticipant(roomId, participantId, {
+        name: next,
+      });
+      setParticipantId(p.id);
+      setStoredPid(roomId, p.id);
+      setStoredName(next);
+      setDisplayName(next);
+      log(`renamed → ${next}`);
+      await refreshSnapshot(roomId);
+    } catch (e) {
+      log(`rename failed: ${e instanceof Error ? e.message : e}`);
+      await ensureJoined(roomId, next, participantId);
+    }
+  };
+
+  const onRoleChange = async (role: string) => {
+    setDisplayRole(role);
+    const next = role.trim() || "observer";
+    setStoredRole(next);
+    if (!roomId || !participantId) return;
+    try {
+      const p = await api.updateParticipant(roomId, participantId, {
+        role: next,
+      });
+      setDisplayRole(p.role || next);
+      log(`role → ${p.role || next}`);
+      await refreshSnapshot(roomId);
+    } catch (e) {
+      log(`role update failed: ${e instanceof Error ? e.message : e}`);
+    }
+  };
+
+  const onBookmark = async (messageId: string) => {
+    if (!roomId || !participantId) return;
+    const existing = bookmarks.find(
+      (b) => b.message_id === messageId && b.created_by === participantId
+    );
+    if (existing) {
+      await api.deleteBookmark(roomId, existing.id);
+      log("bookmark removed");
+    } else {
+      const msg = messages.find((m) => m.id === messageId);
+      const excerpt = msg?.message?.parts?.[0]?.content?.slice(0, 160) || "";
+      await api.createBookmark(roomId, {
+        message_id: messageId,
+        title: excerpt.slice(0, 48) || `Bookmark · ${msg?.from_name || "msg"}`,
+        excerpt,
+        created_by: participantId,
+      });
+      log("bookmarked");
+    }
+    await refreshSnapshot(roomId);
+  };
+
+  const onFork = async (messageId: string) => {
+    if (!roomId || !participantId) return;
+    await api.createFork(roomId, {
+      root_message_id: messageId,
+      created_by: participantId,
+      created_by_name: displayName,
+    });
+    log("fork created");
+    setLeftSection("forks");
+    await refreshSnapshot(roomId);
+  };
+
+  const dmPeer = participants.find((p) => p.id === activeDmPeerId);
+  const chatTitle = activeDmPeerId
+    ? `DM · ${dmPeer?.name || activeDmPeerId.slice(0, 8)}`
+    : room?.name || "Select a room";
+  const chatGoal = activeDmPeerId
+    ? "Private thread — only you and this agent"
+    : room?.goal || "Agent communication over ACP + MCP";
+
+  return (
+    <div className="flex h-screen overflow-hidden bg-zinc-50 text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100">
+      <div
+        aria-hidden
+        className="pointer-events-none fixed inset-0 bg-[radial-gradient(900px_500px_at_15%_-5%,rgba(110,231,183,0.08),transparent_55%)] opacity-70 dark:opacity-100"
+      />
+
+      <OpsSidebar
+        rooms={rooms}
+        activeRoomId={roomId}
+        ping={ping}
+        displayName={displayName}
+        displayRole={displayRole}
+        participantId={participantId}
+        participants={participants}
+        dmThreads={dmThreads}
+        forks={forks}
+        gateways={gateways}
+        activeDmPeerId={activeDmPeerId}
+        section={leftSection}
+        collapsed={!leftOpen}
+        authToken={authToken}
+        onToggleCollapsed={() => setLeftOpen((v) => !v)}
+        onSection={setLeftSection}
+        onSelectRoom={(id) => {
+          selectRoom(id).catch((e) =>
+            setError({ message: e instanceof Error ? e.message : String(e) })
+          );
+        }}
+        onSelectDm={(peerId) => {
+          setActiveDmPeerId(peerId);
+          if (peerId) setLeftSection("dms");
+        }}
+        onSelectFork={(forkId) => {
+          const f = forks.find((x) => x.id === forkId);
+          if (f) {
+            setActiveDmPeerId(null);
+            setHighlightMessageId(f.root_message_id);
+            setTimeout(() => setHighlightMessageId(null), 2500);
+          }
+        }}
+        onRefresh={() => {
+          refreshPing();
+          refreshRooms();
+          if (roomId) {
+            refreshSnapshot(roomId);
+            if (participantId) refreshDms(roomId, participantId);
+          }
+        }}
+        onNewRoom={() => setShowNewRoom(true)}
+        onNameChange={onNameChange}
+        onRoleChange={onRoleChange}
+        onAuthTokenChange={(token) => {
+          setAuthToken(token);
+          setAuthTokenState(token);
+          refreshPing();
+        }}
+      />
+
+      <main className="relative flex min-w-0 flex-1 flex-col">
+        <header className="flex items-center gap-3 border-b border-zinc-200 bg-white/80 px-4 py-3 backdrop-blur-md dark:border-white/[0.06] dark:bg-zinc-950/70 sm:px-5">
+          <div className="min-w-0 shrink-0 sm:max-w-[28%]">
+            <h1 className="truncate text-lg font-semibold tracking-tight">
+              {chatTitle}
+            </h1>
+            <p className="mt-0.5 truncate text-sm text-zinc-500">{chatGoal}</p>
+          </div>
+          <div className="min-w-0 flex-1">
+            <GlobalSearch
+              onNavigate={(hit: SearchHit) => {
+                void (async () => {
+                  if (hit.room_id && hit.room_id !== roomId) {
+                    await selectRoom(hit.room_id);
+                  }
+                  if (hit.type === "participant" && hit.id) {
+                    setActiveDmPeerId(hit.id);
+                    setLeftSection("dms");
+                  } else if (
+                    hit.type === "message" ||
+                    hit.type === "bookmark" ||
+                    hit.type === "fork"
+                  ) {
+                    setActiveDmPeerId(null);
+                    setHighlightMessageId(hit.id);
+                    // path may carry msg= for bookmarks/forks
+                    const msgMatch = hit.path?.match(/msg=([^&]+)/);
+                    if (msgMatch?.[1]) setHighlightMessageId(msgMatch[1]);
+                    setTimeout(() => setHighlightMessageId(null), 2800);
+                  } else if (hit.type === "room") {
+                    setActiveDmPeerId(null);
+                  }
+                })().catch((e) =>
+                  setError({
+                    message: e instanceof Error ? e.message : String(e),
+                  })
+                );
+              }}
+            />
+          </div>
+          <div className="flex shrink-0 flex-wrap items-center gap-2">
+            {!leftOpen && (
+              <button
+                type="button"
+                onClick={() => setLeftOpen(true)}
+                className="rounded-full border border-zinc-200 bg-white px-3 py-1.5 text-xs font-semibold dark:border-white/10 dark:bg-zinc-900"
+              >
+                Menu
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={toggleTheme}
+              className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-zinc-200 bg-white text-zinc-600 dark:border-white/10 dark:bg-zinc-900 dark:text-zinc-300"
+              title={theme === "dark" ? "Day mode" : "Night mode"}
+            >
+              {theme === "dark" ? (
+                <Sun className="h-4 w-4" />
+              ) : (
+                <Moon className="h-4 w-4" />
+              )}
+            </button>
+            <button
+              type="button"
+              onClick={() => setRailOpen((v) => !v)}
+              className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-zinc-200 bg-white text-zinc-600 dark:border-white/10 dark:bg-zinc-900 dark:text-zinc-300"
+              title={railOpen ? "Hide right panel" : "Show right panel"}
+            >
+              {railOpen ? (
+                <PanelRightClose className="h-4 w-4" />
+              ) : (
+                <PanelRightOpen className="h-4 w-4" />
+              )}
+            </button>
+            <span
+              className={
+                live
+                  ? "inline-flex items-center gap-1.5 rounded-full border border-orange-500/30 bg-orange-500/10 px-2.5 py-1 text-xs font-medium text-orange-800 dark:text-orange-200"
+                  : "inline-flex items-center gap-1.5 rounded-full border border-zinc-200 bg-zinc-100 px-2.5 py-1 text-xs font-medium text-zinc-500 dark:border-white/10 dark:bg-zinc-900"
+              }
+            >
+              <span
+                className={
+                  live
+                    ? "h-1.5 w-1.5 rounded-full bg-orange-500"
+                    : "h-1.5 w-1.5 rounded-full bg-zinc-400"
+                }
+              />
+              {live ? "Live" : "Offline"}
+            </span>
+            <span className="hidden rounded-full border border-zinc-200 bg-white px-2.5 py-1 text-xs text-zinc-500 sm:inline dark:border-white/10 dark:bg-zinc-900">
+              {visibleMessages.length} messages
+            </span>
+            {activeDmPeerId && (
+              <button
+                type="button"
+                onClick={() => setActiveDmPeerId(null)}
+                className="rounded-full border border-violet-300 bg-violet-50 px-2.5 py-1 text-xs font-medium text-violet-800 dark:border-violet-500/30 dark:bg-violet-500/10 dark:text-violet-200"
+              >
+                Exit DM
+              </button>
+            )}
+          </div>
+        </header>
+
+        <div className="flex min-h-0 flex-1">
+          <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+            <AgentChat
+              className="min-h-0 flex-1"
+              messages={chatMessages}
+              onSend={onSend}
+              status={participantId ? "ready" : "idle"}
+              disabled={!participantId}
+              error={error}
+              mentionables={mentionables}
+              bookmarkedIds={bookmarkedIds}
+              onBookmark={onBookmark}
+              onFork={onFork}
+              highlightMessageId={highlightMessageId}
+              modeLabel={
+                activeDmPeerId
+                  ? `DM · ${dmPeer?.name || "peer"}${
+                      dmPeer?.status === "online" ? " · online" : " · offline"
+                    }`
+                  : "Room · public"
+              }
+              placeholder={
+                activeDmPeerId
+                  ? `Private message to ${dmPeer?.name || "agent"}…`
+                  : "Message the room…  @all  ·  @agent  ·  attach files"
+              }
+              emptyState={
+                <div className="flex flex-col items-center gap-3 text-center">
+                  <img
+                    src={`${import.meta.env.BASE_URL}og-logo.png`}
+                    alt=""
+                    className="og-logo h-20 w-20"
+                  />
+                  <h3 className="text-base font-semibold tracking-tight text-zinc-700 dark:text-zinc-300">
+                    {activeDmPeerId ? "No DMs yet" : "Awaiting room traffic"}
+                  </h3>
+                  <p className="max-w-[340px] text-sm leading-relaxed text-zinc-500">
+                    {activeDmPeerId ? (
+                      <>
+                        Private thread with{" "}
+                        <strong>{dmPeer?.name || "agent"}</strong>. Only you two
+                        see these messages.
+                      </>
+                    ) : (
+                      <>
+                        Type <strong>@all</strong> to reach every agent.{" "}
+                        <strong>@name</strong> or click a participant to open a
+                        private DM. Hover messages to bookmark or fork.
+                      </>
+                    )}
+                  </p>
+                </div>
+              }
+              footerExtra={
+                <div className="flex w-full flex-wrap items-center justify-between gap-2 text-xs text-zinc-500">
+                  <span>
+                    {participantId
+                      ? `as ${displayName} (${displayRole}) · private DMs filtered from room · ⌘K search`
+                      : "Join a room to send"}
+                  </span>
+                </div>
+              }
+            />
+          </div>
+          {railOpen && (
+            <SideRail
+              participants={participants}
+              tasks={tasks}
+              artifacts={artifacts}
+              bookmarks={bookmarks}
+              events={events}
+              meId={participantId}
+              activeDmPeerId={activeDmPeerId}
+              onOpenDm={(peerId) => {
+                setActiveDmPeerId(peerId);
+                setLeftSection("dms");
+              }}
+              onJumpMessage={(id) => {
+                setActiveDmPeerId(null);
+                setHighlightMessageId(id);
+                setTimeout(() => setHighlightMessageId(null), 2500);
+              }}
+            />
+          )}
+        </div>
+      </main>
+
+      {showNewRoom && (
+        <NewRoomModal
+          createdBy={displayName}
+          onClose={() => setShowNewRoom(false)}
+          onCreated={async (r) => {
+            setShowNewRoom(false);
+            await refreshRooms();
+            await selectRoom(r.id);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function NewRoomModal({
+  createdBy,
+  onClose,
+  onCreated,
+}: {
+  createdBy: string;
+  onClose: () => void;
+  onCreated: (r: Room) => void;
+}) {
+  const [name, setName] = useState("");
+  const [goal, setGoal] = useState("");
+  const [path, setPath] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/65 backdrop-blur-sm">
+      <form
+        className="w-[min(420px,92vw)] space-y-3.5 rounded-2xl border border-zinc-200 bg-white p-5 shadow-2xl dark:border-white/10 dark:bg-zinc-900"
+        onSubmit={async (e) => {
+          e.preventDefault();
+          setBusy(true);
+          setErr("");
+          try {
+            const r = await api.createRoom({
+              name,
+              goal,
+              project_path: path || undefined,
+              created_by: createdBy || "human",
+            });
+            onCreated(r);
+          } catch (ex) {
+            setErr(ex instanceof Error ? ex.message : String(ex));
+          } finally {
+            setBusy(false);
+          }
+        }}
+      >
+        <h2 className="text-base font-semibold tracking-tight">Create room</h2>
+        <label className="block text-xs font-medium text-zinc-500">
+          Name
+          <input
+            required
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            className="field-input mt-1"
+            placeholder="feature-x"
+          />
+        </label>
+        <label className="block text-xs font-medium text-zinc-500">
+          Goal
+          <input
+            value={goal}
+            onChange={(e) => setGoal(e.target.value)}
+            className="field-input mt-1"
+            placeholder="Ship the thing together"
+          />
+        </label>
+        <label className="block text-xs font-medium text-zinc-500">
+          Project path
+          <input
+            value={path}
+            onChange={(e) => setPath(e.target.value)}
+            className="field-input mt-1"
+            placeholder="/path/to/repo"
+          />
+        </label>
+        {err && <p className="text-xs text-rose-500">{err}</p>}
+        <div className="flex justify-end gap-2 pt-1">
+          <button type="button" onClick={onClose} className="btn-ghost">
+            Cancel
+          </button>
+          <button type="submit" disabled={busy} className="btn-primary">
+            Create
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}

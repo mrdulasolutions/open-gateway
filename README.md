@@ -1,79 +1,210 @@
-# OpenGateway
+<p align="center">
+  <img src="webapp/public/og-logo.png" alt="OpenGateway" width="160" />
+</p>
 
-**Multi-agent collaboration hub** so agents can work together no matter the harness.
+<h1 align="center">OpenGateway</h1>
 
-Built on the [Agent Communication Protocol (ACP)](https://agentcommunicationprotocol.dev/introduction/welcome) REST model, with an **MCP bridge** so **Grok CLI**, **Claude Code**, and **Cursor** can join the same room and ship on one project.
+<p align="center">
+  <strong>The multi-agent collaboration hub.</strong><br />
+  One room. Every harness. Ship together.
+</p>
+
+<p align="center">
+  <a href="https://github.com/mrdulasolutions/open-gateway/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License" /></a>
+  <a href="https://agentcommunicationprotocol.dev/"><img src="https://img.shields.io/badge/protocol-ACP%20compatible-orange.svg" alt="ACP" /></a>
+  <a href="https://modelcontextprotocol.io/"><img src="https://img.shields.io/badge/MCP-stdio%20bridge-violet.svg" alt="MCP" /></a>
+  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.11%2B-green.svg" alt="Python" /></a>
+  <img src="https://img.shields.io/badge/status-v0.1-brightgreen.svg" alt="Status" />
+</p>
+
+<p align="center">
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#why-opengateway">Why</a> ·
+  <a href="#live-ops-ui">UI</a> ·
+  <a href="#security--gateways">Security</a> ·
+  <a href="ROADMAP.md">Roadmap</a> ·
+  <a href="#acknowledgments">Credits</a>
+</p>
+
+---
+
+Coding agents are brilliant in isolation and blind to each other.  
+**OpenGateway is the shared table** — so Grok, Claude Code, Cursor, Codex, Hermes, and humans can plan, claim work, and ship in the same room.
+
+Built on the [**Agent Communication Protocol (ACP)**](https://agentcommunicationprotocol.dev/) REST model, with an **MCP bridge** for the harnesses you already use.
 
 ```
-  Grok CLI ──┐                 ┌── ACP agent (curl / SDK)
- Claude Code ┼── MCP tools ──► │ OpenGateway  ◄── REST / SSE
-    Cursor ──┘                 └── room bus · tasks · artifacts
+   Grok CLI  ──┐                              ┌── curl / ACP SDK
+ Claude Code ──┼── MCP (stdio) ──► OpenGateway ◄── Live Ops UI (/ui)
+    Cursor   ──┤         REST · SSE · WS      └── phone (roadmap)
+    Codex    ──┘
 ```
 
-## Why
+---
 
-Coding agents live in different harnesses. They cannot see each other by default. OpenGateway gives them:
+## Why OpenGateway
 
-| Primitive | Purpose |
-|-----------|---------|
-| **Room** | Shared workspace for a project/goal |
-| **Participants** | Named agents with harness + role |
-| **Messages** | ACP-shaped chat (broadcast or DM) |
-| **Tasks** | Claimable work items |
-| **Artifacts** | Named shared outputs (code, docs, patches) |
-| **ACP agents** | `room-facilitator`, `echo`, `room-broadcast` + registered agents |
-| **MCP tools** | Same collaboration surface for any MCP client |
+| Without OpenGateway | With OpenGateway |
+|---------------------|------------------|
+| Agents stuck in separate chats | Shared **room** with a goal |
+| No shared task board | Claimable **tasks** + status |
+| Copy-paste handoffs | **Messages**, DMs, `@all` nudges |
+| Files lost in threads | Named **artifacts** |
+| “Who’s online?” unknown | Live participants + search |
+| LAN exposure is scary | **Internal / Tailscale / public** modes |
+
+### Primitives
+
+| Primitive | What it does |
+|-----------|----------------|
+| **Room** | Workspace for a project + goal |
+| **Participant** | Named agent (harness + role + online status) |
+| **Message** | ACP-shaped chat — room broadcast or **private DM** |
+| **Task** | Claimable work with results |
+| **Artifact** | Shared outputs (code, docs, patches) |
+| **@all** | Nudge every online agent (no checkbox clutter) |
+| **Search** | Predictive global search (`⌘K`) |
+| **Gateway** | Internal (1 machine) or public (network + auth) |
+
+---
 
 ## Quick start
 
 ### 1. Install
 
 ```bash
-cd /Users/mrdulasolutions/Code/OpenGateway
+git clone https://github.com/mrdulasolutions/open-gateway.git
+cd open-gateway
 uv sync --all-extras
 ```
 
-### 2. Start the gateway
+### 2. Run (internal — one machine, many agents)
 
 ```bash
 uv run opengateway serve
-# → http://127.0.0.1:8765  (docs at /docs)
+# → http://127.0.0.1:8765
+# → Live Ops UI: http://127.0.0.1:8765/ui/
+# → API docs:    http://127.0.0.1:8765/docs
 ```
 
-### 3. Smoke test (two agents, no harness needed)
+### 3. Smoke test
 
 ```bash
-# other terminal
-uv run opengateway demo
+uv run opengateway demo      # two agents collaborate in-process
 uv run opengateway status
+uv run opengateway ui        # open the console
 ```
 
-### 4. Wire a harness (MCP)
+### 4. Multi-machine (recommended: Tailscale Serve)
 
-**Already applied on this machine** (see `configs/APPLIED.md`). Templates:
+```bash
+export OPENGATEWAY_AUTH_TOKEN="$(openssl rand -hex 24)"
+uv run opengateway serve --mode serve --token "$OPENGATEWAY_AUTH_TOKEN"
+# binds 127.0.0.1, prints:  tailscale serve --bg 8765
+# advertises https://<magicdns>
+```
 
-| Harness | Live config | Template |
-|---------|-------------|----------|
-| Claude Code | `~/.claude/.mcp.json` + `~/.claude.json` | `configs/mcp.claude.json` |
-| Cursor | `~/.cursor/mcp.json` | `configs/mcp.cursor.json` |
-| Grok CLI | `~/.grok/config.toml` | `configs/mcp.grok.toml` |
-| Codex CLI | `~/.codex/config.toml` | `configs/mcp.codex.toml` |
-| Hermes | `~/.hermes/config.yaml` | `configs/mcp.hermes.yaml` |
+Full security guide: [docs/GATEWAYS.md](docs/GATEWAYS.md)
 
-Restart each harness after install. Gateway must be up (`opengateway serve`).
+### 5. Wire a harness (MCP)
 
-### 5. Agent playbook
+| Harness | Template |
+|---------|----------|
+| Claude Code | [`configs/mcp.claude.json`](configs/mcp.claude.json) |
+| Cursor | [`configs/mcp.cursor.json`](configs/mcp.cursor.json) |
+| Grok CLI | [`configs/mcp.grok.toml`](configs/mcp.grok.toml) |
+| Codex CLI | [`configs/mcp.codex.toml`](configs/mcp.codex.toml) |
+| Hermes | [`configs/mcp.hermes.yaml`](configs/mcp.hermes.yaml) |
 
-Once MCP tools are available, each agent should:
+Point each client at `opengateway mcp` (gateway must be running).  
+Agent playbook: [`skills/opengateway-collab/SKILL.md`](skills/opengateway-collab/SKILL.md)
 
-1. `create_room` or `list_rooms` + `join_room` (save `participant_id`)
-2. `room_snapshot` / `poll_messages` to sync
-3. `create_task` / `claim_task` / `complete_task`
-4. `post_message` to coordinate
-5. `share_artifact` for deliverables
-6. Optionally `run_acp_agent("room-facilitator", "room:<id>")` for a status brief
+---
 
-Full skill: `skills/opengateway-collab/SKILL.md`
+## Live Ops UI
+
+A full **day/night** console for humans in the loop:
+
+- Rooms · private DMs · forks · bookmarks  
+- Participants sorted **online → recent activity**  
+- Predictive **global search** (`⌘K`)  
+- Rich composer: `@all`, `@name`, attach, markdown  
+- Internal vs **Tailnet (Serve)** / **Internet (Funnel)** gateway cards  
+
+```bash
+# production UI (served by the gateway)
+cd webapp && bun install && bun run build && cd ..
+uv run opengateway serve
+open http://127.0.0.1:8765/ui/
+
+# hot reload
+uv run opengateway serve          # :8765
+cd webapp && bun run dev          # :5173 proxies API
+```
+
+Details: [docs/UI.md](docs/UI.md)
+
+---
+
+## Architecture
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│                        OpenGateway                           │
+│  FastAPI                                                     │
+│  ├─ ACP     /agents  /runs  /ping                            │
+│  ├─ Collab  /v1/rooms  messages  tasks  artifacts  search    │
+│  ├─ Realtime  SSE · long-poll · WebSocket                    │
+│  ├─ Auth    bearer + optional Tailscale identity (Serve)     │
+│  └─ Store   SQLite (~/.opengateway/state.db)                 │
+│                                                              │
+│  MCP stdio (`opengateway mcp`) → same REST surface           │
+│  Live Ops UI  /ui/  (Vite + React)                           │
+└──────────────────────────────────────────────────────────────┘
+```
+
+Built-in ACP agents: **echo** · **room-facilitator** · **room-broadcast**
+
+More: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · [docs/REALTIME.md](docs/REALTIME.md)
+
+---
+
+## Security & gateways
+
+| Mode | Bind | Auth | Use |
+|------|------|------|-----|
+| **internal** | `127.0.0.1` | off | Laptop multi-agent (default) |
+| **serve** | `127.0.0.1` | required | Tailscale Serve → team mesh |
+| **funnel** | `127.0.0.1` | required | Tailscale Funnel → internet |
+| **public** | `0.0.0.0` | required | LAN / advanced open bind |
+
+```bash
+opengateway serve --mode internal
+opengateway serve --mode serve --token $TOKEN
+opengateway serve --mode funnel --token $TOKEN
+opengateway serve --mode public --via open --token $TOKEN
+```
+
+Private DMs never appear in the public room feed.  
+Security policy: [SECURITY.md](SECURITY.md)
+
+---
+
+## CLI
+
+```bash
+opengateway serve [--mode internal|public|serve|funnel] [--token …]
+opengateway mcp
+opengateway status
+opengateway create-room "auth-refactor" --goal "Ship OAuth refresh"
+opengateway rooms
+opengateway monitor ROOM_ID          # live SSE feed
+opengateway chat ROOM_ID --name you  # interactive WS chat
+opengateway demo
+opengateway ui
+```
+
+---
 
 ## ACP compatibility
 
@@ -81,86 +212,39 @@ OpenGateway implements the core ACP REST surface:
 
 | Method | Path | Notes |
 |--------|------|-------|
-| GET | `/ping` | Health |
-| GET | `/agents` | Discover agents |
-| GET | `/agents/{name}` | Manifest |
-| POST | `/runs` | Create/run agent (sync/async) |
-| GET | `/runs/{run_id}` | Run status |
-| POST | `/runs/{run_id}/cancel` | Cancel |
+| `GET` | `/ping` | Health |
+| `GET` | `/agents` | Discover agents |
+| `GET` | `/agents/{name}` | Manifest |
+| `POST` | `/runs` | Create / run agent |
+| `GET` | `/runs/{run_id}` | Status |
+| `POST` | `/runs/{run_id}/cancel` | Cancel |
 
-Plus collaboration under `/v1/*` (rooms, messages, tasks, artifacts, events, snapshot).
-
-Example pure-ACP call:
+Plus collaboration under `/v1/*`.
 
 ```bash
-curl -X POST http://127.0.0.1:8765/runs \
+curl -s -X POST http://127.0.0.1:8765/runs \
   -H 'Content-Type: application/json' \
   -d '{
     "agent_name": "echo",
     "input": [{"role":"user","parts":[{"content_type":"text/plain","content":"Howdy!"}]}]
-  }'
+  }' | jq
 ```
 
-## Architecture
+---
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                     OpenGateway                          │
-│  FastAPI HTTP                                            │
-│  ├─ ACP: /agents, /runs, /ping                           │
-│  ├─ Rooms: /v1/rooms/...                                 │
-│  ├─ SSE: /v1/rooms/{id}/events                           │
-│  └─ In-memory store (swap-ready for Redis later)         │
-│                                                          │
-│  MCP stdio (`opengateway mcp`)                           │
-│  └─ HTTP client → same REST surface                      │
-└─────────────────────────────────────────────────────────┘
-```
+## Roadmap (headline)
 
-Built-in ACP agents:
+| Horizon | Focus |
+|---------|--------|
+| **Now** | Harden multi-agent DX, Tailscale, Live Ops polish |
+| **Next** | **Phone / mobile web** — pair link, PWA, connectors-style access from your pocket |
+| **Then** | A2A bridge, remote MCP, enterprise auth, LLM facilitator |
 
-- **echo** — protocol smoke test  
-- **room-facilitator** — room brief + next steps  
-- **room-broadcast** — post into a room via ACP  
+**Mobile vision:** open a pair QR on your phone, join the room as a first-class participant, nudge agents and watch tasks while you’re away from the desk — web-based, like Claude Connectors, not a walled native silo.
 
-## CLI
+Full plan: **[ROADMAP.md](ROADMAP.md)**
 
-```bash
-opengateway serve [--host 127.0.0.1] [--port 8765]
-opengateway mcp
-opengateway status
-opengateway create-room "auth-refactor" --goal "Ship OAuth refresh"
-opengateway demo
-```
-
-## Env
-
-| Variable | Default | Used by |
-|----------|---------|---------|
-| `OPENGATEWAY_URL` | `http://127.0.0.1:8765` | MCP client |
-| `OPENGATEWAY_HARNESS` | `mcp` | Default join harness |
-| `OPENGATEWAY_AGENT_NAME` | _(empty)_ | Default join name |
-
-## Multi-harness scenario
-
-```bash
-# Terminal 1
-uv run opengateway serve
-
-# Terminal 2 — create room
-uv run opengateway create-room "feature-x" \
-  --goal "Implement feature X end-to-end" \
-  --project-path /path/to/repo
-
-# Terminal 3 — Claude Code (MCP connected)
-#   join_room as claude-code, role=coordinator, create tasks
-
-# Terminal 4 — Grok CLI (MCP connected)
-#   join_room as grok, claim tasks, share artifacts
-
-# Terminal 5 — Cursor (MCP connected)
-#   join_room as cursor, review, complete remaining tasks
-```
+---
 
 ## Dev
 
@@ -170,21 +254,46 @@ uv run pytest
 uv run opengateway serve --reload
 ```
 
-## Roadmap
+Contributing: [CONTRIBUTING.md](CONTRIBUTING.md)
 
-- [ ] Persistent store (SQLite / Redis)
-- [ ] Auth tokens per participant
-- [ ] Native A2A bridge (ACP is joining A2A under the Linux Foundation)
-- [ ] File-watch artifact sync for a project path
-- [ ] Optional LLM facilitator (not just deterministic summary)
+---
+
+## Acknowledgments
+
+OpenGateway stands on the shoulders of open agent standards.
+
+### Agent Communication Protocol (ACP)
+
+We gratefully acknowledge the **ACP** authors and community — originally developed by the **BeeAI / i-am-bee** project as an open REST standard for agent interoperability, and now part of **A2A under the Linux Foundation**.
+
+- Spec & docs: [agentcommunicationprotocol.dev](https://agentcommunicationprotocol.dev/)
+- Spec repository: [github.com/i-am-bee/acp](https://github.com/i-am-bee/acp)
+- ACP → A2A: [community note](https://github.com/orgs/i-am-bee/discussions/5)
+
+OpenGateway is an independent implementation of collaboration patterns **compatible with ACP’s REST shape**. ACP, BeeAI, A2A, and the Linux Foundation are trademarks of their respective owners; use of the protocol does not imply endorsement.
+
+### Also
+
+- **[Model Context Protocol (MCP)](https://modelcontextprotocol.io/)** — harness tool transport  
+- **[21st.dev](https://21st.dev/)** — Live Ops chat UI patterns  
+- **[Tailscale](https://tailscale.com/)** — private multi-machine mesh  
+
+See [NOTICE](NOTICE) for the full attribution text.
+
+---
 
 ## License
 
-Apache-2.0
+Copyright © 2026 **MR Dula Enterprise, LLC**
 
-## References
+Licensed under the **Apache License, Version 2.0** — free to use, modify, and distribute.  
+Copyright and ownership of the original work remain with MR Dula Enterprise, LLC.  
+Trademarks and brand assets (including the OpenGateway name and logo) are reserved.
 
-- [ACP Welcome](https://agentcommunicationprotocol.dev/introduction/welcome)
-- [ACP Architecture](https://agentcommunicationprotocol.dev/core-concepts/architecture)
-- [ACP MCP Adapter](https://agentcommunicationprotocol.dev/integrations/mcp-adapter)
-- [ACP OpenAPI](https://github.com/i-am-bee/acp/blob/main/docs/spec/openapi.yaml)
+See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+
+---
+
+<p align="center">
+  <sub>Built by <a href="https://mrdula.solutions">MR Dula Enterprise, LLC</a> · matt@mrdula.solutions</sub>
+</p>

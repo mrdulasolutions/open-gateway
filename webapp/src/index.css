@@ -1,0 +1,166 @@
+@import "tailwindcss";
+@plugin "@tailwindcss/typography";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --font-sans: "Outfit", "Sora", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+
+  /* Logo-inspired accents: orange + subtle purple */
+  --color-og-orange: #f97316;
+  --color-og-orange-bright: #fb923c;
+  --color-og-orange-deep: #ea580c;
+  --color-og-purple: #a855f7;
+  --color-og-purple-soft: #c084fc;
+  --color-og-magenta: #c026d3;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+html {
+  font-size: 16px;
+}
+
+body {
+  font-family: var(--font-sans);
+  font-size: 1rem;
+  line-height: 1.55;
+  background: #fafafa;
+  color: #18181b;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+html.dark body,
+.dark body {
+  background: #09090b;
+  color: #fafafa;
+}
+
+/* Primary action — orange gradient (logo fire) */
+.btn-primary,
+.og-btn-primary {
+  border-radius: 0.5rem;
+  border: none;
+  background: linear-gradient(180deg, #fb923c, #ea580c);
+  padding: 0.55rem 0.9rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: #431407;
+  cursor: pointer;
+  font-family: inherit;
+  box-shadow: 0 4px 14px rgba(249, 115, 22, 0.25);
+}
+.btn-primary:disabled,
+.og-btn-primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.field-input {
+  width: 100%;
+  border-radius: 0.5rem;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  background: #fff;
+  padding: 0.55rem 0.7rem;
+  font-size: 0.9375rem;
+  color: #18181b;
+  outline: none;
+  font-family: inherit;
+}
+.dark .field-input {
+  border-color: rgba(255, 255, 255, 0.1);
+  background: #09090b;
+  color: #fafafa;
+}
+.field-input:focus {
+  border-color: rgba(249, 115, 22, 0.55);
+  box-shadow: 0 0 0 3px rgba(168, 85, 247, 0.12);
+}
+
+.btn-ghost {
+  border-radius: 0.5rem;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  background: transparent;
+  padding: 0.55rem 0.9rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: #52525b;
+  cursor: pointer;
+  font-family: inherit;
+}
+.dark .btn-ghost {
+  border-color: rgba(255, 255, 255, 0.1);
+  color: #a1a1aa;
+}
+.btn-ghost:hover {
+  background: rgba(0, 0, 0, 0.04);
+}
+.dark .btn-ghost:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+/* Soft logo glow for brand mark (no solid fill behind logo) */
+.og-logo {
+  background: transparent;
+  object-fit: contain;
+  filter: drop-shadow(0 0 12px rgba(249, 115, 22, 0.35))
+    drop-shadow(0 0 18px rgba(168, 85, 247, 0.25));
+}
+
+.og-accent-text {
+  background: linear-gradient(120deg, #f97316, #c026d3 55%, #a855f7);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.og-composer-shell {
+  border-radius: 1.15rem;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  background: linear-gradient(
+      135deg,
+      rgba(249, 115, 22, 0.06),
+      rgba(168, 85, 247, 0.05) 50%,
+      transparent 70%
+    ),
+    #fafafa;
+  box-shadow: 0 8px 28px rgba(15, 15, 20, 0.06);
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.dark .og-composer-shell {
+  border-color: rgba(255, 255, 255, 0.1);
+  background: linear-gradient(
+      135deg,
+      rgba(249, 115, 22, 0.08),
+      rgba(168, 85, 247, 0.07) 45%,
+      transparent 75%
+    ),
+    rgba(24, 24, 27, 0.95);
+  box-shadow: 0 10px 32px rgba(0, 0, 0, 0.35);
+}
+.og-composer-shell:focus-within {
+  border-color: rgba(249, 115, 22, 0.45);
+  box-shadow: 0 0 0 3px rgba(168, 85, 247, 0.14),
+    0 10px 28px rgba(249, 115, 22, 0.08);
+}
+
+.og-user-bubble {
+  border: 1px solid rgba(249, 115, 22, 0.28);
+  background: linear-gradient(
+    145deg,
+    rgba(249, 115, 22, 0.16),
+    rgba(168, 85, 247, 0.1)
+  );
+  color: #431407;
+}
+.dark .og-user-bubble {
+  color: #fff7ed;
+  border-color: rgba(249, 115, 22, 0.3);
+}

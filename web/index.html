@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>OpenGateway · Live Ops</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;650;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/ui/css/app.css" />
+  <link rel="icon" type="image/png" href="/ui/assets/og-logo.png" />
+  <link rel="apple-touch-icon" href="/ui/assets/og-logo.png" />
+</head>
+<body>
+  <div id="app" class="shell">
+    <!-- Sidebar: MonoChat + Dashboard Sidebar patterns -->
+    <aside class="sidebar">
+      <div class="brand">
+        <img
+          class="brand-logo"
+          src="/ui/assets/og-logo.png"
+          width="44"
+          height="44"
+          alt="OpenGateway"
+        />
+        <div>
+          <div class="brand-title">OpenGateway</div>
+          <div class="brand-sub">Multi-agent live ops</div>
+        </div>
+      </div>
+
+      <div class="status-card" id="gateway-status">
+        <div class="status-row">
+          <span class="dot" id="status-dot"></span>
+          <span id="status-text">connecting…</span>
+        </div>
+        <div class="status-meta" id="status-meta">—</div>
+      </div>
+
+      <div class="panel-label">Rooms</div>
+      <div class="room-list" id="room-list">
+        <div class="empty-hint">No rooms yet</div>
+      </div>
+
+      <div class="sidebar-actions">
+        <button type="button" class="btn btn-ghost" id="btn-refresh" title="Refresh">Refresh</button>
+        <button type="button" class="btn btn-primary" id="btn-new-room">New room</button>
+      </div>
+
+      <div class="sidebar-foot">
+        <div class="panel-label">Your identity</div>
+        <label class="field">
+          <span>Display name</span>
+          <input id="human-name" value="human" maxlength="40" autocomplete="nickname" />
+        </label>
+        <div class="pid" id="human-pid">not joined</div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div class="topbar-left">
+          <h1 id="room-title">Select a room</h1>
+          <p id="room-goal" class="muted">Agent communication over ACP + MCP</p>
+        </div>
+        <div class="topbar-right">
+          <span class="badge" id="live-badge"><span class="bdot"></span><span class="blabel">Offline</span></span>
+          <span class="badge badge-dim" id="msg-count">0 messages</span>
+          <span class="badge badge-dim" id="part-count">0 agents</span>
+        </div>
+      </header>
+
+      <div class="workspace">
+        <!-- Agent Chat shell: scroll + composer -->
+        <section class="chat-panel">
+          <div class="chat-scroll" id="chat-scroll">
+            <div class="chat-empty" id="chat-empty">
+              <img class="empty-logo" src="/ui/assets/og-logo.png" width="72" height="72" alt="" />
+              <h3>Awaiting room traffic</h3>
+              <p>Select a room to stream multi-agent messages in realtime. Say “everyone …” to nudge all agents.</p>
+            </div>
+            <div class="messages" id="messages" hidden></div>
+          </div>
+
+          <form class="composer" id="composer">
+            <div class="composer-meta">
+              <span id="composer-hint">Join the room to send</span>
+              <div class="composer-toggles">
+                <label class="check" title="DM + task each online agent">
+                  <input type="checkbox" id="nudge-all" checked />
+                  Nudge all agents
+                </label>
+                <label class="check">
+                  <input type="checkbox" id="auto-scroll" checked />
+                  Auto-scroll
+                </label>
+              </div>
+            </div>
+            <div class="composer-row">
+              <div class="composer-box">
+                <textarea
+                  id="composer-input"
+                  rows="2"
+                  placeholder="Message the room… try “everyone tell me a joke”"
+                  disabled
+                ></textarea>
+              </div>
+              <button type="submit" class="btn btn-primary btn-send" id="btn-send" disabled>Send</button>
+            </div>
+          </form>
+        </section>
+
+        <aside class="rail">
+          <div class="rail-block">
+            <div class="panel-label">Participants</div>
+            <ul class="entity-list" id="participants"></ul>
+          </div>
+          <div class="rail-block">
+            <div class="panel-label">Tasks</div>
+            <ul class="entity-list" id="tasks"></ul>
+          </div>
+          <div class="rail-block">
+            <div class="panel-label">Artifacts</div>
+            <ul class="entity-list" id="artifacts"></ul>
+          </div>
+          <div class="rail-block">
+            <div class="panel-label">Event log</div>
+            <div class="event-log" id="event-log"></div>
+          </div>
+        </aside>
+      </div>
+    </main>
+  </div>
+
+  <dialog id="modal-room" class="modal">
+    <form method="dialog" id="form-new-room">
+      <h2>Create room</h2>
+      <label class="field">
+        <span>Name</span>
+        <input name="name" required placeholder="feature-x" />
+      </label>
+      <label class="field">
+        <span>Goal</span>
+        <input name="goal" placeholder="Ship the thing together" />
+      </label>
+      <label class="field">
+        <span>Project path</span>
+        <input name="project_path" placeholder="/path/to/repo" />
+      </label>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost" id="btn-cancel-room">Cancel</button>
+        <button type="submit" class="btn btn-primary">Create</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script>
+    window.OPENGATEWAY_API = window.OPENGATEWAY_API || "";
+  </script>
+  <script src="/ui/js/app.js" type="module"></script>
+</body>
+</html>

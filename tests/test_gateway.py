@@ -11,7 +11,8 @@ from opengateway.store import Store
 
 @pytest.fixture
 def store() -> Store:
-    return Store()
+    # Isolated memory store for unit tests
+    return Store(db_path=None)
 
 
 @pytest.fixture
@@ -20,6 +21,34 @@ async def client(store: Store):
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         yield ac
+
+
+@pytest.mark.asyncio
+async def test_sqlite_survives_restart(tmp_path):
+    from opengateway.models import Participant, Room, RoomMessage, text_message
+
+    db = tmp_path / "state.db"
+    s1 = Store(db_path=db)
+    room = await s1.create_room(Room(name="persist-me", goal="survive reboot", created_by="test"))
+    room_id = room.id
+    p = await s1.join_room(room_id, Participant(name="alice", harness="grok"))
+    await s1.post_message(
+        RoomMessage(
+            room_id=room_id,
+            from_participant_id=p.id,
+            from_name="alice",
+            message=text_message("agent/alice", "hello durable world"),
+        )
+    )
+
+    # New process / new Store, same file
+    s2 = Store(db_path=db)
+    assert room_id in s2.rooms
+    assert s2.rooms[room_id].name == "persist-me"
+    assert len(s2.messages[room_id]) == 1
+    assert s2.messages[room_id][0].message.text() == "hello durable world"
+    # Participants reloaded offline
+    assert s2.participants[p.id].status.value == "offline"
 
 
 @pytest.mark.asyncio
@@ -56,6 +85,118 @@ async def test_acp_echo_run(client: AsyncClient):
     body = r.json()
     assert body["status"] == "completed"
     assert body["output"][0]["parts"][0]["content"] == "Howdy!"
+
+
+@pytest.mark.asyncio
+async def test_rename_participant_in_place(client: AsyncClient):
+    room = (await client.post("/v1/rooms", json={"name": "rename", "goal": "id stable"})).json()
+    room_id = room["id"]
+    p = (
+        await client.post(
+            f"/v1/rooms/{room_id}/join",
+            json={"name": "human", "harness": "human", "role": "observer"},
+        )
+    ).json()
+    pid = p["id"]
+    updated = (
+        await client.patch(
+            f"/v1/rooms/{room_id}/participants/{pid}",
+            json={"name": "mark"},
+        )
+    ).json()
+    assert updated["id"] == pid
+    assert updated["name"] == "mark"
+    listed = (await client.get(f"/v1/rooms/{room_id}/participants")).json()["participants"]
+    assert len(listed) == 1
+    assert listed[0]["name"] == "mark"
+    assert listed[0]["id"] == pid
+
+
+@pytest.mark.asyncio
+async def test_everyone_nudges_all_agents(client: AsyncClient):
+    room = (await client.post("/v1/rooms", json={"name": "jokes", "goal": "multi"})).json()
+    room_id = room["id"]
+    human = (
+        await client.post(
+            f"/v1/rooms/{room_id}/join",
+            json={"name": "mark", "harness": "human"},
+        )
+    ).json()
+    a = (
+        await client.post(
+            f"/v1/rooms/{room_id}/join",
+            json={"name": "alice", "harness": "claude-code"},
+        )
+    ).json()
+    b = (
+        await client.post(
+            f"/v1/rooms/{room_id}/join",
+            json={"name": "grok", "harness": "grok"},
+        )
+    ).json()
+
+    res = (
+        await client.post(
+            f"/v1/rooms/{room_id}/messages",
+            json={
+                "from_participant_id": human["id"],
+                "content": "everyone tell me a joke",
+            },
+        )
+    ).json()
+    assert res["nudge_count"] == 2
+    names = {n["name"] for n in res["nudged"]}
+    assert names == {"alice", "grok"}
+
+    tasks = (await client.get(f"/v1/rooms/{room_id}/tasks")).json()["tasks"]
+    assert len(tasks) == 2
+    # Each agent should see a DM nudge when filtering for themselves
+    for agent in (a, b):
+        inbox = (
+            await client.get(
+                f"/v1/rooms/{room_id}/messages",
+                params={"for_participant": agent["id"]},
+            )
+        ).json()["messages"]
+        assert any("@nudge" in (m["message"]["parts"][0]["content"]) for m in inbox)
+
+
+@pytest.mark.asyncio
+async def test_long_poll_wait_for_message(client: AsyncClient, store: Store):
+    import asyncio
+
+    room = (await client.post("/v1/rooms", json={"name": "im", "goal": "chat"})).json()
+    room_id = room["id"]
+    a = (
+        await client.post(
+            f"/v1/rooms/{room_id}/join",
+            json={"name": "a", "harness": "grok"},
+        )
+    ).json()
+    b = (
+        await client.post(
+            f"/v1/rooms/{room_id}/join",
+            json={"name": "b", "harness": "claude-code"},
+        )
+    ).json()
+
+    async def late_post():
+        await asyncio.sleep(0.3)
+        await client.post(
+            f"/v1/rooms/{room_id}/messages",
+            json={"from_participant_id": b["id"], "content": "ping from b"},
+        )
+
+    task = asyncio.create_task(late_post())
+    r = await client.get(
+        f"/v1/rooms/{room_id}/messages/wait",
+        params={"timeout": 5, "for_participant": a["id"]},
+    )
+    await task
+    assert r.status_code == 200
+    body = r.json()
+    assert body["timed_out"] is False
+    assert any("ping from b" in (m["message"]["parts"][0]["content"]) for m in body["messages"])
 
 
 @pytest.mark.asyncio
@@ -129,3 +270,207 @@ async def test_two_agents_collaborate(client: AsyncClient):
     assert "alice" in text
     assert "bob" in text
     assert "pair" in text
+
+
+@pytest.mark.asyncio
+async def test_at_all_nudges_like_everyone(client: AsyncClient):
+    room = (await client.post("/v1/rooms", json={"name": "atall", "goal": "broadcast"})).json()
+    room_id = room["id"]
+    human = (
+        await client.post(
+            f"/v1/rooms/{room_id}/join",
+            json={"name": "ops", "harness": "human"},
+        )
+    ).json()
+    await client.post(
+        f"/v1/rooms/{room_id}/join",
+        json={"name": "worker", "harness": "grok"},
+    )
+    res = (
+        await client.post(
+            f"/v1/rooms/{room_id}/messages",
+            json={
+                "from_participant_id": human["id"],
+                "content": "@all stand by for deploy",
+            },
+        )
+    ).json()
+    assert res["nudge_count"] == 1
+    assert res["nudged"][0]["name"] == "worker"
+
+
+@pytest.mark.asyncio
+async def test_global_search_rooms_and_type_filter(client: AsyncClient):
+    room = (
+        await client.post(
+            "/v1/rooms",
+            json={"name": "search-lab", "goal": "find me later"},
+        )
+    ).json()
+    room_id = room["id"]
+    p = (
+        await client.post(
+            f"/v1/rooms/{room_id}/join",
+            json={"name": "finder", "harness": "grok"},
+        )
+    ).json()
+    await client.post(
+        f"/v1/rooms/{room_id}/messages",
+        json={"from_participant_id": p["id"], "content": "needle in haystack phrase"},
+    )
+    await client.post(
+        f"/v1/rooms/{room_id}/tasks",
+        json={"title": "ship search API", "created_by": p["id"]},
+    )
+
+    r = await client.get("/v1/search", params={"q": "search-lab"})
+    assert r.status_code == 200
+    hits = r.json()["hits"]
+    assert any(h["type"] == "room" and h["title"] == "search-lab" for h in hits)
+
+    r2 = await client.get("/v1/search", params={"q": "needle"})
+    assert any(h["type"] == "message" for h in r2.json()["hits"])
+
+    r3 = await client.get("/v1/search", params={"q": "type:task ship"})
+    body = r3.json()
+    assert body.get("parsed", {}).get("type") == "task"
+    assert any(h["type"] == "task" for h in body["hits"])
+
+
+@pytest.mark.asyncio
+async def test_gateways_list_includes_self(client: AsyncClient):
+    r = await client.get("/v1/gateways")
+    assert r.status_code == 200
+    body = r.json()
+    assert "gateways" in body
+    assert any(g.get("is_self") for g in body["gateways"])
+    assert "tips" in body
+    assert "tailscale" in body["tips"]
+
+
+@pytest.mark.asyncio
+async def test_public_mode_requires_auth():
+    from opengateway.config import GatewayConfig, GatewayMode
+
+    store = Store(db_path=None)
+    cfg = GatewayConfig(
+        mode=GatewayMode.PUBLIC,
+        host="0.0.0.0",
+        auth_token="secret-token-xyz",
+        require_auth=True,
+        network="public",
+        name="test-public",
+    )
+    app = create_app(store, config=cfg)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        # Health stays open
+        assert (await ac.get("/ping")).status_code == 200
+        # API locked
+        r = await ac.get("/v1/rooms")
+        assert r.status_code == 401
+        # Bearer works
+        r2 = await ac.get(
+            "/v1/rooms",
+            headers={"Authorization": "Bearer secret-token-xyz"},
+        )
+        assert r2.status_code == 200
+        # Query token works (SSE-style)
+        r3 = await ac.get("/v1/rooms", params={"token": "secret-token-xyz"})
+        assert r3.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_dm_is_private_and_lists_peer_status(client: AsyncClient):
+    room = (await client.post("/v1/rooms", json={"name": "dm-room", "goal": "private"})).json()
+    room_id = room["id"]
+    a = (
+        await client.post(
+            f"/v1/rooms/{room_id}/join",
+            json={"name": "alice", "harness": "human"},
+        )
+    ).json()
+    b = (
+        await client.post(
+            f"/v1/rooms/{room_id}/join",
+            json={"name": "bob", "harness": "grok", "role": "contributor"},
+        )
+    ).json()
+    # Private DM
+    dm = (
+        await client.post(
+            f"/v1/rooms/{room_id}/messages",
+            json={
+                "from_participant_id": a["id"],
+                "to_participant_id": b["id"],
+                "content": "secret hello",
+            },
+        )
+    ).json()
+    assert dm["to_participant_id"] == b["id"]
+
+    # for_participant=a sees DM; unscoped list includes it but UI filters public
+    for_a = (
+        await client.get(
+            f"/v1/rooms/{room_id}/messages",
+            params={"for_participant": a["id"]},
+        )
+    ).json()["messages"]
+    assert any("secret hello" in (m["message"]["parts"][0]["content"]) for m in for_a)
+
+    threads = (
+        await client.get(
+            f"/v1/rooms/{room_id}/dms",
+            params={"participant_id": a["id"]},
+        )
+    ).json()["threads"]
+    assert len(threads) == 1
+    assert threads[0]["peer_id"] == b["id"]
+    assert threads[0]["peer_status"] in {"online", "offline"}
+    assert threads[0]["peer_name"] == "bob"
+
+    # Participants sorted online-first
+    people = (await client.get(f"/v1/rooms/{room_id}/participants")).json()["participants"]
+    assert people[0]["status"] == "online"
+
+
+@pytest.mark.asyncio
+async def test_tailscale_identity_headers_on_localhost():
+    from opengateway.config import GatewayConfig, GatewayMode
+
+    store = Store(db_path=None)
+    cfg = GatewayConfig(
+        mode=GatewayMode.PUBLIC,
+        host="127.0.0.1",
+        auth_token="secret-token-xyz",
+        require_auth=True,
+        network="tailscale",
+        trust_tailscale_identity=True,
+        name="serve",
+    )
+    app = create_app(store, config=cfg)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        assert (await ac.get("/v1/rooms")).status_code == 401
+        ok = await ac.get(
+            "/v1/rooms",
+            headers={"Tailscale-User-Login": "matt@example.com"},
+        )
+        assert ok.status_code == 200
+
+
+def test_serve_mode_binds_localhost():
+    import os
+    from opengateway.config import load_gateway_config
+
+    for k in list(os.environ):
+        if k.startswith("OPENGATEWAY_"):
+            del os.environ[k]
+    os.environ["OPENGATEWAY_MODE"] = "serve"
+    os.environ["OPENGATEWAY_AUTH_TOKEN"] = "tok"
+    os.environ["OPENGATEWAY_PORT"] = "8765"
+    cfg = load_gateway_config()
+    assert cfg.host == "127.0.0.1"
+    assert cfg.network == "tailscale"
+    assert cfg.serve_hint and "tailscale serve" in cfg.serve_hint
+    assert cfg.require_auth is True
