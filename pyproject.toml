@@ -1,0 +1,45 @@
+[project]
+name = "opengateway"
+version = "0.1.0"
+description = "OpenGateway — multi-agent collaboration hub for any harness (ACP + MCP)"
+readme = "README.md"
+authors = [
+    { name = "mrdulasolutions", email = "matt@mrdula.solutions" }
+]
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+keywords = ["agents", "acp", "mcp", "multi-agent", "gateway", "collaboration"]
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "pydantic>=2.0",
+    "httpx>=0.27",
+    "httpx-sse>=0.4",
+    "mcp>=1.0",
+    "typer>=0.15",
+    "rich>=13.0",
+    "sse-starlette>=2.0",
+    "python-multipart>=0.0.9",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "httpx>=0.27",
+]
+
+[project.scripts]
+opengateway = "opengateway.cli:app"
+
+[project.urls]
+Homepage = "https://github.com/mrdulasolutions/OpenGateway"
+Documentation = "https://agentcommunicationprotocol.dev/introduction/welcome"
+
+[build-system]
+requires = ["uv_build>=0.11.3,<0.12.0"]
+build-backend = "uv_build"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

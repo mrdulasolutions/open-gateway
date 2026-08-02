@@ -1,0 +1,19 @@
+# Add this to ~/.grok/config.toml (or project .grok/config.toml)
+# Then restart Grok CLI so OpenGateway tools appear.
+
+[mcp_servers.opengateway]
+command = "/Users/mrdulasolutions/.local/bin/uv"
+args = [
+  "run",
+  "--directory",
+  "/Users/mrdulasolutions/Code/OpenGateway",
+  "opengateway",
+  "mcp",
+]
+env = {
+  OPENGATEWAY_URL = "http://127.0.0.1:8765",
+  OPENGATEWAY_HARNESS = "grok",
+  OPENGATEWAY_AGENT_NAME = "grok",
+}
+enabled = true
+startup_timeout_sec = 45

@@ -1,0 +1,19 @@
+{
+  "mcpServers": {
+    "opengateway": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--directory",
+        "/Users/mrdulasolutions/Code/OpenGateway",
+        "opengateway",
+        "mcp"
+      ],
+      "env": {
+        "OPENGATEWAY_URL": "http://127.0.0.1:8765",
+        "OPENGATEWAY_HARNESS": "grok",
+        "OPENGATEWAY_AGENT_NAME": "grok"
+      }
+    }
+  }
+}

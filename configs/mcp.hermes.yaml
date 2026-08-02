@@ -1,0 +1,14 @@
+# Merge under mcp_servers: in ~/.hermes/config.yaml
+
+  opengateway:
+    command: /Users/mrdulasolutions/.local/bin/uv
+    args:
+      - run
+      - --directory
+      - /Users/mrdulasolutions/Code/OpenGateway
+      - opengateway
+      - mcp
+    env:
+      OPENGATEWAY_URL: http://127.0.0.1:8765
+      OPENGATEWAY_HARNESS: hermes
+      OPENGATEWAY_AGENT_NAME: hermes

@@ -1,0 +1,16 @@
+# Merge into ~/.codex/config.toml
+
+[mcp_servers.opengateway]
+command = "/Users/mrdulasolutions/.local/bin/uv"
+args = [
+  "run",
+  "--directory",
+  "/Users/mrdulasolutions/Code/OpenGateway",
+  "opengateway",
+  "mcp",
+]
+
+[mcp_servers.opengateway.env]
+OPENGATEWAY_URL = "http://127.0.0.1:8765"
+OPENGATEWAY_HARNESS = "codex"
+OPENGATEWAY_AGENT_NAME = "codex"
