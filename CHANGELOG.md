@@ -4,6 +4,11 @@ Versioning starts at **0.0.1**. Git tags use the form `v0.0.1`, `v0.0.2`, …
 
 ## 0.0.5 — 2026-08-02
 
+### Live Ops: agent token UI
+- Settings → **Agent & device tokens** — create / list / revoke
+- Copy token once + **Copy MCP env** snippet for harness config
+- Production auth guide: [docs/AGENTS_AUTH.md](docs/AGENTS_AUTH.md)
+
 ### Railway one-click (full stack)
 - No Docker `VOLUME`; **Postgres + Redis** template: https://railway.com/deploy/open-gateway
 - Image installs `.[deploy]` (psycopg, redis, pywebpush)

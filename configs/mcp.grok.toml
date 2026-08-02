@@ -3,9 +3,10 @@
 #
 # Local (internal gateway):
 #   OPENGATEWAY_URL = "http://127.0.0.1:8765"
-# LAN / public (token required):
-#   OPENGATEWAY_URL = "http://192.168.x.x:8765"
-#   OPENGATEWAY_AUTH_TOKEN = "your-token"
+# Railway / public:
+#   OPENGATEWAY_URL = "https://open-gateway-production.up.railway.app"
+#   OPENGATEWAY_AUTH_TOKEN = "ogk_…"   # mint in Live Ops → Settings → Create agent token
+# See docs/AGENTS_AUTH.md
 
 [mcp_servers.opengateway]
 command = "uv"
@@ -16,10 +17,13 @@ args = [
   "opengateway",
   "mcp",
 ]
+# After: uv tool install git+https://github.com/mrdulasolutions/open-gateway.git
+#   command = "opengateway"
+#   args = ["mcp"]
 env = {
   OPENGATEWAY_URL = "http://127.0.0.1:8765",
-  # Required when gateway mode is public / LAN / serve / funnel:
-  # OPENGATEWAY_AUTH_TOKEN = "replace-me",
+  # Required for public / Railway / LAN / serve / funnel:
+  # OPENGATEWAY_AUTH_TOKEN = "ogk_from_live_ops_ui",
   OPENGATEWAY_HARNESS = "grok",
   OPENGATEWAY_AGENT_NAME = "grok",
 }

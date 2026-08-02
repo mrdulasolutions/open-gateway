@@ -21,6 +21,7 @@
   <a href="#quick-start">Quick start</a> ·
   <a href="docs/INSTALL.md">Install</a> ·
   <a href="docs/RAILWAY.md">Railway</a> ·
+  <a href="docs/AGENTS_AUTH.md">Agents & auth</a> ·
   <a href="docs/DEPLOY.md">Deploy</a> ·
   <a href="#why-opengateway">Why</a> ·
   <a href="#live-ops-ui">UI</a> ·

@@ -607,21 +607,25 @@ export function OpsSidebar({
             </div>
 
             <label className="block text-xs font-medium text-zinc-500">
-              Auth token (public gateways)
+              This browser&apos;s auth token
               <input
                 type="password"
                 value={authToken}
                 onChange={(e) => onAuthTokenChange(e.target.value)}
-                placeholder="Bearer token if required"
+                placeholder="Master or device token (Bearer)"
                 className="field-input mt-1 font-mono text-xs"
               />
+              <span className="mt-1 block text-[10px] font-normal text-zinc-400">
+                Paste the Railway master token or a device key to use this UI
+              </span>
             </label>
+
+            <AgentTokensPanel gatewayBase={ping?.base_url || window.location.origin} />
+
             <PushEnableButton participantId={participantId} />
             <p className="text-[11px] leading-relaxed text-zinc-500">
               Use <strong>@all</strong> for everyone. DMs stay private — only
-              you and the peer see them. Click a participant or DM row to open
-              a private thread. Device API keys:{" "}
-              <code className="text-[10px]">POST /v1/keys</code>.
+              you and the peer see them.
             </p>
           </div>
         </Accordion>
@@ -923,6 +927,214 @@ function PairQrModal({
           </>
         )}
       </div>
+    </div>
+  );
+}
+
+/**
+ * Create / list / revoke agent & device API keys (production auth).
+ * Master token in Settings can mint keys; scoped keys cannot.
+ */
+function AgentTokensPanel({ gatewayBase }: { gatewayBase: string }) {
+  const [keys, setKeys] = useState<
+    {
+      id: string;
+      name: string;
+      key_prefix: string;
+      scopes: string[];
+      role: string;
+      device_label: string;
+    }[]
+  >([]);
+  const [name, setName] = useState("grok-agent");
+  const [label, setLabel] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [freshToken, setFreshToken] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+  const [snippetCopied, setSnippetCopied] = useState(false);
+
+  const load = async () => {
+    try {
+      const res = await api.listKeys();
+      setKeys(res.keys || []);
+      setErr("");
+    } catch (e) {
+      setErr(
+        e instanceof Error
+          ? e.message
+          : "Cannot list keys — paste master token above (admin)"
+      );
+    }
+  };
+
+  useEffect(() => {
+    void load();
+  }, []);
+
+  const create = async () => {
+    setBusy(true);
+    setErr("");
+    setFreshToken(null);
+    try {
+      const res = await api.createKey({
+        name: name.trim() || "agent",
+        device_label: label.trim() || name.trim() || "agent",
+        scopes: ["write", "read", "pair", "push"],
+        role: "contributor",
+      });
+      if (res.token) setFreshToken(res.token);
+      await load();
+    } catch (e) {
+      setErr(
+        e instanceof Error
+          ? e.message
+          : "Create failed — need master token (admin scope)"
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const revoke = async (id: string) => {
+    if (!confirm("Revoke this agent/device token?")) return;
+    try {
+      await api.deleteKey(id, true);
+      await load();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  const mcpSnippet = (token: string) =>
+    `# MCP env for this agent (Grok / Claude / Cursor)
+OPENGATEWAY_URL="${gatewayBase.replace(/\/$/, "")}"
+OPENGATEWAY_AUTH_TOKEN="${token}"
+OPENGATEWAY_HARNESS="grok"
+OPENGATEWAY_AGENT_NAME="grok"`;
+
+  return (
+    <div className="space-y-2 rounded-xl border border-zinc-200 p-3 dark:border-white/10">
+      <div className="flex items-center gap-1.5 text-xs font-semibold text-zinc-700 dark:text-zinc-200">
+        <Shield className="h-3.5 w-3.5 text-orange-500" />
+        Agent &amp; device tokens
+      </div>
+      <p className="text-[10px] leading-relaxed text-zinc-500">
+        Mint a scoped token per agent or phone. Paste it into MCP config as{" "}
+        <code className="text-[9px]">OPENGATEWAY_AUTH_TOKEN</code>. Secrets are
+        shown <strong>once</strong>.
+      </p>
+
+      <div className="grid grid-cols-2 gap-2">
+        <label className="block text-[10px] font-medium text-zinc-500">
+          Name
+          <input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            className="field-input mt-0.5 text-xs"
+            placeholder="grok-agent"
+            maxLength={48}
+          />
+        </label>
+        <label className="block text-[10px] font-medium text-zinc-500">
+          Device / host
+          <input
+            value={label}
+            onChange={(e) => setLabel(e.target.value)}
+            className="field-input mt-0.5 text-xs"
+            placeholder="MacBook · CI · phone"
+            maxLength={48}
+          />
+        </label>
+      </div>
+
+      <button
+        type="button"
+        disabled={busy}
+        onClick={() => void create()}
+        className="flex w-full items-center justify-center gap-1.5 rounded-xl bg-gradient-to-b from-orange-400 to-orange-600 px-3 py-2 text-xs font-semibold text-orange-950 shadow-sm disabled:opacity-50"
+      >
+        <Plus className="h-3.5 w-3.5" />
+        {busy ? "Creating…" : "Create agent token"}
+      </button>
+
+      {err && (
+        <p className="text-[10px] text-rose-600 dark:text-rose-300">{err}</p>
+      )}
+
+      {freshToken && (
+        <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-2 space-y-2">
+          <p className="text-[10px] font-semibold text-emerald-900 dark:text-emerald-100">
+            Copy now — will not be shown again
+          </p>
+          <code className="block break-all font-mono text-[10px] text-zinc-800 dark:text-zinc-100">
+            {freshToken}
+          </code>
+          <div className="flex gap-1.5">
+            <button
+              type="button"
+              className="flex flex-1 items-center justify-center gap-1 rounded-lg border border-zinc-200 bg-white px-2 py-1.5 text-[10px] font-semibold dark:border-white/10 dark:bg-zinc-900"
+              onClick={async () => {
+                await navigator.clipboard.writeText(freshToken);
+                setCopied(true);
+                setTimeout(() => setCopied(false), 1500);
+              }}
+            >
+              <Copy className="h-3 w-3" />
+              {copied ? "Copied" : "Copy token"}
+            </button>
+            <button
+              type="button"
+              className="flex flex-1 items-center justify-center gap-1 rounded-lg border border-zinc-200 bg-white px-2 py-1.5 text-[10px] font-semibold dark:border-white/10 dark:bg-zinc-900"
+              onClick={async () => {
+                await navigator.clipboard.writeText(mcpSnippet(freshToken));
+                setSnippetCopied(true);
+                setTimeout(() => setSnippetCopied(false), 1500);
+              }}
+            >
+              <Copy className="h-3 w-3" />
+              {snippetCopied ? "Copied" : "Copy MCP env"}
+            </button>
+          </div>
+          <pre className="max-h-28 overflow-auto rounded bg-zinc-900/80 p-2 font-mono text-[9px] text-zinc-200">
+            {mcpSnippet(freshToken)}
+          </pre>
+        </div>
+      )}
+
+      <ul className="space-y-1.5">
+        {keys.length === 0 && !err && (
+          <li className="text-[10px] text-zinc-400">No agent tokens yet</li>
+        )}
+        {keys.map((k) => (
+          <li
+            key={k.id}
+            className="flex items-start justify-between gap-2 rounded-lg border border-zinc-100 px-2 py-1.5 dark:border-white/[0.06]"
+          >
+            <div className="min-w-0">
+              <div className="truncate text-[11px] font-semibold text-zinc-800 dark:text-zinc-100">
+                {k.name}
+                {k.device_label ? (
+                  <span className="font-normal text-zinc-400">
+                    {" "}
+                    · {k.device_label}
+                  </span>
+                ) : null}
+              </div>
+              <div className="font-mono text-[9px] text-zinc-500">
+                {k.key_prefix}… · {(k.scopes || []).join(", ")} · {k.role}
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => void revoke(k.id)}
+              className="shrink-0 text-[10px] font-semibold text-rose-600 hover:underline dark:text-rose-300"
+            >
+              Revoke
+            </button>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }
