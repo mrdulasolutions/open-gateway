@@ -48,7 +48,7 @@ Think **Claude Connectors / mobile web session**: open a link on your phone, aut
 | Milestone | Detail |
 |-----------|--------|
 | **M1 · Mobile Live Ops** | ✅ Responsive drawers, safe-area, PWA manifest (v0.0.1+) |
-| **M2 · Pair link** | ✅ `opengateway pair` + `/v1/pair` deep link (v0.0.1+) |
+| **M2 · Pair link** | ✅ `opengateway pair` + `/v1/pair` deep link; dual LAN + Tailnet QR; cellular via Serve (v0.0.3) |
 | **M3 · Push / wake** | Optional Web Push or Tailscale-notified wake when `@you` or task assigned. |
 | **M4 · Connectors surface** | Documented “phone connector” parallel to desktop MCP: same REST + token, installable as iOS/Android home-screen PWA. |
 | **M5 · Voice (stretch)** | Dictate → room message; optional TTS brief of facilitator summary. |
@@ -69,6 +69,9 @@ Think **Claude Connectors / mobile web session**: open a link on your phone, aut
 - [x] Soft-expire offline participants + auto-cancel stale nudge tasks (v0.0.1)
 - [x] Tailscale doctor + Serve-first path (`opengateway doctor`, `/v1/network`) (v0.0.1+)
 - [x] Dual process docs: internal `:8765` + LAN `:8766` (v0.0.1)
+- [x] Dual path single process: LAN open + `tailscale serve` + auto tailnet card (v0.0.3)
+- [x] Multi-word identity names + draft/commit UI (v0.0.3)
+- [x] Pair redeem rate limit (shared auth failure budget) (v0.0.3)
 
 ### Protocol
 

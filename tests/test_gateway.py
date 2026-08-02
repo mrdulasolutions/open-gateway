@@ -300,6 +300,28 @@ async def test_at_all_nudges_like_everyone(client: AsyncClient):
 
 
 @pytest.mark.asyncio
+async def test_rename_allows_spaces(client: AsyncClient):
+    room = (await client.post("/v1/rooms", json={"name": "id-room", "goal": "names"})).json()
+    room_id = room["id"]
+    p = (
+        await client.post(
+            f"/v1/rooms/{room_id}/join",
+            json={"name": "mark", "harness": "human"},
+        )
+    ).json()
+    updated = (
+        await client.patch(
+            f"/v1/rooms/{room_id}/participants/{p['id']}",
+            json={"name": "  Mark   Dula  "},
+        )
+    ).json()
+    assert updated["id"] == p["id"]
+    assert updated["name"] == "Mark Dula"
+    listed = (await client.get(f"/v1/rooms/{room_id}/participants")).json()["participants"]
+    assert any(x["name"] == "Mark Dula" for x in listed)
+
+
+@pytest.mark.asyncio
 async def test_pair_code_create_and_redeem(client: AsyncClient):
     room = (await client.post("/v1/rooms", json={"name": "pair-room", "goal": "phone"})).json()
     created = (
@@ -311,6 +333,8 @@ async def test_pair_code_create_and_redeem(client: AsyncClient):
     assert created.get("code")
     assert "pair=" in created.get("url", "")
     assert room["id"] in created.get("url", "")
+    assert "urls" in created
+    assert "access" in created
 
     redeemed = (
         await client.post(
@@ -325,6 +349,51 @@ async def test_pair_code_create_and_redeem(client: AsyncClient):
 
     bad = await client.post("/v1/pair/redeem", json={"code": "ZZZZZZ"})
     assert bad.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_pair_prefers_tailscale_base_when_requested(client: AsyncClient, monkeypatch):
+    """Cellular path: pair QR must advertise MagicDNS when network=tailscale."""
+    from opengateway.config import GatewayConfig, GatewayMode
+    from opengateway.server import create_app
+    from httpx import ASGITransport, AsyncClient as AC
+
+    cfg = GatewayConfig(
+        mode=GatewayMode.PUBLIC,
+        host="0.0.0.0",
+        port=8765,
+        auth_token=None,
+        require_auth=False,
+        public_url="http://192.168.1.50:8765",
+        network="lan",
+        name="lan",
+        tailscale_hostname="hub.tailnet-xxxx.ts.net",
+    )
+    app = create_app(config=cfg)
+    transport = ASGITransport(app=app)
+    async with AC(transport=transport, base_url="http://test") as c:
+        room = (await c.post("/v1/rooms", json={"name": "cell", "goal": "away"})).json()
+        created = (
+            await c.post(
+                "/v1/pair",
+                json={
+                    "room_id": room["id"],
+                    "network": "tailscale",
+                    "base_url": "https://hub.tailnet-xxxx.ts.net",
+                },
+            )
+        ).json()
+        assert created["url"].startswith("https://hub.tailnet-xxxx.ts.net/")
+        assert "pair=" in created["url"]
+        assert created.get("urls", {}).get("tailscale", "").startswith("https://")
+        assert created.get("access", {}).get("tailscale") == "https://hub.tailnet-xxxx.ts.net"
+
+        gws = (await c.get("/v1/gateways")).json()["gateways"]
+        assert any(
+            g.get("network") == "tailscale"
+            and "ts.net" in (g.get("base_url") or "")
+            for g in gws
+        )
 
 
 @pytest.mark.asyncio

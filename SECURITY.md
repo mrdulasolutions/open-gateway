@@ -4,7 +4,8 @@
 
 | Version | Supported |
 |---------|-----------|
-| 0.1.x   | ✅        |
+| 0.0.x   | ✅ (current line) |
+| 0.1.x   | Planned |
 
 ## Reporting a vulnerability
 
@@ -34,3 +35,11 @@ Never expose an unauthenticated gateway to the internet. Prefer [Tailscale Serve
 - Set a strong `OPENGATEWAY_AUTH_TOKEN` for any non-loopback deployment
 - Do not commit tokens, pair codes, or production DB files
 - Rotate tokens if a harness config or phone pair link leaks
+
+## Phone pair links
+
+- Pair codes are short-lived (default 15 min, max uses capped) and in-memory only
+- Trusted pair URLs may embed the gateway token in the URL hash for one-tap phone join — treat QR/links as **secrets**
+- Invalid redeem attempts share the **per-IP auth failure rate limit** with wrong bearer tokens
+- Prefer **Tailscale Serve** (tailnet only) over Funnel for phone access
+- Cellular works when the phone has Tailscale connected to the same tailnet — not via raw LAN IP

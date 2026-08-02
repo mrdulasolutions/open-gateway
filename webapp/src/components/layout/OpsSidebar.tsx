@@ -71,7 +71,9 @@ type Props = {
   onRefresh: () => void;
   onNewRoom: () => void;
   onNameChange: (name: string) => void;
+  onNameCommit: (name: string) => void;
   onRoleChange: (role: string) => void;
+  onRoleCommit: (role: string) => void;
   onAuthTokenChange: (token: string) => void;
 };
 
@@ -191,7 +193,9 @@ export function OpsSidebar({
   onRefresh,
   onNewRoom,
   onNameChange,
+  onNameCommit,
   onRoleChange,
+  onRoleCommit,
   onAuthTokenChange,
 }: Props) {
   const online = ping?.status === "ok";
@@ -519,7 +523,9 @@ export function OpsSidebar({
             />
           ))}
           <p className="mt-2 px-1 text-[10px] leading-relaxed text-zinc-500">
-            Tap a gateway card for a phone pair <strong>QR code</strong>.
+            Tap a gateway card for phone pair QR:{" "}
+            <strong>LAN</strong> = same Wi‑Fi · <strong>Tailnet</strong> = cellular
+            OK (Tailscale app on).
           </p>
         </Accordion>
 
@@ -554,10 +560,21 @@ export function OpsSidebar({
               <input
                 value={displayName}
                 onChange={(e) => onNameChange(e.target.value)}
-                onBlur={(e) => onNameChange(e.target.value.trim() || "human")}
+                onBlur={(e) => onNameCommit(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.currentTarget.blur();
+                  }
+                }}
                 className="field-input mt-1"
-                maxLength={40}
+                maxLength={64}
+                placeholder="Your name (spaces OK)"
+                autoComplete="nickname"
+                spellCheck={false}
               />
+              <span className="mt-1 block text-[10px] font-normal text-zinc-400">
+                Spaces allowed · saved when you leave the field or press Enter
+              </span>
             </label>
 
             <label className="block text-xs font-medium text-zinc-500">
@@ -565,9 +582,12 @@ export function OpsSidebar({
               <input
                 value={displayRole}
                 onChange={(e) => onRoleChange(e.target.value)}
-                onBlur={(e) =>
-                  onRoleChange(e.target.value.trim() || "observer")
-                }
+                onBlur={(e) => onRoleCommit(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.currentTarget.blur();
+                  }
+                }}
                 placeholder="observer · coordinator · reviewer…"
                 className="field-input mt-1"
                 maxLength={48}
@@ -715,27 +735,35 @@ function PairQrModal({
           room_id: roomId || undefined,
           label: "mobile",
           ttl_seconds: 900,
+          // QR origin must match the card: LAN = Wi‑Fi only; Tailnet = cellular OK
+          base_url: gateway.base_url,
+          network: gateway.network,
         });
         if (cancelled) return;
-        // Prefer gateway's advertised base if pair URL is loopback but card is LAN/TS
+        // Always force QR origin to this gateway card (API may advertise LAN by default)
         let pairUrl = res.url || "";
         try {
           const u = new URL(pairUrl);
-          const gw = new URL(gateway.base_url);
-          // Rewrite host to the gateway card's advertised host when useful
-          if (
-            (u.hostname === "127.0.0.1" || u.hostname === "localhost") &&
-            gw.hostname &&
-            gw.hostname !== "127.0.0.1" &&
-            gw.hostname !== "localhost"
-          ) {
-            u.protocol = gw.protocol;
+          const gw = new URL(
+            gateway.base_url.includes("://")
+              ? gateway.base_url
+              : `https://${gateway.base_url}`
+          );
+          if (gw.hostname) {
+            u.protocol = gw.protocol || u.protocol;
             u.hostname = gw.hostname;
+            // Empty port on https MagicDNS → default 443 (do not keep LAN :8765)
             u.port = gw.port;
             pairUrl = u.toString();
           }
         } catch {
           /* keep res.url */
+        }
+        // Prefer server-built URL for this network when provided
+        if (gateway.network === "tailscale" && res.urls?.tailscale) {
+          pairUrl = res.urls.tailscale;
+        } else if (gateway.network === "lan" && res.urls?.lan) {
+          pairUrl = res.urls.lan;
         }
         setUrl(pairUrl);
         setCode(res.code || "");
@@ -776,27 +804,27 @@ function PairQrModal({
       case "lan":
         return {
           title: "Same Wi‑Fi required",
-          body: `Your phone must be on the same Wi‑Fi / LAN as this computer. Scanning from a different network (guest Wi‑Fi, cellular, other SSID) will load nothing. Target: ${gateway.base_url}`,
+          body: `LAN path only — phone must be on the same Wi‑Fi as this computer. For cellular, close this and tap the Tailnet (Serve) card instead. Target: ${gateway.base_url}`,
         };
       case "tailscale":
         return {
-          title: "Same Tailscale tailnet required",
-          body: "Phone needs Tailscale installed and logged into the same tailnet (or use Tailscale Serve MagicDNS). Cellular-only without Tailscale will not reach this gateway.",
+          title: "Cellular OK · Tailscale must be ON",
+          body: `Works on cellular or any Wi‑Fi as long as the Tailscale app is connected to the same tailnet. Turn on Tailscale VPN on the phone, then scan. No same-Wi‑Fi needed. Target: ${gateway.base_url}`,
         };
       case "funnel":
         return {
           title: "Public Funnel URL",
-          body: "Funnel is internet-reachable. Phone can use any network, but you still need a strong auth token.",
+          body: "Funnel is internet-reachable. Phone can use any network (including cellular), but you still need a strong auth token.",
         };
       case "loopback":
         return {
           title: "This gateway is loopback-only",
-          body: "Internal (127.0.0.1) cannot be opened from a phone. Switch to a LAN or Tailscale Serve gateway first.",
+          body: "Internal (127.0.0.1) cannot be opened from a phone. Use the LAN card (same Wi‑Fi) or Tailnet Serve card (cellular + Tailscale).",
         };
       default:
         return {
           title: "Phone must reach this host",
-          body: `Phone needs network path to ${gateway.base_url}. Wrong Wi‑Fi or offline VPN will fail.`,
+          body: `Phone needs network path to ${gateway.base_url}. For cellular, use the Tailnet (Serve) card with Tailscale ON.`,
         };
     }
   })();

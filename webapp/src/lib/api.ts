@@ -225,7 +225,15 @@ export const api = {
   },
   fileUrl: (roomId: string, fileId: string) =>
     `${API}/v1/rooms/${roomId}/files/${fileId}/download`,
-  createPair: (body?: { room_id?: string; label?: string; ttl_seconds?: number }) =>
+  createPair: (body?: {
+    room_id?: string;
+    label?: string;
+    ttl_seconds?: number;
+    /** Advertise this origin in the QR (LAN vs Tailscale MagicDNS). */
+    base_url?: string;
+    /** Prefer path: lan | tailscale */
+    network?: string;
+  }) =>
     req<{
       code: string;
       url: string;
@@ -234,6 +242,9 @@ export const api = {
       max_uses: number;
       instructions: string[];
       room_id?: string | null;
+      base_url?: string;
+      urls?: Record<string, string>;
+      access?: Record<string, string>;
     }>("/v1/pair", { method: "POST", body: JSON.stringify(body || {}) }),
   redeemPair: (code: string, name?: string) =>
     req<{

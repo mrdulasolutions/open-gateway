@@ -583,31 +583,55 @@ export default function App() {
     }
   };
 
-  const onNameChange = async (name: string) => {
+  /** Local draft only — do not trim/API on every keystroke (breaks spaces). */
+  const onNameDraft = (name: string) => {
     setDisplayName(name);
-    if (!roomId || !participantId) return;
-    const next = name.trim() || "human";
+  };
+
+  /** Commit identity: trim ends only, keep internal spaces (e.g. "Mark Dula"). */
+  const onNameCommit = async (name: string) => {
+    // Collapse runs of whitespace to single spaces; trim ends — allow multi-word names
+    const next = name.replace(/\s+/g, " ").trim() || "human";
+    setDisplayName(next);
+    setStoredName(next);
+    if (!roomId || !participantId) {
+      log(`identity saved locally as ${next} (join a room to sync)`);
+      return;
+    }
     try {
       const p = await api.updateParticipant(roomId, participantId, {
         name: next,
       });
       setParticipantId(p.id);
       setStoredPid(roomId, p.id);
-      setStoredName(next);
-      setDisplayName(next);
-      log(`renamed → ${next}`);
+      setStoredName(p.name || next);
+      setDisplayName(p.name || next);
+      log(`renamed → ${p.name || next}`);
       await refreshSnapshot(roomId);
     } catch (e) {
       log(`rename failed: ${e instanceof Error ? e.message : e}`);
-      await ensureJoined(roomId, next, participantId);
+      try {
+        await ensureJoined(roomId, next, participantId);
+      } catch (e2) {
+        setError({
+          message: `Could not update identity: ${e instanceof Error ? e.message : e}`,
+        });
+      }
     }
   };
 
-  const onRoleChange = async (role: string) => {
+  const onRoleDraft = (role: string) => {
     setDisplayRole(role);
-    const next = role.trim() || "observer";
+  };
+
+  const onRoleCommit = async (role: string) => {
+    const next = role.replace(/\s+/g, " ").trim() || "observer";
+    setDisplayRole(next);
     setStoredRole(next);
-    if (!roomId || !participantId) return;
+    if (!roomId || !participantId) {
+      log(`role saved locally as ${next}`);
+      return;
+    }
     try {
       const p = await api.updateParticipant(roomId, participantId, {
         role: next,
@@ -617,6 +641,9 @@ export default function App() {
       await refreshSnapshot(roomId);
     } catch (e) {
       log(`role update failed: ${e instanceof Error ? e.message : e}`);
+      setError({
+        message: `Could not update role: ${e instanceof Error ? e.message : e}`,
+      });
     }
   };
 
@@ -739,8 +766,10 @@ export default function App() {
             }
           }}
           onNewRoom={() => setShowNewRoom(true)}
-          onNameChange={onNameChange}
-          onRoleChange={onRoleChange}
+          onNameChange={onNameDraft}
+          onNameCommit={onNameCommit}
+          onRoleChange={onRoleDraft}
+          onRoleCommit={onRoleCommit}
           onAuthTokenChange={(token) => {
             setAuthToken(token);
             setAuthTokenState(token);

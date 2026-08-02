@@ -358,9 +358,12 @@ class Store:
         if not p:
             return None
         if name is not None:
-            p.name = name.strip() or p.name
+            # Allow multi-word names; collapse internal whitespace runs only
+            cleaned = " ".join(str(name).split())
+            p.name = cleaned or p.name
         if role is not None:
-            p.role = role
+            cleaned_role = " ".join(str(role).split())
+            p.role = cleaned_role or p.role
         if status is not None:
             p.status = status
         if capabilities is not None:

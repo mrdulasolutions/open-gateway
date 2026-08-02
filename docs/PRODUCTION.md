@@ -20,8 +20,29 @@ Checklist derived from the multi-machine LAN test (Mac Mini hub ↔ MacBook remo
 |------|---------|
 | Single machine | `opengateway serve` (internal / loopback) |
 | Same Wi‑Fi / LAN | `opengateway serve --mode public --via open --network lan --token $TOKEN --public-url http://<lan-ip>:8765` |
-| Multi-site / team mesh | `opengateway serve --mode serve --token $TOKEN` then `tailscale serve --bg 8765` |
+| **LAN + cellular (dual)** | LAN public as above, **then** `tailscale serve --bg 8765` (same process). UI shows **lan** + **tailnet-serve** cards. |
+| Multi-site / serve-only | `opengateway serve --mode serve --token $TOKEN` then `tailscale serve --bg 8765` |
 | Internet | Prefer Funnel or reverse proxy + token; never open unauthenticated |
+
+### Dual path (LAN + Tailnet) — production default for home/lab hubs
+
+```bash
+export OPENGATEWAY_AUTH_TOKEN="$(openssl rand -hex 24)"
+# One process: open LAN + localhost (Tailscale Serve proxies to 127.0.0.1:8765)
+uv run opengateway serve --mode public --via open --network lan \
+  --host 0.0.0.0 --token "$OPENGATEWAY_AUTH_TOKEN" \
+  --public-url "http://$(ipconfig getifaddr en0):8765"
+
+# Add mesh path (does not replace LAN):
+tailscale serve --bg 8765
+```
+
+| Client path | URL | Phone network |
+|-------------|-----|----------------|
+| LAN | `http://<lan-ip>:8765` | Same Wi‑Fi |
+| Tailnet | `https://<magicdns>.ts.net` | Cellular OK if Tailscale VPN is connected |
+
+Pair: tap the matching gateway card for QR. Never share Funnel without a strong token.
 
 ## Network labels (UI badges)
 
@@ -78,6 +99,10 @@ uv run pytest && cd webapp && bun run build
 | `bun run build` → `/ui/` | Automated in `make ui` |
 | Internal serve /ping no auth | Manual smoke |
 | LAN public + token 401/200 | Manual smoke |
+| Tailscale Serve HTTPS + token 200 | Manual smoke (`curl https://…ts.net/v1/rooms`) |
+| Dual gateway cards (lan + tailnet-serve) | Manual smoke |
+| Cellular pair via Tailnet QR | Manual smoke (Tailscale app ON) |
+| Identity multi-word name + spaces | Covered by tests + UI draft/commit |
 | UI token in Settings | Manual smoke |
 | MCP remote + restart after config | Manual smoke |
 | `@all` online-only nudges | Covered by tests |
@@ -85,7 +110,8 @@ uv run pytest && cd webapp && bun run build
 | Stale agents offline after 120s idle | Covered by tests |
 | Wait `next_since` cursor | Covered by tests |
 | Auth failure rate limit (429) | Covered by tests |
-| Version / tags | **`v0.0.1` first tag** |
+| Pair redeem rate limit | Covered by shared failure budget |
+| Version / tags | **`v0.0.3`** |
 
 ## Stale presence
 
@@ -95,4 +121,4 @@ uv run pytest && cd webapp && bun run build
 
 ## Known follow-ups
 
-Tracked in [ROADMAP.md](ROADMAP.md): Tailscale path hardening when LAN works but TS IP times out; dual-port internal+LAN; phone pair tokens; rate limits.
+Tracked in [ROADMAP.md](ROADMAP.md): per-device API keys; full audit log; Redis multi-process; official Docker; push/wake for mobile.

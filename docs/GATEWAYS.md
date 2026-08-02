@@ -171,6 +171,29 @@ uv run opengateway pair --room durable-demo
 # open printed URL on phone (same tailnet)
 ```
 
+### Dual path: LAN open + Tailscale Serve (cellular)
+
+Keep Wi‑Fi clients on LAN **and** phone/agents away from home on the tailnet — same process:
+
+```bash
+export OPENGATEWAY_AUTH_TOKEN="$(openssl rand -hex 24)"
+uv run opengateway serve --mode public --via open --network lan \
+  --host 0.0.0.0 --token "$OPENGATEWAY_AUTH_TOKEN" \
+  --public-url "http://$(ipconfig getifaddr en0):8765"
+
+# Add (does not replace LAN):
+tailscale serve --bg 8765
+```
+
+Live Ops shows two cards:
+
+| Card | URL | Phone |
+|------|-----|--------|
+| **lan** | `http://<lan-ip>:8765` | Same Wi‑Fi only |
+| **tailnet-serve** | `https://<host>.ts.net` | Cellular OK if Tailscale app is ON |
+
+Tap the card that matches the phone’s network when generating the pair QR.
+
 ### Option B — LAN open bind (same Wi‑Fi only)
 
 ```bash

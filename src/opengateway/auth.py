@@ -63,6 +63,23 @@ def _clear_auth_failures(ip: str) -> None:
         _fail_buckets.pop(ip, None)
 
 
+def client_ip(request: Request) -> str:
+    """Public helper for endpoints that rate-limit outside middleware."""
+    return _client_ip(request)
+
+
+def auth_failures_blocked(ip: str) -> bool:
+    return _auth_failures_blocked(ip)
+
+
+def record_auth_failure(ip: str) -> None:
+    _record_auth_failure(ip)
+
+
+def clear_auth_failures(ip: str) -> None:
+    _clear_auth_failures(ip)
+
+
 class BearerAuthMiddleware(BaseHTTPMiddleware):
     def __init__(self, app, config: GatewayConfig):
         super().__init__(app)

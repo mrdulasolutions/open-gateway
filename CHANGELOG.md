@@ -2,6 +2,29 @@
 
 Versioning starts at **0.0.1**. Git tags use the form `v0.0.1`, `v0.0.2`, …
 
+## 0.0.3 — 2026-08-02
+
+### Identity
+- Multi-word display names with spaces (e.g. `Mark Dula`)
+- Settings draft-on-type, commit on blur/Enter (no more space-eating PATCH-per-keystroke)
+- Mentions support multi-word `@Name Last`
+
+### Dual path: LAN + Tailscale Serve
+- Keep open LAN bind **and** add Tailscale Serve (not either/or)
+- Auto-register **tailnet-serve** gateway card when MagicDNS is known
+- Pair API returns `access` / `urls` for `lan` + `tailscale`
+- QR origin follows the gateway card you tap
+
+### Cellular / phone pair
+- **Tailnet card** QR → `https://…ts.net` works on **cellular** when Tailscale app is ON
+- **LAN card** QR → same Wi‑Fi only (clear disclaimers)
+- Pair redeem rate-limited per IP (shared auth-failure budget)
+- UI copy: “Cellular OK · Tailscale must be ON”
+
+### Hardening
+- Production checklist updated for dual path + identity
+- SECURITY notes for pair links (short-lived; rotate if shared broadly)
+
 ## 0.0.2 — 2026-08-02
 
 ### Tailscale path hardening

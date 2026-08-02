@@ -29,7 +29,13 @@ from sse_starlette.sse import EventSourceResponse
 
 from opengateway import __version__
 from opengateway.acp_handlers import BUILTIN_AGENTS, dispatch_acp_run
-from opengateway.auth import BearerAuthMiddleware
+from opengateway.auth import (
+    BearerAuthMiddleware,
+    auth_failures_blocked,
+    clear_auth_failures,
+    client_ip,
+    record_auth_failure,
+)
 from opengateway.config import GatewayConfig, load_gateway_config, local_ips, network_ui_label
 from opengateway.models import (
     AgentManifest,
@@ -225,9 +231,66 @@ def create_app(
             **network_diagnostics(cfg.port),
         }
 
+    def _pair_access_bases() -> dict[str, str]:
+        """Known safe bases for pair QR (LAN + Tailscale MagicDNS). Same hub, different paths."""
+        bases: dict[str, str] = {"advertised": cfg.base_url.rstrip("/")}
+        lan = local_ips()
+        if lan:
+            bases["lan"] = f"http://{lan[0]}:{cfg.port}"
+        ts = (cfg.tailscale_hostname or "").strip().rstrip(".")
+        if ts:
+            # HTTPS via Tailscale Serve (cellular/Wi‑Fi away from LAN, tailnet only)
+            bases["tailscale"] = f"https://{ts}"
+        return bases
+
+    def _resolve_pair_base(requested: Optional[str]) -> str:
+        """Pick pair URL origin: explicit base_url if allowed, else advertised."""
+        allowed = {v.rstrip("/") for v in _pair_access_bases().values() if v}
+        # Also allow any current LAN IP + configured public_url host
+        for ip in local_ips():
+            allowed.add(f"http://{ip}:{cfg.port}")
+        if cfg.public_url:
+            allowed.add(cfg.public_url.rstrip("/"))
+        if cfg.tailscale_hostname:
+            ts = cfg.tailscale_hostname.strip().rstrip(".")
+            allowed.add(f"https://{ts}")
+            allowed.add(f"http://{ts}")
+            allowed.add(f"http://{ts}:{cfg.port}")
+
+        if requested:
+            r = str(requested).strip().rstrip("/")
+            if r in allowed:
+                return r
+            # Host-only match against allowed (ignore trailing path)
+            try:
+                from urllib.parse import urlparse
+
+                rh = urlparse(r if "://" in r else f"http://{r}")
+                for a in allowed:
+                    ah = urlparse(a)
+                    if rh.hostname and rh.hostname == ah.hostname:
+                        # Prefer the allowed URL's scheme/port (e.g. https MagicDNS)
+                        return a.rstrip("/")
+            except Exception:
+                pass
+        return cfg.base_url.rstrip("/")
+
+    def _build_pair_url(base: str, code: str, room: Optional[str]) -> str:
+        pair_url = f"{base.rstrip('/')}/ui/#pair={code}"
+        if room:
+            pair_url += f"&room={room}"
+        if cfg.require_auth and cfg.auth_token:
+            pair_url += f"&token={cfg.auth_token}"
+        return pair_url
+
     @app.post("/v1/pair")
     async def create_pair(request: Request) -> dict[str, Any]:
-        """Create a short-lived phone pair code (requires gateway auth when public)."""
+        """Create a short-lived phone pair code (requires gateway auth when public).
+
+        Optional body.base_url selects which path the QR advertises (LAN vs
+        Tailscale MagicDNS). Same code works on every path — only the origin
+        in the QR matters for cellular vs same-Wi‑Fi.
+        """
         try:
             body = await request.json()
         except Exception:
@@ -249,21 +312,32 @@ def create_app(
             label=label,
             ttl_seconds=ttl_seconds,
         )
-        base = cfg.base_url.rstrip("/")
-        # Include token in hash only as optional bootstrap for trusted pair sessions
-        # (short-lived URL; prefer Settings paste on untrusted networks)
-        pair_url = f"{base}/ui/#pair={rec['code']}"
-        if resolved_room:
-            pair_url += f"&room={resolved_room}"
-        if cfg.require_auth and cfg.auth_token:
-            pair_url += f"&token={cfg.auth_token}"
+        access = _pair_access_bases()
+        base = _resolve_pair_base(body.get("base_url") or body.get("via_url"))
+        # Prefer Tailscale when client asks network=tailscale
+        net_pref = str(body.get("network") or "").lower()
+        if net_pref in {"tailscale", "tailnet", "serve"} and access.get("tailscale"):
+            base = access["tailscale"]
+        elif net_pref in {"lan", "wifi", "local"} and access.get("lan"):
+            base = access["lan"]
+        pair_url = _build_pair_url(base, rec["code"], resolved_room)
+        urls = {
+            key: _build_pair_url(b, rec["code"], resolved_room)
+            for key, b in access.items()
+            if b
+        }
+        urls["selected"] = pair_url
         return {
             **rec,
             "room_id": resolved_room,
             "url": pair_url,
             "qr_payload": pair_url,
+            "base_url": base,
+            "urls": urls,
+            "access": access,
             "instructions": [
-                "Open the URL (or scan QR) on your phone — same LAN or Tailscale.",
+                "Open the URL (or scan QR) on your phone.",
+                "LAN QR → same Wi‑Fi. Tailnet QR → Tailscale app ON (works on cellular).",
                 "Pair deep-links room + auth for this gateway session.",
                 f"Code expires in {rec['ttl_seconds']}s · max {rec['max_uses']} uses.",
             ],
@@ -271,7 +345,18 @@ def create_app(
 
     @app.post("/v1/pair/redeem")
     async def redeem_pair(request: Request) -> dict[str, Any]:
-        """Redeem a pair code — returns room target + join hints."""
+        """Redeem a pair code — returns room target + join hints.
+
+        Public endpoint (code is the secret). Rate-limited per IP on bad codes
+        using the same failure budget as bearer auth (production hardening).
+        """
+        ip = client_ip(request)
+        if auth_failures_blocked(ip):
+            raise HTTPException(
+                status_code=429,
+                detail="Too many failed pair attempts — wait and retry",
+                headers={"Retry-After": "60"},
+            )
         try:
             body = await request.json()
         except Exception:
@@ -280,9 +365,16 @@ def create_app(
             body = {}
         code = str(body.get("code") or "").strip().upper()
         name = str(body.get("name") or body.get("label") or "mobile").strip() or "mobile"
+        # Normalize multi-word mobile names (spaces OK)
+        name = " ".join(name.split()) or "mobile"
+        if not code or len(code) > 16:
+            record_auth_failure(ip)
+            raise HTTPException(status_code=404, detail="Invalid or expired pair code")
         rec = await st.redeem_pair_code(code)
         if not rec:
+            record_auth_failure(ip)
             raise HTTPException(status_code=404, detail="Invalid or expired pair code")
+        clear_auth_failures(ip)
         return {
             "ok": True,
             "code": rec["code"],
@@ -290,16 +382,58 @@ def create_app(
             "label": rec.get("label") or name,
             "suggested_name": name,
             "harness": "mobile",
+            # Prefer request origin path when possible; clients on MagicDNS stay there
             "base_url": cfg.base_url,
             "require_auth": cfg.require_auth,
             # Trusted pair: return token so phone can call API without manual paste
+            # (short-lived pair link; rotate gateway token if a QR is shared broadly)
             "auth_token": cfg.auth_token if cfg.require_auth else None,
             "auth_hint": (
                 "Use returned auth_token as Authorization: Bearer …"
                 if cfg.require_auth
                 else None
             ),
+            "access": _pair_access_bases(),
         }
+
+    async def _ensure_tailscale_gateway_card() -> None:
+        """Advertise MagicDNS path alongside LAN self-card (cellular / away networks)."""
+        ts = (cfg.tailscale_hostname or "").strip().rstrip(".")
+        if not ts:
+            return
+        base = f"https://{ts}"
+        # Skip if already present
+        for g in await st.list_gateways():
+            if g.base_url.rstrip("/") == base or (
+                g.network == "tailscale" and not g.is_self and "magicdns" in (g.metadata or {})
+            ):
+                # Refresh base_url if hostname changed
+                if g.base_url.rstrip("/") != base:
+                    g.base_url = base
+                    g.metadata = {**(g.metadata or {}), "magicdns": ts, "via": "serve"}
+                    await st.upsert_gateway(g)
+                return
+        await st.upsert_gateway(
+            GatewayRecord(
+                name="tailnet-serve",
+                mode="public",
+                network="tailscale",
+                base_url=base,
+                require_auth=cfg.require_auth,
+                is_self=False,
+                notes=(
+                    "Tailscale Serve (HTTPS MagicDNS) — same hub as LAN. "
+                    "Works on cellular when the phone has Tailscale connected."
+                ),
+                metadata={
+                    "via": "serve",
+                    "magicdns": ts,
+                    "pairs_with": "lan",
+                    "cellular": True,
+                    "serve_hint": cfg.serve_hint or f"tailscale serve --bg {cfg.port}",
+                },
+            )
+        )
 
     @app.get("/v1/gateways")
     async def list_gateways() -> dict[str, Any]:
@@ -308,6 +442,8 @@ def create_app(
         if not any(g.is_self for g in gws):
             await _ensure_self_gateway()
             gws = await st.list_gateways()
+        await _ensure_tailscale_gateway_card()
+        gws = await st.list_gateways()
         return {
             "gateways": [g.model_dump(mode="json") for g in gws],
             "self": cfg.to_public_dict(),
@@ -599,18 +735,30 @@ def create_app(
         return any(n in t for n in needles)
 
     def _mentioned_peers(text: str, peers: list[Participant]) -> list[Participant]:
-        """Resolve @Name mentions (case-insensitive, longest name first)."""
+        """Resolve @Name mentions (case-insensitive, longest name first).
+
+        Supports multi-word identities (e.g. @Mark Dula) by matching the full
+        name string after @ without requiring a single-token word boundary.
+        """
         if not text or not peers:
             return []
         found: list[Participant] = []
         lower = text
-        # Sort longer names first so @alice-demo beats @alice
+        # Sort longer names first so @Mark Dula beats @Mark
         for p in sorted(peers, key=lambda x: len(x.name), reverse=True):
-            # @name as word boundary-ish
-            pat = re.compile(rf"@{re.escape(p.name)}\b", re.IGNORECASE)
+            name = (p.name or "").strip()
+            if not name:
+                continue
+            # Multi-word: require end at whitespace/punct/EOL; single-token: word boundary
+            if " " in name:
+                pat = re.compile(
+                    rf"@{re.escape(name)}(?=$|[\s,.!?;:])",
+                    re.IGNORECASE,
+                )
+            else:
+                pat = re.compile(rf"@{re.escape(name)}\b", re.IGNORECASE)
             if pat.search(lower):
                 found.append(p)
-                # avoid double-match shorter prefixes by blanking
                 lower = pat.sub(" ", lower)
         return found
 
