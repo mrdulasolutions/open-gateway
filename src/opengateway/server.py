@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-import json
-from typing import Any, Optional
-
 import base64
+import json
 import re
 import uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any, Optional
 
 from fastapi import (
     FastAPI,
@@ -96,30 +96,7 @@ def create_app(
     st = store if store is not None else Store()
     cfg = config or load_gateway_config()
 
-    app = FastAPI(
-        title="OpenGateway",
-        description=(
-            "Multi-agent collaboration hub. ACP-compatible REST for agent runs, "
-            "plus room-based messaging so Grok, Claude Code, Cursor, and any "
-            "ACP/MCP agent can work on the same project. "
-            "Rooms persist to SQLite by default (~/.opengateway/state.db)."
-        ),
-        version=__version__,
-    )
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=cfg.allow_origins,
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
-    if cfg.require_auth and cfg.auth_token:
-        app.add_middleware(BearerAuthMiddleware, config=cfg)
-
-    app.state.store = st
-    app.state.gateway_config = cfg
-
-    # Register self in gateway registry
+    # Register self in gateway registry (also used at lifespan startup)
     async def _ensure_self_gateway() -> GatewayRecord:
         self_rec = GatewayRecord(
             id=cfg.gateway_id,
@@ -137,15 +114,39 @@ def create_app(
                 "trust_tailscale_identity": cfg.trust_tailscale_identity,
             },
         )
-        # Replace any prior self with same mode
         for g in list(await st.list_gateways()):
             if g.is_self:
                 await st.delete_gateway(g.id)
         return await st.upsert_gateway(self_rec)
 
-    @app.on_event("startup")
-    async def _startup() -> None:
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
         await _ensure_self_gateway()
+        yield
+
+    app = FastAPI(
+        title="OpenGateway",
+        description=(
+            "Multi-agent collaboration hub. ACP-compatible REST for agent runs, "
+            "plus room-based messaging so Grok, Claude Code, Cursor, and any "
+            "ACP/MCP agent can work on the same project. "
+            "Rooms persist to SQLite by default (~/.opengateway/state.db)."
+        ),
+        version=__version__,
+        lifespan=lifespan,
+    )
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=cfg.allow_origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+    if cfg.require_auth and cfg.auth_token:
+        app.add_middleware(BearerAuthMiddleware, config=cfg)
+
+    app.state.store = st
+    app.state.gateway_config = cfg
 
     # ── Health / meta ──────────────────────────────────────────────────────
 

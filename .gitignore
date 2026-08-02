@@ -20,4 +20,5 @@ configs/applied-backups/*
 *.db-journal
 .opengateway/
 webapp/node_modules/
-webapp/dist/
+# webapp/dist is committed so `opengateway serve` ships UI without a Node build step.
+# Rebuild with: cd webapp && bun run build

@@ -241,10 +241,85 @@ class Store:
                 return p
         return None
 
+    # Agents that stop long-polling go stale; mark offline so @all does not spam them.
+    STALE_ONLINE_SECONDS = 120.0
+
+    async def refresh_stale_online(
+        self, room_id: str, *, max_age_seconds: float | None = None
+    ) -> list[str]:
+        """Mark ONLINE participants offline if last_seen is older than max_age.
+
+        Also cancels open/claimed nudge tasks for those participants so the board
+        does not fill with ghost "Respond to …" work.
+        Returns participant ids that transitioned offline.
+        """
+        max_age = (
+            self.STALE_ONLINE_SECONDS if max_age_seconds is None else max_age_seconds
+        )
+        room = self.rooms.get(room_id)
+        if not room:
+            return []
+        now = utcnow()
+        marked: list[str] = []
+        for pid in list(room.participant_ids):
+            p = self.participants.get(pid)
+            if not p or p.status != ParticipantStatus.ONLINE:
+                continue
+            seen = p.last_seen_at
+            if seen.tzinfo is None:
+                from datetime import timezone
+
+                seen = seen.replace(tzinfo=timezone.utc)
+            age = (now - seen).total_seconds()
+            if age <= max_age:
+                continue
+            p.status = ParticipantStatus.OFFLINE
+            p.last_seen_at = now
+            async with self._lock:
+                self._persist_participant(p)
+            marked.append(pid)
+            await self._cancel_nudge_tasks_for(room_id, pid)
+            await self.emit(
+                GatewayEvent(
+                    type="participant",
+                    room_id=room_id,
+                    payload={
+                        "action": "stale_offline",
+                        "participant": p.model_dump(mode="json"),
+                        "stale_seconds": age,
+                    },
+                )
+            )
+        return marked
+
+    async def _cancel_nudge_tasks_for(self, room_id: str, participant_id: str) -> int:
+        cancelled = 0
+        for t in list(self.tasks.get(room_id, [])):
+            if t.claimed_by != participant_id:
+                continue
+            if t.status not in {TaskStatus.OPEN, TaskStatus.CLAIMED, TaskStatus.IN_PROGRESS}:
+                continue
+            if not (t.metadata or {}).get("nudge"):
+                continue
+            t.status = TaskStatus.CANCELLED
+            t.result = "Cancelled — assignee went offline / stale"
+            t.updated_at = utcnow()
+            self._persist_task(t)
+            cancelled += 1
+            await self.emit(
+                GatewayEvent(
+                    type="task",
+                    room_id=room_id,
+                    payload={"action": "updated", "task": t.model_dump(mode="json")},
+                )
+            )
+        return cancelled
+
     async def list_participants(self, room_id: str) -> list[Participant]:
         room = self.rooms.get(room_id)
         if not room:
             return []
+        await self.refresh_stale_online(room_id)
         # Deduplicate display list: one row per name+harness (prefer online, then newest)
         seen: dict[str, Participant] = {}
         for pid in room.participant_ids:

@@ -60,7 +60,7 @@ Think **Claude Connectors / mobile web session**: open a link on your phone, aut
 - [ ] Rate limits + audit log for public mode
 - [ ] Redis-backed multi-process scale-out
 - [ ] Official Docker image + one-click Fly / Railway deploy
-- [ ] Soft-expire offline participants + auto-cancel stale nudge tasks
+- [x] Soft-expire offline participants + auto-cancel stale nudge tasks (v0.1.1)
 - [ ] Tailscale Serve health check when LAN works but TS IP times out
 - [ ] Dual bind: internal `:8765` + LAN `:8766` without killing the other
 

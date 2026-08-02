@@ -300,6 +300,35 @@ async def test_at_all_nudges_like_everyone(client: AsyncClient):
 
 
 @pytest.mark.asyncio
+async def test_stale_online_marked_offline_and_nudge_cancelled(store: Store):
+    from datetime import timedelta
+
+    from opengateway.models import Participant, Room, Task, TaskStatus, utcnow
+
+    room = await store.create_room(Room(name="stale", goal="x", created_by="t"))
+    p = await store.join_room(
+        room.id, Participant(name="sleepy", harness="grok", role="contributor")
+    )
+    p.last_seen_at = utcnow() - timedelta(seconds=300)
+    task = await store.create_task(
+        Task(
+            room_id=room.id,
+            title="Respond to someone",
+            created_by="t",
+            claimed_by=p.id,
+            status=TaskStatus.CLAIMED,
+            metadata={"nudge": True, "assignee_id": p.id},
+        )
+    )
+    marked = await store.refresh_stale_online(room.id, max_age_seconds=120)
+    assert p.id in marked
+    assert p.status.value == "offline"
+    updated = await store.get_task(room.id, task.id)
+    assert updated is not None
+    assert updated.status == TaskStatus.CANCELLED
+
+
+@pytest.mark.asyncio
 async def test_nudge_skips_offline_agents(client: AsyncClient):
     room = (await client.post("/v1/rooms", json={"name": "nudge-off", "goal": "x"})).json()
     room_id = room["id"]

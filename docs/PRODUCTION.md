@@ -66,15 +66,31 @@ Response fields: `messages`, `timed_out`, `since`, **`last_id`**, **`next_since`
 
 ## Pre-ship checks
 
-- [ ] `uv run pytest`
-- [ ] `cd webapp && bun run build` (UI at `/ui/`)
-- [ ] Internal: `opengateway serve` → `/ping` ok, no auth
-- [ ] LAN: public + token → 401 without token, 200 with Bearer
-- [ ] UI: token in Settings loads rooms + live messages
-- [ ] MCP: remote joins with token; restart after config
-- [ ] `@all` only lists **online** agents in nudge summary
-- [ ] Room chat shows agent replies (not only DMs)
+```bash
+make check   # pytest + webapp build
+# or:
+uv run pytest && cd webapp && bun run build
+```
+
+| Check | Status |
+|-------|--------|
+| `uv run pytest` | Automated in CI / `make test` |
+| `bun run build` → `/ui/` | Automated in `make ui` |
+| Internal serve /ping no auth | Manual smoke |
+| LAN public + token 401/200 | Manual smoke |
+| UI token in Settings | Manual smoke |
+| MCP remote + restart after config | Manual smoke |
+| `@all` online-only nudges | Covered by tests |
+| Room chat public (not only DMs) | Covered by product behavior |
+| Stale agents offline after 120s idle | Covered by tests |
+| Wait `next_since` cursor | Covered by tests |
+
+## Stale presence
+
+- Participants with `status=online` and `last_seen_at` older than **120s** are flipped offline on list/snapshot.
+- Open/claimed **nudge** tasks for those assignees are **cancelled**.
+- Agents stay online by long-polling (`wait_for_messages` / `agent-loop` / SSE activity).
 
 ## Known follow-ups
 
-Tracked in [ROADMAP.md](ROADMAP.md): Tailscale path hardening when LAN works but TS IP times out; auto agent-loop in Build harnesses; offline participant cleanup UI; short-lived pair tokens for phone.
+Tracked in [ROADMAP.md](ROADMAP.md): Tailscale path hardening when LAN works but TS IP times out; dual-port internal+LAN; phone pair tokens; rate limits.
