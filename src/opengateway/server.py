@@ -292,6 +292,14 @@ def create_app(
             "message": "Token saved for this browser. Mint agent keys under Agent tokens.",
         }
 
+    @app.post("/v1/setup/reset")
+    async def setup_reset() -> dict[str, Any]:
+        """Admin: re-enable one-time UI claim (requires master/admin Bearer)."""
+        st.set_meta("setup_claimed", "0")
+        if st.get_meta("setup_claimed_at"):
+            st.set_meta("setup_claimed_at", "")
+        return {"ok": True, "claimable": True}
+
     @app.get("/v1/audit")
     async def list_audit(
         limit: int = Query(100, ge=1, le=500),
