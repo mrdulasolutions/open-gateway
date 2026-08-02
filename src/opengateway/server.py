@@ -238,10 +238,14 @@ def create_app(
         label = str(body.get("label") or "mobile")
         ttl_seconds = int(body.get("ttl_seconds") or 900)
         ttl_seconds = max(60, min(ttl_seconds, 3600))
-        if room_id and not await st.get_room(str(room_id)):
-            raise HTTPException(status_code=404, detail="Room not found")
+        # If room is stale/missing, still issue a pair code without room deep-link
+        resolved_room: Optional[str] = None
+        if room_id:
+            rid = str(room_id)
+            if await st.get_room(rid):
+                resolved_room = rid
         rec = await st.create_pair_code(
-            room_id=str(room_id) if room_id else None,
+            room_id=resolved_room,
             label=label,
             ttl_seconds=ttl_seconds,
         )
@@ -249,12 +253,13 @@ def create_app(
         # Include token in hash only as optional bootstrap for trusted pair sessions
         # (short-lived URL; prefer Settings paste on untrusted networks)
         pair_url = f"{base}/ui/#pair={rec['code']}"
-        if room_id:
-            pair_url += f"&room={room_id}"
+        if resolved_room:
+            pair_url += f"&room={resolved_room}"
         if cfg.require_auth and cfg.auth_token:
             pair_url += f"&token={cfg.auth_token}"
         return {
             **rec,
+            "room_id": resolved_room,
             "url": pair_url,
             "qr_payload": pair_url,
             "instructions": [

@@ -106,7 +106,10 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
                 _clear_auth_failures(ip)
                 return await call_next(request)
 
-        _record_auth_failure(ip)
+        # Only count *wrong* tokens toward rate limit — missing token is common
+        # for static UI probes and should not lock out the whole LAN IP.
+        if token:
+            _record_auth_failure(ip)
         return JSONResponse(
             status_code=401,
             content={
@@ -117,7 +120,7 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
                     "Behind Tailscale Serve on localhost you may also rely on "
                     "Tailscale-User-* identity headers when trust is enabled."
                     if self.config.trust_tailscale_identity
-                    else None
+                    else "Paste the gateway token in Live Ops → Settings."
                 ),
             },
             headers={"WWW-Authenticate": "Bearer"},

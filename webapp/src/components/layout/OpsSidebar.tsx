@@ -748,7 +748,19 @@ function PairQrModal({
         if (!cancelled) setQrDataUrl(dataUrl);
       } catch (e) {
         if (!cancelled) {
-          setErr(e instanceof Error ? e.message : String(e));
+          const msg = e instanceof Error ? e.message : String(e);
+          // Friendlier hints for common failures
+          if (/not found/i.test(msg) || /404/.test(msg)) {
+            setErr(
+              "Pair API not found — restart the gateway with the latest OpenGateway (needs /v1/pair)."
+            );
+          } else if (/unauthoriz/i.test(msg) || /401/.test(msg)) {
+            setErr(
+              "Unauthorized — paste the gateway auth token in Settings, then try again."
+            );
+          } else {
+            setErr(msg);
+          }
         }
       } finally {
         if (!cancelled) setBusy(false);

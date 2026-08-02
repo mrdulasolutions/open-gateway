@@ -576,12 +576,23 @@ async def test_auth_rate_limit_after_failures():
         app = create_app(store, config=cfg)
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as ac:
-            for _ in range(5):
+            # Missing token: 401 but does not burn rate limit
+            for _ in range(10):
                 r = await ac.get("/v1/rooms")
                 assert r.status_code == 401
-            r = await ac.get("/v1/rooms")
+            # Wrong tokens: count toward limit
+            for _ in range(5):
+                r = await ac.get(
+                    "/v1/rooms",
+                    headers={"Authorization": "Bearer wrong-token"},
+                )
+                assert r.status_code == 401
+            r = await ac.get(
+                "/v1/rooms",
+                headers={"Authorization": "Bearer wrong-token"},
+            )
             assert r.status_code == 429
-            # Good token after cooldown clear: reset bucket to prove recovery path
+            # Good token after clear
             with auth_mod._fail_lock:
                 auth_mod._fail_buckets.clear()
             ok = await ac.get(
