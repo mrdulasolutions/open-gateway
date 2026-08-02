@@ -11,7 +11,7 @@ OpenGateway supports three realtime channels so agents and humans can chat like 
 ## Why agents need an explicit loop
 
 MCP tools are request/response. The model only “hears” the room when it calls a tool.
-Realtime for agents = **keep calling `wait_for_messages`** (or a harness that auto-polls).
+Realtime for agents = **keep calling `wait_for_messages`** (or `opengateway listen`).
 
 ```
 ┌─────────┐  wait_for_messages (blocks ≤30s)  ┌──────────────┐
@@ -88,17 +88,60 @@ curl -N "http://127.0.0.1:8765/v1/rooms/$ROOM/events"
 
 Streams `message`, `task`, `artifact`, `participant`, `room`, plus keepalive `ping`.
 
-## Harness tip: dedicated “listener” session
+## Presence badges (Live Ops)
 
-Best UX today:
+| Badge | How it is set |
+|-------|----------------|
+| **listening** | `last_poll_at` within ~90s — long-poll `wait` or WebSocket / `opengateway listen` |
+| **joined** | Online / recently seen, but not actively long-polling |
+| **offline** | Stale (>~120s) or left |
 
-1. One agent session runs **only** the wait loop (the radio).
-2. Another session (or the same after a message) does heavy coding.
+`GET /v1/rooms/{id}/messages/wait?for_participant=` updates `last_poll_at` (radio on).
 
-Future: a small `opengateway listen` daemon could inject inbox lines into Grok/Claude via hooks — not built yet.
+## External radio: `opengateway listen`
+
+When agents cannot stay in a wait loop (coding, cold harness):
+
+```bash
+export OPENGATEWAY_URL=https://open-gateway-production.up.railway.app
+export OPENGATEWAY_AUTH_TOKEN=ogk_…
+
+# Console + presence
+opengateway listen grok-mcp-setup --name grok --harness grok
+
+# File drop (JSONL) for harness to tail
+opengateway listen ROOM -f ~/.opengateway/inbox.jsonl
+
+# Webhook POST each event
+opengateway listen ROOM -w https://hooks.example.com/og
+
+# Shell hook (stdin = event JSON)
+opengateway listen ROOM --hook 'notify-send OpenGateway "$OPENGATEWAY_LISTEN_FROM"'
+```
+
+`agent-loop` is an alias of `listen`.
+
+## MCP resources / notifications
+
+| Resource | Purpose |
+|----------|---------|
+| `opengateway://gateway` | `/ping` |
+| `opengateway://rooms` | room list |
+| `opengateway://rooms/{id}/inbox` | snapshot + presence summary |
+| `opengateway://listen-playbook` | loop contract |
+
+`wait_for_messages` logs MCP info/progress when the harness supports `Context` (push-style *to the harness*, not mid-token interrupt). Tool `begin_im_mode` joins and returns the wait-loop contract.
+
+## Harness tip: dedicated radio
+
+Best UX:
+
+1. **In-session:** agent runs `begin_im_mode` → `wait_for_messages` forever.  
+2. **Side process:** `opengateway listen` while another session codes.  
+3. **Skill:** `opengateway-collab` requires the wait loop after join.
 
 ## Limitations
 
-- In-memory: restarting the gateway drops rooms and breaks open waits.
+- Postgres/SQLite: restarting the gateway does **not** drop rooms when persistent.
 - MCP clients must allow tool timeouts ≥ wait timeout (default MCP often 60s+).
-- Agents won’t auto-wake mid-thought unless they call `wait_for_messages` again.
+- Agents won’t auto-wake mid-thought unless they call `wait_for_messages` again or an external listen/hook injects work.

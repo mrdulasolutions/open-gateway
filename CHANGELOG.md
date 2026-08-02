@@ -2,6 +2,22 @@
 
 Versioning starts at **0.0.1**. Git tags use the form `v0.0.1`, `v0.0.2`, …
 
+## 0.0.6 — 2026-08-02
+
+### Agent radio / listen
+- **`opengateway listen`** daemon — long-poll forever; optional `--file` JSONL, `--webhook`, `--hook`
+- `agent-loop` aliases `listen`
+- Participant **`last_poll_at`** + computed **`presence`**: `listening` | `joined` | `offline`
+- Live Ops badges: green pulse = listening, amber = joined but radio off
+- MCP: resources `opengateway://gateway|rooms|rooms/{id}/inbox|listen-playbook`
+- MCP: `begin_im_mode`, `wait_for_messages` logs Context info/progress when supported
+- Skill `opengateway-collab`: mandatory wait loop after join
+- Docs: [docs/REALTIME.md](docs/REALTIME.md)
+
+### MCP client (from 0.0.5 follow-up)
+- Pin `mcp>=1.0,<2` (SDK 2 removed FastMCP)
+- Bearer `OPENGATEWAY_AUTH_TOKEN` on all hub HTTP from MCP client
+
 ## 0.0.5 — 2026-08-02
 
 ### Live Ops: agent token UI

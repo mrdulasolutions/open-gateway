@@ -827,6 +827,105 @@ def pair(
     )
 
 
+@app.command("listen")
+def listen(
+    room: str = typer.Argument(..., help="Room UUID or name"),
+    name: str = typer.Option(
+        os.environ.get("OPENGATEWAY_AGENT_NAME") or "listen-daemon",
+        help="Join as this name",
+    ),
+    harness: str = typer.Option(
+        os.environ.get("OPENGATEWAY_HARNESS") or "mcp",
+        help="Harness tag",
+    ),
+    role: str = typer.Option("observer", help="Role (default observer for radio)"),
+    url: str = typer.Option(None, help="Gateway base URL"),
+    timeout: float = typer.Option(45.0, help="Long-poll timeout seconds"),
+    participant_id: str = typer.Option(
+        "",
+        "--participant-id",
+        help="Rejoin with existing participant id",
+    ),
+    file: Optional[str] = typer.Option(
+        None,
+        "--file",
+        "-f",
+        help="Append JSONL events to this path (file drop for agents)",
+    ),
+    webhook: Optional[str] = typer.Option(
+        None,
+        "--webhook",
+        "-w",
+        help="POST each event JSON to this URL",
+    ),
+    hook: Optional[str] = typer.Option(
+        None,
+        "--hook",
+        help="Shell command; event JSON on stdin (Grok/agent hook)",
+    ),
+    json_out: bool = typer.Option(
+        False,
+        "--json",
+        help="Print raw JSON events to stdout (one per line)",
+    ),
+    quiet: bool = typer.Option(
+        False,
+        "--quiet",
+        "-q",
+        help="No human-readable console lines (still writes sinks)",
+    ),
+) -> None:
+    """Daemon: long-poll a room forever (radio on) + optional webhook/file/hook.
+
+    Keeps presence=listening while running. Use when MCP agents are busy coding
+    and cannot stay in wait_for_messages.
+
+    Examples:
+      opengateway listen grok-mcp-setup --name grok --harness grok
+      opengateway listen ROOM -f ~/.opengateway/inbox.jsonl
+      opengateway listen ROOM -w https://hooks.example.com/og
+      opengateway listen ROOM --hook 'notify-send OpenGateway \"$OPENGATEWAY_LISTEN_FROM\"'
+
+    Env: OPENGATEWAY_URL, OPENGATEWAY_AUTH_TOKEN
+    """
+    from pathlib import Path
+
+    from opengateway.listen import ListenConfig, ListenSinks, run_listen_loop
+
+    base = _base_url(url)
+    sinks = ListenSinks(
+        print_console=not quiet and not json_out,
+        file_path=Path(file).expanduser() if file else None,
+        webhook_url=webhook,
+        hook_cmd=hook,
+        json_stdout=json_out,
+    )
+    cfg = ListenConfig(
+        base_url=base,
+        room=room,
+        name=name,
+        harness=harness,
+        role=role,
+        auth_token=(os.environ.get("OPENGATEWAY_AUTH_TOKEN") or "").strip(),
+        timeout=timeout,
+        participant_id=participant_id,
+        sinks=sinks,
+    )
+    console.print(
+        f"[green]listen[/] {base} room={room!r} as {name}/{harness} "
+        f"(timeout={timeout}s) · Ctrl-C to stop"
+    )
+    if file:
+        console.print(f"[dim]file drop → {file}[/]")
+    if webhook:
+        console.print(f"[dim]webhook → {webhook}[/]")
+    if hook:
+        console.print(f"[dim]hook → {hook}[/]")
+    code = run_listen_loop(cfg)
+    if code:
+        raise typer.Exit(code)
+
+
 @app.command("agent-loop")
 def agent_loop(
     room: str = typer.Argument(..., help="Room UUID or name"),
@@ -842,67 +941,21 @@ def agent_loop(
     url: str = typer.Option(None, help="Gateway base URL"),
     timeout: float = typer.Option(45.0, help="Long-poll timeout seconds"),
 ) -> None:
-    """Stay present in a room: join + long-poll forever (production remote agents).
-
-    Use when MCP is not loaded (fresh Grok session) or you want a dumb listen loop.
-    Set OPENGATEWAY_URL + OPENGATEWAY_AUTH_TOKEN for public/LAN hubs.
-
-    Cursor: always use the top-level ``next_since`` / ``last_id`` from the wait
-    response as the next ``since`` value (never dig nested fields).
-    """
-    base = _base_url(url)
-    with _http(15.0, base) as c:
-        try:
-            c.get("/ping").raise_for_status()
-        except Exception as e:
-            console.print(f"[red]Cannot reach {base}: {e}[/]")
-            raise typer.Exit(1)
-        rooms = c.get("/v1/rooms").json().get("rooms") or []
-        room_id = room
-        if not any(r.get("id") == room for r in rooms):
-            match = next(
-                (r for r in rooms if r.get("name") == room or r.get("id", "").startswith(room)),
-                None,
-            )
-            if not match:
-                console.print(f"[red]Room not found:[/] {room}")
-                raise typer.Exit(1)
-            room_id = match["id"]
-        p = c.post(
-            f"/v1/rooms/{room_id}/join",
-            json={"name": name, "harness": harness, "role": role},
-        )
-        p.raise_for_status()
-        participant = p.json()
-    pid = participant["id"]
-    console.print(f"[green]agent-loop[/] joined {name} ({pid[:8]}…) room {room_id[:8]}…")
-    console.print(f"[dim]{base} · long-poll {timeout}s · Ctrl-C to stop[/]\n")
-
-    since: Optional[str] = None
-    try:
-        while True:
-            params: dict = {
-                "timeout": timeout,
-                "limit": 50,
-                "for_participant": pid,
-            }
-            if since:
-                params["since"] = since
-            with _http(timeout + 15.0, base) as c:
-                r = c.get(f"/v1/rooms/{room_id}/messages/wait", params=params)
-                r.raise_for_status()
-                data = r.json()
-            msgs = data.get("messages") or []
-            # Prefer top-level cursor (production-ready contract)
-            since = data.get("next_since") or data.get("last_id") or since
-            if msgs:
-                for m in msgs:
-                    since = m.get("id") or since
-                    _print_message_line(m)
-            elif data.get("timed_out"):
-                console.print("[dim]…listening[/]", end="\r")
-    except KeyboardInterrupt:
-        console.print("\n[dim]agent-loop stopped[/]")
+    """Alias for ``listen`` (join + long-poll forever). Prefer ``opengateway listen``."""
+    listen(
+        room=room,
+        name=name,
+        harness=harness,
+        role=role,
+        url=url,
+        timeout=timeout,
+        participant_id="",
+        file=None,
+        webhook=None,
+        hook=None,
+        json_out=False,
+        quiet=False,
+    )
 
 
 @app.callback()

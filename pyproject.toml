@@ -1,6 +1,6 @@
 [project]
 name = "opengateway"
-version = "0.0.5"
+version = "0.0.6"
 description = "OpenGateway — multi-agent collaboration hub for any harness (ACP + MCP)"
 readme = "README.md"
 authors = [

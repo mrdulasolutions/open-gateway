@@ -21,16 +21,22 @@ export type Room = {
   updated_at: string;
 };
 
+/** Derived radio state from last_poll_at / last_seen (server computed_field). */
+export type Presence = "listening" | "joined" | "offline" | string;
+
 export type Participant = {
   id: string;
   name: string;
   harness: Harness;
   role: string;
   status: string;
+  /** listening = long-poll radio on; joined = online but not polling; offline = stale */
+  presence?: Presence;
   room_id?: string | null;
   capabilities: string[];
   joined_at: string;
   last_seen_at: string;
+  last_poll_at?: string | null;
 };
 
 export type RoomMessage = {

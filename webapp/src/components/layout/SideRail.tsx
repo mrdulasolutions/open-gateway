@@ -125,17 +125,30 @@ export function SideRail({
   onOpenDm,
 }: Props) {
   const sorted = useMemo(() => {
+    const rank = (p: Participant) => {
+      const pr = p.presence || (p.status === "online" ? "joined" : "offline");
+      if (pr === "listening") return 0;
+      if (pr === "joined" || p.status === "online") return 1;
+      return 2;
+    };
     return [...participants].sort((a, b) => {
-      const ao = a.status === "online" ? 0 : 1;
-      const bo = b.status === "online" ? 0 : 1;
-      if (ao !== bo) return ao - bo;
-      const at = a.last_seen_at ? new Date(a.last_seen_at).getTime() : 0;
-      const bt = b.last_seen_at ? new Date(b.last_seen_at).getTime() : 0;
+      const ar = rank(a);
+      const br = rank(b);
+      if (ar !== br) return ar - br;
+      const at = a.last_poll_at || a.last_seen_at
+        ? new Date(a.last_poll_at || a.last_seen_at).getTime()
+        : 0;
+      const bt = b.last_poll_at || b.last_seen_at
+        ? new Date(b.last_poll_at || b.last_seen_at).getTime()
+        : 0;
       return bt - at;
     });
   }, [participants]);
 
-  const onlineCount = sorted.filter((p) => p.status === "online").length;
+  const listeningCount = sorted.filter((p) => p.presence === "listening").length;
+  const joinedCount = sorted.filter(
+    (p) => p.presence === "joined" || (p.status === "online" && p.presence !== "listening")
+  ).length;
 
   return (
     <aside className="flex h-full min-h-0 w-full shrink-0 flex-col gap-2.5 overflow-y-auto border-l border-zinc-200 bg-zinc-50/90 p-3 dark:border-white/[0.06] dark:bg-zinc-950/50 md:w-[320px]">
@@ -148,12 +161,16 @@ export function SideRail({
         {sorted.length === 0 && <Empty>None</Empty>}
         {sorted.length > 0 && (
           <div className="mb-1 px-1 text-[10px] font-semibold uppercase tracking-wide text-zinc-400">
-            {onlineCount} online · sorted by activity
+            {listeningCount} listening · {joinedCount} joined · radio vs present
           </div>
         )}
         {sorted.map((p) => {
           const isMe = meId && p.id === meId;
-          const isOn = p.status === "online";
+          const presence =
+            p.presence ||
+            (p.status === "online" ? "joined" : "offline");
+          const isListening = presence === "listening";
+          const isJoined = presence === "joined";
           return (
             <Row
               key={p.id}
@@ -168,10 +185,22 @@ export function SideRail({
                 <span
                   className={cn(
                     "h-2 w-2 shrink-0 rounded-full",
-                    isOn
-                      ? "bg-emerald-500 shadow-[0_0_6px_rgba(16,185,129,0.7)]"
-                      : "bg-zinc-400 dark:bg-zinc-600"
+                    isListening &&
+                      "bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.85)] animate-pulse",
+                    isJoined &&
+                      !isListening &&
+                      "bg-amber-400 shadow-[0_0_6px_rgba(251,191,36,0.6)]",
+                    !isListening &&
+                      !isJoined &&
+                      "bg-zinc-400 dark:bg-zinc-600"
                   )}
+                  title={
+                    isListening
+                      ? "Listening (long-poll / radio on)"
+                      : isJoined
+                        ? "Joined but not listening"
+                        : "Offline"
+                  }
                 />
                 <div className="min-w-0 flex-1 font-medium text-zinc-900 dark:text-zinc-100">
                   {p.name}
@@ -181,26 +210,31 @@ export function SideRail({
                     </span>
                   )}
                 </div>
+                <span
+                  className={cn(
+                    "shrink-0 rounded-full px-1.5 py-px text-[9px] font-semibold uppercase tracking-wide",
+                    isListening &&
+                      "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400",
+                    isJoined &&
+                      !isListening &&
+                      "bg-amber-500/15 text-amber-700 dark:text-amber-400",
+                    !isListening &&
+                      !isJoined &&
+                      "bg-zinc-500/10 text-zinc-500"
+                  )}
+                >
+                  {isListening ? "listening" : isJoined ? "joined" : "offline"}
+                </span>
                 {!isMe && onOpenDm && (
                   <MessageSquare className="h-3.5 w-3.5 shrink-0 text-zinc-400" />
                 )}
               </div>
               <div className="mt-0.5 pl-4 text-xs text-zinc-500">
-                <span
-                  className={cn(
-                    isOn
-                      ? "font-semibold text-emerald-600 dark:text-emerald-400"
-                      : "text-zinc-500"
-                  )}
-                >
-                  {p.status}
-                </span>
-                {" · "}
                 {p.harness} · {p.role}
-                {p.last_seen_at && (
+                {(p.last_poll_at || p.last_seen_at) && (
                   <span className="text-zinc-400">
                     {" · "}
-                    {relativeSeen(p.last_seen_at)}
+                    {relativeSeen(p.last_poll_at || p.last_seen_at)}
                   </span>
                 )}
               </div>

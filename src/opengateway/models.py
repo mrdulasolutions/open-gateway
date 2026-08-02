@@ -7,7 +7,7 @@ from enum import Enum
 from typing import Any, Literal, Optional
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, computed_field
 
 
 def utcnow() -> datetime:
@@ -16,6 +16,14 @@ def utcnow() -> datetime:
 
 def new_id() -> str:
     return str(uuid4())
+
+
+# Presence for Live Ops badges (not a stored status enum — derived from activity).
+# listening: recent long-poll / wait touch (radio on)
+# joined: online or recently seen, but not actively long-polling
+# offline: stale or left
+LISTENING_SECONDS = 90.0
+JOINED_STALE_SECONDS = 120.0
 
 
 # ── ACP-compatible message shapes ──────────────────────────────────────────
@@ -98,6 +106,40 @@ class Participant(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
     joined_at: datetime = Field(default_factory=utcnow)
     last_seen_at: datetime = Field(default_factory=utcnow)
+    # Updated only on long-poll wait / WS pump — drives "listening" badge
+    last_poll_at: Optional[datetime] = None
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def presence(self) -> str:
+        """Derived radio state: listening | joined | offline."""
+        return presence_for(self)
+
+
+def _aware(dt: Optional[datetime]) -> Optional[datetime]:
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def presence_for(p: Participant) -> str:
+    """listening = active long-poll; joined = online but radio off; offline = stale."""
+    now = utcnow()
+    poll = _aware(p.last_poll_at)
+    if poll is not None:
+        if (now - poll).total_seconds() <= LISTENING_SECONDS:
+            return "listening"
+    if p.status == ParticipantStatus.ONLINE:
+        seen = _aware(p.last_seen_at) or now
+        if (now - seen).total_seconds() <= JOINED_STALE_SECONDS:
+            return "joined"
+    if p.status in {ParticipantStatus.AWAY, ParticipantStatus.BUSY}:
+        seen = _aware(p.last_seen_at) or now
+        if (now - seen).total_seconds() <= JOINED_STALE_SECONDS:
+            return "joined"
+    return "offline"
 
 
 class RoomMessage(BaseModel):

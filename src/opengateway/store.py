@@ -769,13 +769,18 @@ class Store:
         )
         return p
 
-    async def touch_participant(self, participant_id: str) -> None:
+    async def touch_participant(
+        self, participant_id: str, *, listening: bool = False
+    ) -> None:
+        """Mark participant active. listening=True when they are long-polling (radio on)."""
         p = self.participants.get(participant_id)
         if p:
-            p.last_seen_at = utcnow()
+            now = utcnow()
+            p.last_seen_at = now
             p.status = ParticipantStatus.ONLINE
-            # Debounced-ish: only persist status transitions are rare enough via join/leave;
-            # skip disk write on every long-poll touch.
+            if listening:
+                p.last_poll_at = now
+            # Debounced-ish: skip disk write on every long-poll touch.
 
     # ── Messages ───────────────────────────────────────────────────────────
 

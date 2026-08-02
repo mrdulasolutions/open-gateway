@@ -1325,7 +1325,8 @@ def create_app(
         if not await st.get_room(room_id):
             raise HTTPException(status_code=404, detail="Room not found")
         if for_participant:
-            await st.touch_participant(for_participant)
+            # long-poll = radio on (UI "listening" badge)
+            await st.touch_participant(for_participant, listening=True)
         items = await st.wait_for_messages(
             room_id,
             since=since,
@@ -1333,6 +1334,8 @@ def create_app(
             timeout=timeout,
             limit=limit,
         )
+        if for_participant:
+            await st.touch_participant(for_participant, listening=True)
         # next_since = last message id for the client's wait cursor (top-level, not nested)
         last_id = items[-1].id if items else since
         return {
@@ -1528,7 +1531,7 @@ def create_app(
             if participant_id:
                 p = await st.get_participant(participant_id)
                 if p:
-                    await st.touch_participant(participant_id)
+                    await st.touch_participant(participant_id, listening=True)
                     await websocket.send_json(
                         {"type": "hello_ok", "participant": p.model_dump(mode="json")}
                     )
@@ -1545,6 +1548,8 @@ def create_app(
 
                 msg_type = data.get("type")
                 if msg_type == "ping":
+                    if participant_id:
+                        await st.touch_participant(participant_id, listening=True)
                     await websocket.send_json({"type": "pong"})
                     continue
 
@@ -1554,7 +1559,7 @@ def create_app(
                     if not p:
                         await websocket.send_json({"type": "error", "detail": "unknown_participant"})
                         continue
-                    await st.touch_participant(participant_id)
+                    await st.touch_participant(participant_id, listening=True)
                     await websocket.send_json(
                         {"type": "hello_ok", "participant": p.model_dump(mode="json")}
                     )

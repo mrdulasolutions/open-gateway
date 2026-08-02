@@ -43,6 +43,8 @@ export type DmRow = {
   peer_name: string;
   peer_harness: string;
   peer_status: string;
+  /** listening | joined | offline — radio vs present */
+  peer_presence?: string;
   peer_role?: string;
   last_at?: string | null;
   has_thread: boolean;
@@ -121,17 +123,38 @@ function Accordion({
   );
 }
 
-function OnlineDot({ online, className }: { online: boolean; className?: string }) {
+function OnlineDot({
+  online,
+  presence,
+  className,
+}: {
+  online: boolean;
+  presence?: string;
+  className?: string;
+}) {
+  const mode =
+    presence || (online ? "joined" : "offline");
+  const listening = mode === "listening";
+  const joined = mode === "joined" || (online && !listening && mode !== "offline");
   return (
     <span
       className={cn(
         "inline-block h-2 w-2 shrink-0 rounded-full",
-        online
-          ? "bg-emerald-500 shadow-[0_0_6px_rgba(16,185,129,0.7)]"
-          : "bg-zinc-400 dark:bg-zinc-600",
+        listening &&
+          "animate-pulse bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.85)]",
+        joined &&
+          !listening &&
+          "bg-amber-400 shadow-[0_0_6px_rgba(251,191,36,0.6)]",
+        !listening && !joined && "bg-zinc-400 dark:bg-zinc-600",
         className
       )}
-      title={online ? "Online" : "Offline"}
+      title={
+        listening
+          ? "Listening (radio on)"
+          : joined
+            ? "Joined but not listening"
+            : "Offline"
+      }
     />
   );
 }
@@ -227,11 +250,17 @@ export function OpsSidebar({
     for (const t of dmThreads) {
       if (!t.peer_id) continue;
       const p = participants.find((x) => x.id === t.peer_id);
+      const presence =
+        p?.presence ||
+        ((t.peer_status === "online" || p?.status === "online")
+          ? "joined"
+          : "offline");
       byId.set(t.peer_id, {
         peer_id: t.peer_id,
         peer_name: t.peer_name || p?.name || t.peer_id.slice(0, 8),
         peer_harness: t.peer_harness || p?.harness || "other",
         peer_status: t.peer_status || p?.status || "offline",
+        peer_presence: presence,
         peer_role: t.peer_role || p?.role,
         last_at: t.last_at,
         has_thread: true,
@@ -242,6 +271,8 @@ export function OpsSidebar({
       if (byId.has(p.id)) {
         const row = byId.get(p.id)!;
         row.peer_status = p.status;
+        row.peer_presence =
+          p.presence || (p.status === "online" ? "joined" : "offline");
         row.peer_role = p.role;
         row.peer_name = p.name;
         row.peer_harness = p.harness;
@@ -252,15 +283,19 @@ export function OpsSidebar({
         peer_name: p.name,
         peer_harness: p.harness,
         peer_status: p.status,
+        peer_presence:
+          p.presence || (p.status === "online" ? "joined" : "offline"),
         peer_role: p.role,
         last_at: p.last_seen_at,
         has_thread: false,
       });
     }
+    const rank = (pr?: string) =>
+      pr === "listening" ? 0 : pr === "joined" ? 1 : 2;
     return Array.from(byId.values()).sort((a, b) => {
-      const ao = a.peer_status === "online" ? 0 : 1;
-      const bo = b.peer_status === "online" ? 0 : 1;
-      if (ao !== bo) return ao - bo;
+      const ar = rank(a.peer_presence);
+      const br = rank(b.peer_presence);
+      if (ar !== br) return ar - br;
       const at = a.last_at || "";
       const bt = b.last_at || "";
       return bt.localeCompare(at);
@@ -435,7 +470,13 @@ export function OpsSidebar({
             </div>
           )}
           {dmRows.map((t) => {
-            const isOn = t.peer_status === "online";
+            const isOn = t.peer_status === "online" || t.peer_presence === "listening";
+            const label =
+              t.peer_presence === "listening"
+                ? "listening"
+                : t.peer_presence === "joined" || isOn
+                  ? "joined"
+                  : "offline";
             return (
               <button
                 key={t.peer_id}
@@ -451,11 +492,11 @@ export function OpsSidebar({
                     : "hover:bg-zinc-100 dark:hover:bg-white/5"
                 )}
               >
-                <OnlineDot online={isOn} />
+                <OnlineDot online={isOn} presence={t.peer_presence} />
                 <span className="min-w-0 flex-1">
                   <span className="block truncate font-medium">{t.peer_name}</span>
                   <span className="block truncate text-[10px] text-zinc-500">
-                    {isOn ? "online" : "offline"}
+                    {label}
                     {t.peer_role ? ` · ${t.peer_role}` : ""}
                     {t.has_thread ? " · thread" : " · start chat"}
                   </span>

@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any
+from typing import Any, Optional
 
 import httpx
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import Context, FastMCP
 
 DEFAULT_BASE_URL = os.environ.get("OPENGATEWAY_URL", "http://127.0.0.1:8765")
 DEFAULT_HARNESS = os.environ.get("OPENGATEWAY_HARNESS", "mcp")
@@ -34,17 +34,22 @@ def _auth_headers() -> dict[str, str]:
 mcp = FastMCP(
     "OpenGateway",
     instructions=(
-        "OpenGateway multi-agent collaboration tools. Use these to work with other agents "
-        "(Claude Code, Grok, Cursor, ACP agents) on the same project.\n\n"
-        "For public / Railway hubs set OPENGATEWAY_URL + OPENGATEWAY_AUTH_TOKEN in the MCP env "
-        "(device key ogk_… from Live Ops, or master token). Restart the harness after config changes.\n\n"
-        "Typical flow:\n"
-        "1. create_room (or list_rooms + join existing)\n"
-        "2. join_room — save the returned `id` (also `participant_id`) for later calls\n"
-        "3. create_task / claim_task for work items\n"
-        "4. post_message(from_participant_id=your id) to coordinate; poll_messages to hear others\n"
-        "5. share_artifact for files/results; complete_task when done\n"
-        "6. room_snapshot anytime for full state"
+        "OpenGateway multi-agent collaboration tools. Work with other agents "
+        "(Claude Code, Grok, Cursor, ACP) in shared rooms.\n\n"
+        "AUTH: public/Railway needs OPENGATEWAY_URL + OPENGATEWAY_AUTH_TOKEN in MCP env.\n\n"
+        "MANDATORY realtime (you are deaf until you do this):\n"
+        "After join_room, immediately start the IM loop and never exit it while collab is open:\n"
+        "  LAST=\"\"\n"
+        "  loop forever:\n"
+        "    wait_for_messages(room_id, since=LAST, for_participant=MY_ID, timeout_seconds=45)\n"
+        "    if messages: handle + post_message replies; LAST=next_since\n"
+        "    if timed_out: call wait_for_messages again immediately\n"
+        "If you must code for a long stretch, tell the user to run "
+        "`opengateway listen <room>` so presence stays radio-on.\n\n"
+        "Resources: opengateway://gateway, opengateway://rooms, "
+        "opengateway://rooms/{room_id}/inbox — read for passive inbox snapshot.\n\n"
+        "Flow: list/create room → join_room (save id/participant_id) → "
+        "wait loop → post_message / tasks / artifacts → room_snapshot"
     ),
 )
 
@@ -87,6 +92,68 @@ def _json(resp: httpx.Response) -> Any:
 
 def _dumps(data: Any) -> str:
     return json.dumps(data, indent=2, default=str)
+
+
+# ── MCP resources (passive snapshot / harness resource readers) ─────────────
+
+
+@mcp.resource("opengateway://gateway")
+def resource_gateway() -> str:
+    """Hub health, mode, auth requirements."""
+    with _client() as c:
+        return _dumps(_json(c.get("/ping")))
+
+
+@mcp.resource("opengateway://rooms")
+def resource_rooms() -> str:
+    """List collaboration rooms on the hub."""
+    with _client() as c:
+        return _dumps(_json(c.get("/v1/rooms")))
+
+
+@mcp.resource("opengateway://rooms/{room_id}/inbox")
+def resource_room_inbox(room_id: str) -> str:
+    """Recent messages + participants (presence) for a room — passive read, not a wait loop."""
+    with _client() as c:
+        snap = _json(c.get(f"/v1/rooms/{room_id}/snapshot"))
+        if isinstance(snap, dict) and "error" not in snap:
+            parts = snap.get("participants") or []
+            listening = [p for p in parts if p.get("presence") == "listening"]
+            joined = [p for p in parts if p.get("presence") == "joined"]
+            snap["presence_summary"] = {
+                "listening": [p.get("name") for p in listening],
+                "joined_not_listening": [p.get("name") for p in joined],
+                "hint": (
+                    "presence=listening means recent wait_for_messages / opengateway listen. "
+                    "joined means online but radio off."
+                ),
+            }
+        return _dumps(snap)
+
+
+@mcp.resource("opengateway://listen-playbook")
+def resource_listen_playbook() -> str:
+    """How to stay radio-on (MCP loop + external daemon)."""
+    return """# OpenGateway listen playbook
+
+## In-session (MCP agent)
+1. join_room → save participant_id (field `id` or `participant_id`)
+2. Loop forever:
+   wait_for_messages(room_id, since=LAST, for_participant=MY_ID, timeout_seconds=45)
+   handle messages; LAST = next_since; on timed_out, wait again immediately
+3. Do not exit the loop while collaboration is active
+
+## External radio (when coding / cold harness)
+  opengateway listen <room> --name <you> --harness grok \\
+    --file ~/.opengateway/inbox.jsonl
+
+Optional sinks: --webhook URL, --hook 'shell…'
+
+## Presence badges (Live Ops)
+- listening — long-poll in last ~90s
+- joined — online but not polling
+- offline — stale
+"""
 
 
 @mcp.tool()
@@ -236,30 +303,30 @@ def poll_messages(
 
 
 @mcp.tool()
-def wait_for_messages(
+async def wait_for_messages(
     room_id: str,
     since: str = "",
     for_participant: str = "",
-    timeout_seconds: float = 30.0,
+    timeout_seconds: float = 45.0,
     limit: int = 50,
+    ctx: Optional[Context] = None,
 ) -> str:
     """IM-style long-poll: block until a new room message arrives (or timeout).
 
-    Use this in a loop for realtime chat with other agents:
+    REQUIRED LOOP for multi-agent chat — call again immediately on timed_out:
       1. wait_for_messages(room_id, since=last_id, for_participant=my_id, timeout_seconds=45)
-      2. process any messages; remember last message id
-      3. reply with post_message
-      4. goto 1
+      2. process messages; reply with post_message
+      3. LAST = next_since; goto 1
 
-    timed_out=true with empty messages means nothing new — call again to keep listening.
+    Marks you presence=listening in Live Ops while polling.
+    If the harness supports MCP logging, progress is notified during the wait.
 
     Args:
         room_id: Room UUID.
-        since: Last message id you already processed (exclusive). Empty = wait for brand-new only
-               if history is empty; usually pass your last seen id.
-        for_participant: Your participant_id — only broadcasts + DMs to you + your own msgs.
-        timeout_seconds: How long to block (1–120). Default 30.
-        limit: Max messages to return when unblocking.
+        since: Last message id you already processed (exclusive).
+        for_participant: Your participant_id — broadcasts + DMs to you.
+        timeout_seconds: Block 1–120s (default 45).
+        limit: Max messages when unblocking.
     """
     params: dict[str, Any] = {
         "timeout": max(1.0, min(float(timeout_seconds), 120.0)),
@@ -269,15 +336,22 @@ def wait_for_messages(
         params["since"] = since
     if for_participant:
         params["for_participant"] = for_participant
-    # Long-poll needs a higher client timeout than the server wait
     client_timeout = max(35.0, float(timeout_seconds) + 10.0)
+    if ctx is not None:
+        try:
+            await ctx.info(
+                f"OpenGateway listening room={room_id[:8]}… "
+                f"since={since or '∅'} timeout={params['timeout']}s"
+            )
+            await ctx.report_progress(0, 1, "long-poll wait")
+        except Exception:
+            pass
     with httpx.Client(
         base_url=_base(),
         timeout=client_timeout,
         headers=_auth_headers(),
     ) as c:
         data = _json(c.get(f"/v1/rooms/{room_id}/messages/wait", params=params))
-        # Normalize cursor so agents don't dig into nested message.id incorrectly
         if isinstance(data, dict) and "messages" in data:
             msgs = data.get("messages") or []
             if msgs and not data.get("next_since"):
@@ -285,11 +359,78 @@ def wait_for_messages(
                 mid = last.get("id") if isinstance(last, dict) else None
                 data["last_id"] = mid
                 data["next_since"] = mid
+            data["presence"] = "listening"
             data["hint"] = (
                 "Pass next_since (or last_id) as the next wait_for_messages(since=…). "
-                "Do not use nested message fields. timed_out=true means loop again."
+                "timed_out=true → call wait_for_messages again immediately (keep radio on). "
+                "External daemon: opengateway listen <room> --file ~/.opengateway/inbox.jsonl"
             )
+            if ctx is not None:
+                try:
+                    n = len(msgs)
+                    if n:
+                        await ctx.info(f"OpenGateway inbox: {n} new message(s)")
+                        await ctx.report_progress(1, 1, f"{n} messages")
+                    else:
+                        await ctx.info("OpenGateway timed_out — loop wait_for_messages again")
+                        await ctx.report_progress(1, 1, "timed_out")
+                except Exception:
+                    pass
         return _dumps(data)
+
+
+@mcp.tool()
+def begin_im_mode(
+    room_id: str,
+    name: str = "",
+    harness: str = DEFAULT_HARNESS,
+    participant_id: str = "",
+) -> str:
+    """Join (or rejoin) a room and return a ready-to-run wait loop contract.
+
+    Call this first when starting multi-agent collab. Then immediately call
+    wait_for_messages with the returned participant_id and loop forever.
+
+    Args:
+        room_id: Room UUID.
+        name: Agent display name (defaults to OPENGATEWAY_AGENT_NAME / harness).
+        harness: grok | claude-code | cursor | hermes | mcp | …
+        participant_id: Optional rejoin id.
+    """
+    body: dict[str, Any] = {
+        "name": name or DEFAULT_AGENT_NAME or harness or "agent",
+        "harness": harness,
+        "role": "contributor",
+        "capabilities": ["chat", "listen"],
+    }
+    if participant_id:
+        body["participant_id"] = participant_id
+    with _client() as c:
+        data = _json(c.post(f"/v1/rooms/{room_id}/join", json=body))
+    if isinstance(data, dict) and data.get("id") and "participant_id" not in data:
+        data = {**data, "participant_id": data["id"]}
+    if isinstance(data, dict) and not data.get("error"):
+        pid = data.get("participant_id") or data.get("id")
+        data["im_loop"] = {
+            "room_id": room_id,
+            "participant_id": pid,
+            "next_tool": "wait_for_messages",
+            "args": {
+                "room_id": room_id,
+                "since": "",
+                "for_participant": pid,
+                "timeout_seconds": 45,
+            },
+            "rule": (
+                "Call wait_for_messages next. On every response: handle messages, "
+                "set since=next_since, call wait_for_messages again. Never stop while collab is open."
+            ),
+            "external_radio": (
+                f"opengateway listen {room_id} --name {body['name']} "
+                f"--harness {harness} --file ~/.opengateway/inbox.jsonl"
+            ),
+        }
+    return _dumps(data)
 
 
 @mcp.tool()
