@@ -103,6 +103,27 @@ class PostgresPersistence:
             endpoint TEXT NOT NULL UNIQUE,
             data TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS tenants (
+            id TEXT PRIMARY KEY,
+            data TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS users (
+            id TEXT PRIMARY KEY,
+            email TEXT NOT NULL UNIQUE,
+            tenant_id TEXT NOT NULL,
+            data TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+        CREATE TABLE IF NOT EXISTS sessions (
+            token_hash TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            data TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS invites (
+            code TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL,
+            data TEXT NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS audit_log (
             id BIGSERIAL PRIMARY KEY,
             created_at TEXT NOT NULL,
@@ -212,6 +233,105 @@ class PostgresPersistence:
             with self._conn.cursor() as cur:
                 cur.execute("DELETE FROM gateways WHERE id = %s", (gateway_id,))
             self._conn.commit()
+
+    def save_tenant(self, rec: dict[str, Any]) -> None:
+        self._upsert("tenants", ["id", "data"], (rec["id"], json.dumps(rec)))
+
+    def list_tenants(self) -> list[dict[str, Any]]:
+        with self._lock:
+            with self._conn.cursor() as cur:
+                cur.execute("SELECT data FROM tenants")
+                rows = cur.fetchall()
+        return [json.loads(r["data"]) for r in rows]
+
+    def get_tenant(self, tenant_id: str) -> Optional[dict[str, Any]]:
+        with self._lock:
+            with self._conn.cursor() as cur:
+                cur.execute("SELECT data FROM tenants WHERE id = %s", (tenant_id,))
+                row = cur.fetchone()
+        return json.loads(row["data"]) if row else None
+
+    def save_user(self, rec: dict[str, Any]) -> None:
+        self._upsert(
+            "users",
+            ["id", "email", "tenant_id", "data"],
+            (rec["id"], rec["email"].lower(), rec["tenant_id"], json.dumps(rec)),
+        )
+
+    def get_user_by_email(self, email: str) -> Optional[dict[str, Any]]:
+        with self._lock:
+            with self._conn.cursor() as cur:
+                cur.execute(
+                    "SELECT data FROM users WHERE email = %s", (email.lower(),)
+                )
+                row = cur.fetchone()
+        return json.loads(row["data"]) if row else None
+
+    def get_user(self, user_id: str) -> Optional[dict[str, Any]]:
+        with self._lock:
+            with self._conn.cursor() as cur:
+                cur.execute("SELECT data FROM users WHERE id = %s", (user_id,))
+                row = cur.fetchone()
+        return json.loads(row["data"]) if row else None
+
+    def count_users(self) -> int:
+        with self._lock:
+            with self._conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) AS c FROM users")
+                row = cur.fetchone()
+        return int(row["c"] if row else 0)
+
+    def list_users(self, tenant_id: Optional[str] = None) -> list[dict[str, Any]]:
+        with self._lock:
+            with self._conn.cursor() as cur:
+                if tenant_id:
+                    cur.execute(
+                        "SELECT data FROM users WHERE tenant_id = %s", (tenant_id,)
+                    )
+                else:
+                    cur.execute("SELECT data FROM users")
+                rows = cur.fetchall()
+        return [json.loads(r["data"]) for r in rows]
+
+    def save_session(self, rec: dict[str, Any]) -> None:
+        self._upsert(
+            "sessions",
+            ["token_hash", "user_id", "data"],
+            (rec["token_hash"], rec["user_id"], json.dumps(rec)),
+        )
+
+    def get_session(self, token_hash: str) -> Optional[dict[str, Any]]:
+        with self._lock:
+            with self._conn.cursor() as cur:
+                cur.execute(
+                    "SELECT data FROM sessions WHERE token_hash = %s", (token_hash,)
+                )
+                row = cur.fetchone()
+        return json.loads(row["data"]) if row else None
+
+    def delete_session(self, token_hash: str) -> None:
+        with self._lock:
+            with self._conn.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM sessions WHERE token_hash = %s", (token_hash,)
+                )
+            self._conn.commit()
+
+    def save_invite(self, rec: dict[str, Any]) -> None:
+        self._upsert(
+            "invites",
+            ["code", "tenant_id", "data"],
+            (rec["code"], rec["tenant_id"], json.dumps(rec)),
+        )
+
+    def get_invite(self, code: str) -> Optional[dict[str, Any]]:
+        with self._lock:
+            with self._conn.cursor() as cur:
+                cur.execute(
+                    "SELECT data FROM invites WHERE code = %s", (code.upper(),)
+                )
+                row = cur.fetchone()
+        return json.loads(row["data"]) if row else None
 
     def get_meta(self, key: str) -> Optional[str]:
         with self._lock:

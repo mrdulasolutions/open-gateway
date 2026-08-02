@@ -113,6 +113,13 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
             "OPTIONS",
         }:
             return await call_next(request)
+        # User login / register / status (session auth)
+        if path.rstrip("/") in {
+            "/v1/auth/status",
+            "/v1/auth/login",
+            "/v1/auth/register",
+        } and request.method in {"GET", "POST", "OPTIONS"}:
+            return await call_next(request)
 
         ip = _client_ip(request)
         if _auth_failures_blocked(ip):
@@ -138,6 +145,29 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
             request.state.auth_scopes = [SCOPE_ADMIN]
             return await call_next(request)
 
+        # User session tokens (ogs_…) from email/password login
+        if token and self.store is not None and token.startswith("ogs_"):
+            try:
+                sess = await self.store.verify_session_token(token)
+            except Exception:
+                sess = None
+            if sess:
+                scopes = sess.get("scopes") or ["read", "write"]
+                if not scopes_allow(scopes, request.method, path):
+                    return JSONResponse(
+                        status_code=403,
+                        content={
+                            "detail": "Session does not allow this action",
+                            "scopes": scopes,
+                        },
+                    )
+                _clear_auth_failures(ip)
+                request.state.auth_kind = "session"
+                request.state.user = sess
+                request.state.tenant_id = sess.get("tenant_id")
+                request.state.auth_scopes = scopes
+                return await call_next(request)
+
         # Per-device API keys
         if token and self.store is not None:
             try:
@@ -158,6 +188,7 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
                 _clear_auth_failures(ip)
                 request.state.auth_kind = "api_key"
                 request.state.api_key = key
+                request.state.tenant_id = (key.get("metadata") or {}).get("tenant_id")
                 request.state.auth_scopes = scopes
                 return await call_next(request)
 

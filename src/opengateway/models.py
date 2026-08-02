@@ -149,6 +149,8 @@ class Room(BaseModel):
     project_path: Optional[str] = None
     status: RoomStatus = RoomStatus.OPEN
     created_by: str = "system"
+    # Multi-tenant isolation (null = legacy / master-token-only visibility)
+    tenant_id: Optional[str] = None
     participant_ids: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=utcnow)

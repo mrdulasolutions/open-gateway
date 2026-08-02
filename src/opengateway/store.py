@@ -33,6 +33,16 @@ from opengateway.api_keys import (
 from opengateway.audit import audit_enabled, build_audit_entry
 from opengateway.models import new_id
 from opengateway.persistence import default_db_path, is_postgres_url, open_persistence
+from opengateway.users import (
+    hash_password,
+    hash_token,
+    mint_invite_code,
+    mint_session_token,
+    open_registration,
+    session_ttl_days,
+    slugify,
+    verify_password,
+)
 
 
 class Store:
@@ -143,6 +153,246 @@ class Store:
             self._db.set_meta(key, value)
         else:
             self._memory_meta[key] = value
+
+    # ── Multi-user / multi-tenant ──────────────────────────────────────────
+
+    def count_users(self) -> int:
+        if self._db and hasattr(self._db, "count_users"):
+            return self._db.count_users()
+        return len(getattr(self, "_memory_users", {}) or {})
+
+    async def auth_status(self) -> dict[str, Any]:
+        n = self.count_users()
+        return {
+            "has_users": n > 0,
+            "user_count": n,
+            "registration_open": n == 0 or open_registration(),
+            "first_user_is_admin": True,
+            "open_registration": open_registration(),
+        }
+
+    async def register_user(
+        self,
+        *,
+        email: str,
+        password: str,
+        display_name: str = "",
+        org_name: str = "",
+        invite_code: str = "",
+    ) -> dict[str, Any]:
+        email = (email or "").strip().lower()
+        if not email or "@" not in email:
+            raise ValueError("Valid email required")
+        if len(password or "") < 8:
+            raise ValueError("Password must be at least 8 characters")
+        if self._db and self._db.get_user_by_email(email):
+            raise ValueError("Email already registered")
+        if not self._db:
+            self._memory_users = getattr(self, "_memory_users", {})
+            if any(u.get("email") == email for u in self._memory_users.values()):
+                raise ValueError("Email already registered")
+
+        n = self.count_users()
+        tenant_id: str
+        role = "member"
+
+        if n == 0:
+            # First user → create tenant + admin
+            tid = new_id()
+            tname = (org_name or "My organization").strip() or "My organization"
+            tenant = {
+                "id": tid,
+                "name": tname,
+                "slug": slugify(tname),
+                "created_at": utcnow().isoformat(),
+                "metadata": {},
+            }
+            if self._db:
+                self._db.save_tenant(tenant)
+            else:
+                self._memory_tenants = getattr(self, "_memory_tenants", {})
+                self._memory_tenants[tid] = tenant
+            tenant_id = tid
+            role = "admin"
+        elif invite_code:
+            inv = self._db.get_invite(invite_code) if self._db else None
+            if not inv:
+                raise ValueError("Invalid invite code")
+            if inv.get("uses", 0) >= inv.get("max_uses", 20):
+                raise ValueError("Invite code exhausted")
+            tenant_id = inv["tenant_id"]
+            role = inv.get("role") or "member"
+            inv["uses"] = int(inv.get("uses") or 0) + 1
+            if self._db:
+                self._db.save_invite(inv)
+        elif open_registration():
+            # Join first tenant
+            tenants = self._db.list_tenants() if self._db else list(
+                getattr(self, "_memory_tenants", {}).values()
+            )
+            if not tenants:
+                raise ValueError("No organization yet — contact admin")
+            tenant_id = tenants[0]["id"]
+            role = "member"
+        else:
+            raise ValueError("Registration closed — ask an admin for an invite code")
+
+        uid = new_id()
+        user = {
+            "id": uid,
+            "tenant_id": tenant_id,
+            "email": email,
+            "password_hash": hash_password(password),
+            "role": role,
+            "display_name": (display_name or email.split("@")[0]).strip(),
+            "created_at": utcnow().isoformat(),
+            "last_login_at": None,
+            "metadata": {},
+        }
+        if self._db:
+            self._db.save_user(user)
+        else:
+            self._memory_users[uid] = user
+
+        session = await self.create_session(user)
+        await self.audit(
+            "user.register",
+            actor=email,
+            resource_type="user",
+            resource_id=uid,
+            detail={"tenant_id": tenant_id, "role": role},
+        )
+        return {
+            "user": {
+                "id": uid,
+                "email": email,
+                "role": role,
+                "display_name": user["display_name"],
+                "tenant_id": tenant_id,
+            },
+            "token": session["token"],
+            "tenant_id": tenant_id,
+        }
+
+    async def login_user(self, email: str, password: str) -> dict[str, Any]:
+        email = (email or "").strip().lower()
+        user = None
+        if self._db:
+            user = self._db.get_user_by_email(email)
+        else:
+            for u in getattr(self, "_memory_users", {}).values():
+                if u.get("email") == email:
+                    user = u
+                    break
+        if not user or not verify_password(password, user.get("password_hash") or ""):
+            raise ValueError("Invalid email or password")
+        user["last_login_at"] = utcnow().isoformat()
+        if self._db:
+            self._db.save_user(user)
+        session = await self.create_session(user)
+        await self.audit(
+            "user.login",
+            actor=email,
+            resource_type="user",
+            resource_id=user["id"],
+        )
+        return {
+            "user": {
+                "id": user["id"],
+                "email": user["email"],
+                "role": user.get("role") or "member",
+                "display_name": user.get("display_name") or email.split("@")[0],
+                "tenant_id": user["tenant_id"],
+            },
+            "token": session["token"],
+            "tenant_id": user["tenant_id"],
+        }
+
+    async def create_session(self, user: dict[str, Any]) -> dict[str, Any]:
+        raw = mint_session_token()
+        exp = utcnow() + __import__("datetime").timedelta(days=session_ttl_days())
+        rec = {
+            "id": new_id(),
+            "token_hash": hash_token(raw),
+            "user_id": user["id"],
+            "tenant_id": user["tenant_id"],
+            "expires_at": exp.isoformat(),
+            "created_at": utcnow().isoformat(),
+        }
+        if self._db:
+            self._db.save_session(rec)
+        else:
+            self._memory_sessions = getattr(self, "_memory_sessions", {})
+            self._memory_sessions[rec["token_hash"]] = rec
+        return {"token": raw, "expires_at": rec["expires_at"]}
+
+    async def verify_session_token(self, token: str) -> Optional[dict[str, Any]]:
+        if not token or not token.startswith("ogs_"):
+            return None
+        th = hash_token(token)
+        rec = None
+        if self._db:
+            rec = self._db.get_session(th)
+        else:
+            rec = getattr(self, "_memory_sessions", {}).get(th)
+        if not rec:
+            return None
+        try:
+            from datetime import datetime
+
+            exp = datetime.fromisoformat(rec["expires_at"])
+            if exp.tzinfo is None:
+                from datetime import timezone
+
+                exp = exp.replace(tzinfo=timezone.utc)
+            if exp < utcnow():
+                return None
+        except Exception:
+            return None
+        user = None
+        if self._db:
+            user = self._db.get_user(rec["user_id"])
+        else:
+            user = getattr(self, "_memory_users", {}).get(rec["user_id"])
+        if not user:
+            return None
+        return {
+            "user_id": user["id"],
+            "email": user["email"],
+            "role": user.get("role") or "member",
+            "display_name": user.get("display_name") or user["email"].split("@")[0],
+            "tenant_id": user["tenant_id"],
+            "scopes": ["admin"]
+            if user.get("role") == "admin"
+            else ["write", "read", "pair", "push"],
+        }
+
+    async def logout_session(self, token: str) -> None:
+        if not token:
+            return
+        th = hash_token(token)
+        if self._db:
+            self._db.delete_session(th)
+        else:
+            getattr(self, "_memory_sessions", {}).pop(th, None)
+
+    async def create_invite(
+        self, *, tenant_id: str, created_by: str, role: str = "member"
+    ) -> dict[str, Any]:
+        code = mint_invite_code()
+        rec = {
+            "id": new_id(),
+            "tenant_id": tenant_id,
+            "code": code,
+            "role": role if role in {"admin", "member"} else "member",
+            "created_by": created_by,
+            "max_uses": 20,
+            "uses": 0,
+            "created_at": utcnow().isoformat(),
+        }
+        if self._db:
+            self._db.save_invite(rec)
+        return {"code": code, "role": rec["role"], "max_uses": 20}
 
     def attach_redis(self, bus: Any) -> None:
         """Attach optional RedisBus for multi-worker event fan-out + pair codes."""
@@ -282,15 +532,19 @@ class Store:
             room_id=room.id,
             resource_type="room",
             resource_id=room.id,
-            detail={"name": room.name},
+            detail={"name": room.name, "tenant_id": room.tenant_id},
         )
         return room
 
     async def get_room(self, room_id: str) -> Optional[Room]:
         return self.rooms.get(room_id)
 
-    async def list_rooms(self) -> list[Room]:
-        return list(self.rooms.values())
+    async def list_rooms(self, tenant_id: Optional[str] = None) -> list[Room]:
+        rooms = list(self.rooms.values())
+        if tenant_id is None:
+            return rooms
+        # Tenant users only see their tenant's rooms (legacy null rooms hidden)
+        return [r for r in rooms if r.tenant_id == tenant_id]
 
     async def update_room(self, room: Room) -> Room:
         room.updated_at = utcnow()
@@ -605,6 +859,8 @@ class Store:
         else:
             self._memory_api_keys[rec["id"]] = rec
             self._memory_api_by_hash[rec["key_hash"]] = rec["id"]
+        if metadata and metadata.get("tenant_id"):
+            rec["metadata"] = {**rec.get("metadata", {}), "tenant_id": metadata["tenant_id"]}
         await self.audit(
             "api_key.create",
             actor=name,

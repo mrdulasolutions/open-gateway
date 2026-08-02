@@ -60,6 +60,88 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
 export const api = {
   base: API,
   ping: () => req<Ping>("/ping"),
+  authStatus: async () => {
+    const res = await fetch(`${API}/v1/auth/status`);
+    if (!res.ok) throw new Error("auth status failed");
+    return res.json() as Promise<{
+      has_users: boolean;
+      user_count: number;
+      registration_open: boolean;
+      require_auth?: boolean;
+      open_registration?: boolean;
+    }>;
+  },
+  authRegister: async (body: {
+    email: string;
+    password: string;
+    display_name?: string;
+    org_name?: string;
+    invite_code?: string;
+  }) => {
+    const res = await fetch(`${API}/v1/auth/register`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(
+        (j as { detail?: string }).detail || res.statusText || "register failed"
+      );
+    }
+    return j as {
+      token: string;
+      user: {
+        id: string;
+        email: string;
+        role: string;
+        display_name: string;
+        tenant_id: string;
+      };
+      tenant_id: string;
+    };
+  },
+  authLogin: async (body: { email: string; password: string }) => {
+    const res = await fetch(`${API}/v1/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(
+        (j as { detail?: string }).detail || res.statusText || "login failed"
+      );
+    }
+    return j as {
+      token: string;
+      user: {
+        id: string;
+        email: string;
+        role: string;
+        display_name: string;
+        tenant_id: string;
+      };
+      tenant_id: string;
+    };
+  },
+  authLogout: () =>
+    req<{ status: string }>("/v1/auth/logout", { method: "POST" }),
+  authMe: () =>
+    req<{
+      auth_kind: string | null;
+      user: {
+        email: string;
+        role: string;
+        display_name: string;
+        tenant_id: string;
+      } | null;
+    }>("/v1/auth/me"),
+  authInvite: (body?: { role?: string }) =>
+    req<{ code: string; role: string; max_uses: number }>("/v1/auth/invite", {
+      method: "POST",
+      body: JSON.stringify(body || {}),
+    }),
   /** Public — no auth. First-run Railway / public gateway bootstrap. */
   setupStatus: async () => {
     const res = await fetch(`${API}/v1/setup`);

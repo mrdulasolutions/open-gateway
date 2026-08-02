@@ -147,6 +147,27 @@ class SqlitePersistence:
                     endpoint TEXT NOT NULL UNIQUE,
                     data TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS tenants (
+                    id TEXT PRIMARY KEY,
+                    data TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS users (
+                    id TEXT PRIMARY KEY,
+                    email TEXT NOT NULL UNIQUE,
+                    tenant_id TEXT NOT NULL,
+                    data TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+                CREATE TABLE IF NOT EXISTS sessions (
+                    token_hash TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    data TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS invites (
+                    code TEXT PRIMARY KEY,
+                    tenant_id TEXT NOT NULL,
+                    data TEXT NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS audit_log (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     created_at TEXT NOT NULL,
@@ -257,6 +278,100 @@ class SqlitePersistence:
         with self._lock:
             self._conn.execute("DELETE FROM gateways WHERE id = ?", (gateway_id,))
             self._conn.commit()
+
+    def save_tenant(self, rec: dict[str, Any]) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO tenants (id, data) VALUES (?, ?)",
+                (rec["id"], json.dumps(rec)),
+            )
+            self._conn.commit()
+
+    def list_tenants(self) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute("SELECT data FROM tenants").fetchall()
+        return [json.loads(r["data"]) for r in rows]
+
+    def get_tenant(self, tenant_id: str) -> Optional[dict[str, Any]]:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT data FROM tenants WHERE id = ?", (tenant_id,)
+            ).fetchone()
+        return json.loads(row["data"]) if row else None
+
+    def save_user(self, rec: dict[str, Any]) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO users (id, email, tenant_id, data) VALUES (?, ?, ?, ?)",
+                (rec["id"], rec["email"].lower(), rec["tenant_id"], json.dumps(rec)),
+            )
+            self._conn.commit()
+
+    def get_user_by_email(self, email: str) -> Optional[dict[str, Any]]:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT data FROM users WHERE email = ?", (email.lower(),)
+            ).fetchone()
+        return json.loads(row["data"]) if row else None
+
+    def get_user(self, user_id: str) -> Optional[dict[str, Any]]:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT data FROM users WHERE id = ?", (user_id,)
+            ).fetchone()
+        return json.loads(row["data"]) if row else None
+
+    def count_users(self) -> int:
+        with self._lock:
+            row = self._conn.execute("SELECT COUNT(*) AS c FROM users").fetchone()
+        return int(row["c"] if row else 0)
+
+    def list_users(self, tenant_id: Optional[str] = None) -> list[dict[str, Any]]:
+        with self._lock:
+            if tenant_id:
+                rows = self._conn.execute(
+                    "SELECT data FROM users WHERE tenant_id = ?", (tenant_id,)
+                ).fetchall()
+            else:
+                rows = self._conn.execute("SELECT data FROM users").fetchall()
+        return [json.loads(r["data"]) for r in rows]
+
+    def save_session(self, rec: dict[str, Any]) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO sessions (token_hash, user_id, data) VALUES (?, ?, ?)",
+                (rec["token_hash"], rec["user_id"], json.dumps(rec)),
+            )
+            self._conn.commit()
+
+    def get_session(self, token_hash: str) -> Optional[dict[str, Any]]:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT data FROM sessions WHERE token_hash = ?", (token_hash,)
+            ).fetchone()
+        return json.loads(row["data"]) if row else None
+
+    def delete_session(self, token_hash: str) -> None:
+        with self._lock:
+            self._conn.execute(
+                "DELETE FROM sessions WHERE token_hash = ?", (token_hash,)
+            )
+            self._conn.commit()
+
+    def save_invite(self, rec: dict[str, Any]) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO invites (code, tenant_id, data) VALUES (?, ?, ?)",
+                (rec["code"], rec["tenant_id"], json.dumps(rec)),
+            )
+            self._conn.commit()
+
+    def get_invite(self, code: str) -> Optional[dict[str, Any]]:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT data FROM invites WHERE code = ?", (code.upper(),)
+            ).fetchone()
+        return json.loads(row["data"]) if row else None
 
     def get_meta(self, key: str) -> Optional[str]:
         with self._lock:

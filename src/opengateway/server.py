@@ -213,6 +213,97 @@ def create_app(
             "push": __import__("opengateway.push", fromlist=["vapid_configured"]).vapid_configured(),
         }
 
+    # ── User login (multi-user / multi-tenant) ────────────────────────────
+
+    @app.get("/v1/auth/status")
+    async def auth_status() -> dict[str, Any]:
+        """Public: whether first-admin registration is available."""
+        s = await st.auth_status()
+        s["require_auth"] = cfg.require_auth
+        return s
+
+    @app.post("/v1/auth/register")
+    async def auth_register(request: Request) -> dict[str, Any]:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if not isinstance(body, dict):
+            body = {}
+        try:
+            return await st.register_user(
+                email=str(body.get("email") or ""),
+                password=str(body.get("password") or ""),
+                display_name=str(body.get("display_name") or body.get("name") or ""),
+                org_name=str(body.get("org_name") or body.get("organization") or ""),
+                invite_code=str(body.get("invite_code") or body.get("invite") or ""),
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+
+    @app.post("/v1/auth/login")
+    async def auth_login(request: Request) -> dict[str, Any]:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if not isinstance(body, dict):
+            body = {}
+        try:
+            return await st.login_user(
+                email=str(body.get("email") or ""),
+                password=str(body.get("password") or ""),
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=401, detail=str(e)) from e
+
+    @app.post("/v1/auth/logout")
+    async def auth_logout(request: Request) -> dict[str, str]:
+        from opengateway.auth import _extract_token
+
+        token = _extract_token(request) or ""
+        await st.logout_session(token)
+        return {"status": "logged_out"}
+
+    @app.get("/v1/auth/me")
+    async def auth_me(request: Request) -> dict[str, Any]:
+        user = getattr(request.state, "user", None)
+        if not user:
+            # Master token / api key path
+            return {
+                "auth_kind": getattr(request.state, "auth_kind", None),
+                "user": None,
+                "tenant_id": getattr(request.state, "tenant_id", None),
+            }
+        return {
+            "auth_kind": "session",
+            "user": user,
+            "tenant_id": user.get("tenant_id"),
+        }
+
+    @app.post("/v1/auth/invite")
+    async def auth_invite(request: Request) -> dict[str, Any]:
+        user = getattr(request.state, "user", None)
+        if not user or user.get("role") != "admin":
+            # Also allow master
+            if getattr(request.state, "auth_kind", None) != "master":
+                raise HTTPException(status_code=403, detail="Admin only")
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if not isinstance(body, dict):
+            body = {}
+        tenant_id = (user or {}).get("tenant_id") or body.get("tenant_id")
+        if not tenant_id:
+            raise HTTPException(status_code=400, detail="tenant_id required")
+        inv = await st.create_invite(
+            tenant_id=str(tenant_id),
+            created_by=(user or {}).get("email") or "admin",
+            role=str(body.get("role") or "member"),
+        )
+        return inv
+
     @app.get("/v1/setup")
     async def setup_status() -> dict[str, Any]:
         """Public: whether the UI can one-click claim the master token (first run)."""
@@ -338,12 +429,18 @@ def create_app(
             body = {}
         if not isinstance(body, dict):
             body = {}
+        meta: dict = (
+            body.get("metadata") if isinstance(body.get("metadata"), dict) else {}
+        )
+        user = getattr(request.state, "user", None)
+        if user and user.get("tenant_id"):
+            meta = {**meta, "tenant_id": user["tenant_id"]}
         created = await st.create_api_key(
             name=str(body.get("name") or "device"),
             scopes=body.get("scopes"),
             role=str(body.get("role") or "contributor"),
             device_label=str(body.get("device_label") or body.get("device") or ""),
-            metadata=body.get("metadata") if isinstance(body.get("metadata"), dict) else {},
+            metadata=meta,
         )
         return created
 
@@ -851,20 +948,29 @@ def create_app(
 
     # ── OpenGateway: rooms ─────────────────────────────────────────────────
 
+    def _request_tenant_id(request: Request) -> Optional[str]:
+        return getattr(request.state, "tenant_id", None)
+
     @app.post("/v1/rooms", response_model=Room)
-    async def create_room(body: CreateRoomRequest) -> Room:
+    async def create_room(request: Request, body: CreateRoomRequest) -> Room:
+        tenant_id = _request_tenant_id(request)
         room = Room(
             name=body.name,
             goal=body.goal,
             project_path=body.project_path,
             created_by=body.created_by,
+            tenant_id=tenant_id,
             metadata=body.metadata,
         )
         return await st.create_room(room)
 
     @app.get("/v1/rooms")
-    async def list_rooms() -> dict[str, Any]:
-        rooms = await st.list_rooms()
+    async def list_rooms(request: Request) -> dict[str, Any]:
+        tenant_id = _request_tenant_id(request)
+        # Master / device keys without tenant see all; session users filtered
+        rooms = await st.list_rooms(
+            tenant_id=tenant_id if getattr(request.state, "auth_kind", None) == "session" else None
+        )
         return {"rooms": [r.model_dump(mode="json") for r in rooms]}
 
     @app.get("/v1/rooms/{room_id}", response_model=Room)

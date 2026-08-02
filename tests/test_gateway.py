@@ -511,6 +511,62 @@ async def test_push_vapid_endpoint(client: AsyncClient):
 
 
 @pytest.mark.asyncio
+async def test_user_register_login_session(tmp_path):
+    """First user is admin; session token authenticates API."""
+    from opengateway.config import GatewayConfig, GatewayMode
+    from opengateway.server import create_app
+    from opengateway.store import Store
+
+    st = Store(db_path=tmp_path / "users.db", audit=True)
+    cfg = GatewayConfig(
+        mode=GatewayMode.PUBLIC,
+        host="127.0.0.1",
+        port=8765,
+        auth_token="master-for-ops",
+        require_auth=True,
+        network="public",
+        name="users-gw",
+    )
+    app = create_app(store=st, config=cfg)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as c:
+        stt = (await c.get("/v1/auth/status")).json()
+        assert stt["has_users"] is False
+        reg = (
+            await c.post(
+                "/v1/auth/register",
+                json={
+                    "email": "admin@example.com",
+                    "password": "password123",
+                    "org_name": "Acme",
+                    "display_name": "Admin",
+                },
+            )
+        ).json()
+        assert reg["user"]["role"] == "admin"
+        assert reg["token"].startswith("ogs_")
+        headers = {"Authorization": f"Bearer {reg['token']}"}
+        rooms = await c.get("/v1/rooms", headers=headers)
+        assert rooms.status_code == 200
+        # create room under tenant
+        r = (
+            await c.post(
+                "/v1/rooms",
+                json={"name": "t1", "goal": "x", "created_by": "Admin"},
+                headers=headers,
+            )
+        ).json()
+        assert r.get("tenant_id") == reg["tenant_id"]
+        login = (
+            await c.post(
+                "/v1/auth/login",
+                json={"email": "admin@example.com", "password": "password123"},
+            )
+        ).json()
+        assert login["token"].startswith("ogs_")
+
+
+@pytest.mark.asyncio
 async def test_setup_claim_one_time(tmp_path):
     """First UI visitor can claim master token once (Railway bootstrap)."""
     from opengateway.config import GatewayConfig, GatewayMode

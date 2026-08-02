@@ -8,30 +8,28 @@ How authentication works when OpenGateway is on **Railway** (or any public gatew
 ┌─────────────────────────────────────────────────────────────┐
 │  Gateway (require_auth = true)                              │
 │                                                             │
-│  Master token (OPENGATEWAY_AUTH_TOKEN)                      │
-│    · full admin · mint keys · audit · settings              │
+│  Humans: email + password → session token (ogs_…)           │
+│    · first user = org admin + creates tenant                │
+│    · more users via open registration or invite code        │
 │                                                             │
-│  Device / agent tokens (POST /v1/keys or Live Ops UI)       │
-│    · scoped: write, read, pair, push                        │
-│    · one per harness / phone / CI                           │
-│    · shown once · hashed at rest                            │
+│  Master token (OPENGATEWAY_AUTH_TOKEN) — ops / Railway      │
+│  Agent tokens (ogs UI mint / POST /v1/keys) — MCP harnesses │
 └─────────────────────────────────────────────────────────────┘
          │                    │                    │
          ▼                    ▼                    ▼
-   Live Ops browser      Grok MCP             Claude / Cursor
-   (paste token)         (env token)          (env token)
+   Live Ops login page   Grok MCP              Claude / Cursor
+   (session ogs_…)       (device ogk_…)         (device ogk_…)
 ```
-
-There is **no separate OAuth login UI** for agents. Production auth is **Bearer tokens**.
 
 | Actor | How they authenticate |
 |-------|------------------------|
-| You (browser) | Paste master or device token in **Settings → This browser's auth token** |
-| Phone (pair QR) | Pair link embeds token in hash once; then stored locally |
-| Grok / Claude / Cursor | MCP env: `OPENGATEWAY_URL` + `OPENGATEWAY_AUTH_TOKEN` |
-| REST / scripts | `Authorization: Bearer <token>` |
+| **You (browser)** | **Login page** (email/password) — no more paste-token for day-to-day |
+| Additional humans | Register (open) or invite code from admin |
+| Phone | Pair QR or login |
+| Grok / Claude / Cursor | MCP env: URL + **agent token** from Live Ops |
+| REST / scripts | Bearer master, session, or device key |
 
-There is **no automatic “local agent discovers Railway and handshakes”** without a token. The agent process must be given a token (or use the master). That is intentional for public internet gateways.
+**Does login fix the Unauthorized banner?** Yes for humans: after Sign in / Create admin, the browser stores a session token and API calls succeed. Agents still need minted device keys.
 
 ---
 

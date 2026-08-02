@@ -8,6 +8,7 @@ import {
 } from "@/components/NotificationBell";
 import { OpsSidebar, type LeftSection } from "@/components/layout/OpsSidebar";
 import { SideRail } from "@/components/layout/SideRail";
+import { LoginPage } from "@/components/LoginPage";
 import { api, getAuthToken, isAllCall, setAuthToken } from "@/lib/api";
 import { useTheme } from "@/hooks/useTheme";
 import {
@@ -226,6 +227,14 @@ export default function App() {
   >([]);
   const [authToken, setAuthTokenState] = useState(getAuthToken());
   const [authNeeded, setAuthNeeded] = useState(false);
+  const [sessionUser, setSessionUser] = useState<{
+    email: string;
+    role: string;
+    display_name: string;
+  } | null>(null);
+  const [authGate, setAuthGate] = useState<"loading" | "login" | "app">(
+    "loading"
+  );
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
 
   const pushNotif = useCallback((n: Omit<AppNotification, "read"> & { read?: boolean }) => {
@@ -544,6 +553,35 @@ export default function App() {
 
   useEffect(() => {
     (async () => {
+      // Auth gate: login page unless session / bearer already present
+      try {
+        const st = await api.authStatus();
+        const token = getAuthToken();
+        if (token) {
+          try {
+            const me = await api.authMe();
+            if (me.user) setSessionUser(me.user);
+            setAuthGate("app");
+          } catch {
+            // Bearer master still ok even if /me has no user
+            if (token.startsWith("ogs_")) {
+              setAuthToken("");
+              setAuthTokenState("");
+              setAuthGate("login");
+              return;
+            }
+            setAuthGate("app");
+          }
+        } else if (st.require_auth !== false) {
+          setAuthGate("login");
+          // still allow pair deep-link below if token in hash
+        } else {
+          setAuthGate("app");
+        }
+      } catch {
+        setAuthGate(getAuthToken() ? "app" : "login");
+      }
+
       // Deep link: #pair=CODE&room=ID&token=…
       const hash = window.location.hash.replace(/^#/, "");
       const params = new URLSearchParams(
@@ -562,6 +600,7 @@ export default function App() {
       if (hashToken) {
         setAuthToken(hashToken);
         setAuthTokenState(hashToken);
+        setAuthGate("app");
       }
       if (pairCode) {
         try {
@@ -572,6 +611,7 @@ export default function App() {
           if (redeemed.auth_token) {
             setAuthToken(redeemed.auth_token);
             setAuthTokenState(redeemed.auth_token);
+            setAuthGate("app");
           }
           if (redeemed.suggested_name) {
             setDisplayName(redeemed.suggested_name);
@@ -583,29 +623,63 @@ export default function App() {
         }
       }
 
-      await refreshPing();
-      const list = await refreshRooms();
-      const pick =
-        list.find(
-          (r) =>
-            r.id === hashRoom ||
-            r.name === hashRoom ||
-            r.id === hash ||
-            r.name === hash
-        ) || list[0];
-      if (pick) await selectRoom(pick.id);
-      // Clean sensitive token from URL after bootstrap
-      if (hashToken || pairCode) {
-        const clean = hashRoom ? `room=${hashRoom}` : pick ? pick.id : "";
-        window.location.hash = clean;
+      if (getAuthToken() || authGate === "app") {
+        setAuthGate("app");
+        await refreshPing();
+        const list = await refreshRooms();
+        const pick =
+          list.find(
+            (r) =>
+              r.id === hashRoom ||
+              r.name === hashRoom ||
+              r.id === hash ||
+              r.name === hash
+          ) || list[0];
+        if (pick) await selectRoom(pick.id);
+        if (hashToken || pairCode) {
+          const clean = hashRoom ? `room=${hashRoom}` : pick ? pick.id : "";
+          window.location.hash = clean;
+        }
       }
     })().catch((e) =>
       setError({ message: e instanceof Error ? e.message : String(e) })
     );
-    const t = setInterval(refreshPing, 15000);
+    const t = setInterval(() => {
+      if (getAuthToken()) void refreshPing();
+    }, 15000);
     return () => clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  if (authGate === "loading") {
+    return (
+      <div className="flex min-h-dvh items-center justify-center bg-zinc-50 text-sm text-zinc-500 dark:bg-zinc-950">
+        Loading OpenGateway…
+      </div>
+    );
+  }
+
+  if (authGate === "login") {
+    return (
+      <LoginPage
+        onAuthenticated={(token, user) => {
+          setAuthToken(token);
+          setAuthTokenState(token);
+          if (user) {
+            setSessionUser(user);
+            if (user.display_name) {
+              setDisplayName(user.display_name);
+              setStoredName(user.display_name);
+            }
+          }
+          setAuthGate("app");
+          setAuthNeeded(false);
+          void refreshPing();
+          void refreshRooms();
+        }}
+      />
+    );
+  }
 
   const onSend = async ({
     content,
