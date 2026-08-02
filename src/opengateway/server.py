@@ -213,6 +213,85 @@ def create_app(
             "push": __import__("opengateway.push", fromlist=["vapid_configured"]).vapid_configured(),
         }
 
+    @app.get("/v1/setup")
+    async def setup_status() -> dict[str, Any]:
+        """Public: whether the UI can one-click claim the master token (first run)."""
+        import os
+
+        disabled = os.environ.get("OPENGATEWAY_DISABLE_SETUP_CLAIM", "").lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        claimed = st.get_meta("setup_claimed") == "1"
+        has_master = bool(cfg.auth_token)
+        claimable = (
+            cfg.require_auth
+            and has_master
+            and not claimed
+            and not disabled
+        )
+        return {
+            "require_auth": cfg.require_auth,
+            "claimable": claimable,
+            "claimed": claimed,
+            "disabled": disabled,
+            "hint": (
+                "Open Live Ops and click Connect — one-time claim stores the token in this browser."
+                if claimable
+                else (
+                    "Setup already claimed — paste token from Railway Variables → OPENGATEWAY_AUTH_TOKEN."
+                    if claimed
+                    else "Paste bearer token in Settings, or set OPENGATEWAY_AUTH_TOKEN on the server."
+                )
+            ),
+        }
+
+    @app.post("/v1/setup/claim")
+    async def setup_claim(request: Request) -> dict[str, Any]:
+        """One-time: hand the master token to the first UI visitor (Railway one-click UX).
+
+        After claim, only normal Bearer auth works. Disable with OPENGATEWAY_DISABLE_SETUP_CLAIM=true.
+        """
+        import os
+
+        from opengateway.auth import client_ip, record_auth_failure, auth_failures_blocked
+
+        ip = client_ip(request)
+        if auth_failures_blocked(ip):
+            raise HTTPException(status_code=429, detail="Too many attempts — wait and retry")
+        disabled = os.environ.get("OPENGATEWAY_DISABLE_SETUP_CLAIM", "").lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        if disabled:
+            record_auth_failure(ip)
+            raise HTTPException(status_code=403, detail="Setup claim disabled on this gateway")
+        if not cfg.require_auth or not cfg.auth_token:
+            raise HTTPException(status_code=400, detail="Gateway does not require / have a master token")
+        if st.get_meta("setup_claimed") == "1":
+            record_auth_failure(ip)
+            raise HTTPException(
+                status_code=410,
+                detail="Setup already claimed — use Railway Variables OPENGATEWAY_AUTH_TOKEN",
+            )
+        st.set_meta("setup_claimed", "1")
+        st.set_meta("setup_claimed_at", __import__("opengateway.models", fromlist=["utcnow"]).utcnow().isoformat())
+        await st.audit(
+            "setup.claim",
+            ip=ip,
+            resource_type="setup",
+            detail={"via": "ui_bootstrap"},
+        )
+        return {
+            "ok": True,
+            "token": cfg.auth_token,
+            "message": "Token saved for this browser. Mint agent keys under Agent tokens.",
+        }
+
     @app.get("/v1/audit")
     async def list_audit(
         limit: int = Query(100, ge=1, le=500),

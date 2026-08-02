@@ -213,6 +213,16 @@ class PostgresPersistence:
                 cur.execute("DELETE FROM gateways WHERE id = %s", (gateway_id,))
             self._conn.commit()
 
+    def get_meta(self, key: str) -> Optional[str]:
+        with self._lock:
+            with self._conn.cursor() as cur:
+                cur.execute("SELECT value FROM meta WHERE key = %s", (key,))
+                row = cur.fetchone()
+        return row["value"] if row else None
+
+    def set_meta(self, key: str, value: str) -> None:
+        self._upsert("meta", ["key", "value"], (key, value))
+
     def save_api_key(self, record: dict[str, Any]) -> None:
         self._upsert(
             "api_keys",

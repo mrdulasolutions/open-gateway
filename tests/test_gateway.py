@@ -511,6 +511,36 @@ async def test_push_vapid_endpoint(client: AsyncClient):
 
 
 @pytest.mark.asyncio
+async def test_setup_claim_one_time(tmp_path):
+    """First UI visitor can claim master token once (Railway bootstrap)."""
+    from opengateway.config import GatewayConfig, GatewayMode
+    from opengateway.server import create_app
+    from opengateway.store import Store
+
+    st = Store(db_path=tmp_path / "setup.db", audit=True)
+    cfg = GatewayConfig(
+        mode=GatewayMode.PUBLIC,
+        host="127.0.0.1",
+        port=8765,
+        auth_token="master-setup-token-xyz",
+        require_auth=True,
+        network="public",
+        name="setup-gw",
+    )
+    app = create_app(store=st, config=cfg)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as c:
+        status = (await c.get("/v1/setup")).json()
+        assert status["claimable"] is True
+        claimed = (await c.post("/v1/setup/claim")).json()
+        assert claimed["token"] == "master-setup-token-xyz"
+        status2 = (await c.get("/v1/setup")).json()
+        assert status2["claimable"] is False
+        again = await c.post("/v1/setup/claim")
+        assert again.status_code == 410
+
+
+@pytest.mark.asyncio
 async def test_stale_online_marked_offline_and_nudge_cancelled(store: Store):
     from datetime import timedelta
 

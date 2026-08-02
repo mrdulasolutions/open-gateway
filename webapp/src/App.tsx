@@ -30,6 +30,100 @@ import type {
   Task,
 } from "@/lib/types";
 
+/** Shown when public gateway needs a bearer token in this browser. */
+function AuthConnectBanner({
+  authToken,
+  onToken,
+}: {
+  authToken: string;
+  onToken: (t: string) => void;
+}) {
+  const [draft, setDraft] = useState(authToken);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+  const [claimable, setClaimable] = useState(false);
+
+  useEffect(() => {
+    void api
+      .setupStatus()
+      .then((s) => setClaimable(Boolean(s.claimable)))
+      .catch(() => setClaimable(false));
+  }, []);
+
+  const claim = async () => {
+    setBusy(true);
+    setMsg("");
+    try {
+      const res = await api.setupClaim();
+      if (res.token) {
+        onToken(res.token);
+        setMsg(res.message || "Connected — this browser is authorized.");
+      }
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : String(e));
+      setClaimable(false);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="border-b border-amber-500/40 bg-amber-50 px-4 py-4 text-sm text-amber-950 dark:bg-amber-500/10 dark:text-amber-100">
+      <div className="mx-auto max-w-3xl space-y-3">
+        <div>
+          <strong className="text-base">Gateway authorization required</strong>
+          <p className="mt-1 text-xs leading-relaxed opacity-90">
+            Public hubs (including Railway) require a Bearer token. This is not
+            an error in the app — this browser has not been authorized yet.
+          </p>
+        </div>
+
+        {claimable && (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void claim()}
+            className="rounded-xl bg-gradient-to-b from-orange-400 to-orange-600 px-4 py-2.5 text-sm font-semibold text-orange-950 shadow-sm disabled:opacity-50"
+          >
+            {busy ? "Connecting…" : "Connect this browser (one-time setup)"}
+          </button>
+        )}
+
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
+          <label className="min-w-0 flex-1 text-xs font-medium">
+            Or paste token (Railway Variables → OPENGATEWAY_AUTH_TOKEN)
+            <input
+              type="password"
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              className="field-input mt-1 font-mono text-xs"
+              placeholder="Master or device API key"
+              autoComplete="off"
+            />
+          </label>
+          <button
+            type="button"
+            className="rounded-xl border border-amber-700/30 bg-white px-4 py-2 text-sm font-semibold text-amber-950 dark:border-white/20 dark:bg-zinc-900 dark:text-amber-50"
+            onClick={() => {
+              if (draft.trim()) onToken(draft.trim());
+            }}
+          >
+            Save &amp; connect
+          </button>
+        </div>
+
+        {msg && <p className="text-xs opacity-90">{msg}</p>}
+
+        <p className="text-[11px] leading-relaxed opacity-80">
+          After connecting, open <strong>Agent tokens</strong> in the left menu
+          to mint keys for Grok / Claude / Cursor MCP. Template pre-sets the
+          master token on the server; this browser still needs it once.
+        </p>
+      </div>
+    </div>
+  );
+}
+
 function roomMsgToAgent(
   m: RoomMessage,
   meId: string | null,
@@ -797,16 +891,18 @@ export default function App() {
         {(authNeeded ||
           (ping?.require_auth && !authToken) ||
           (error?.message && /unauthoriz/i.test(error.message))) && (
-          <div className="border-b border-amber-500/40 bg-amber-50 px-4 py-3 text-sm text-amber-950 dark:bg-amber-500/10 dark:text-amber-100">
-            <strong>Auth required.</strong> This gateway is in public mode.
-            Open <strong>Settings</strong> (left) and paste the bearer token,
-            then wait a second — rooms and chat will load.
-            {!authToken && (
-              <span className="mt-1 block font-mono text-xs opacity-80">
-                Token is not set in this browser yet.
-              </span>
-            )}
-          </div>
+          <AuthConnectBanner
+            authToken={authToken}
+            onToken={(t) => {
+              setAuthToken(t);
+              setAuthTokenState(t);
+              setAuthNeeded(false);
+              setError(undefined);
+              void refreshRooms().then((list) => {
+                if (list[0] && !roomId) void selectRoom(list[0].id);
+              });
+            }}
+          />
         )}
         {activeDmPeerId && (
           <div className="border-b border-violet-500/30 bg-violet-50 px-4 py-2 text-xs text-violet-900 dark:bg-violet-500/10 dark:text-violet-100">

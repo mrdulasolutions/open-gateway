@@ -106,6 +106,13 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
         # Push VAPID public key is safe to expose
         if path.rstrip("/") == "/v1/push/vapid" and request.method in {"GET", "OPTIONS"}:
             return await call_next(request)
+        # First-run UI setup claim (one-time bootstrap for Railway / public deploys)
+        if path.rstrip("/") in {"/v1/setup", "/v1/setup/claim"} and request.method in {
+            "GET",
+            "POST",
+            "OPTIONS",
+        }:
+            return await call_next(request)
 
         ip = _client_ip(request)
         if _auth_failures_blocked(ip):

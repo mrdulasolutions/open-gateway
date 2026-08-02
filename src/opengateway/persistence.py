@@ -258,6 +258,21 @@ class SqlitePersistence:
             self._conn.execute("DELETE FROM gateways WHERE id = ?", (gateway_id,))
             self._conn.commit()
 
+    def get_meta(self, key: str) -> Optional[str]:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT value FROM meta WHERE key = ?", (key,)
+            ).fetchone()
+        return row["value"] if row else None
+
+    def set_meta(self, key: str, value: str) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+                (key, value),
+            )
+            self._conn.commit()
+
     def save_api_key(self, record: dict[str, Any]) -> None:
         with self._lock:
             self._conn.execute(

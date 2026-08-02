@@ -40,8 +40,10 @@ There is **no automatic “local agent discovers Railway and handshakes”** wit
 ### 1. Deploy hub (Railway)
 
 - Template: https://railway.com/deploy/open-gateway  
-- Master secret: Railway Variables → `OPENGATEWAY_AUTH_TOKEN`  
-- Open `https://…up.railway.app/ui/` and paste the **master** token once
+- Master secret is **generated on the server** (`OPENGATEWAY_AUTH_TOKEN` in Variables)
+- Open `https://…up.railway.app/ui/`  
+  - Prefer **Connect this browser (one-time setup)** if shown (first visitor claims token into localStorage)  
+  - Or paste from Railway → Variables → `OPENGATEWAY_AUTH_TOKEN`
 
 ### 2. Mint agent tokens (UI)
 

@@ -60,6 +60,28 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
 export const api = {
   base: API,
   ping: () => req<Ping>("/ping"),
+  /** Public — no auth. First-run Railway / public gateway bootstrap. */
+  setupStatus: async () => {
+    const res = await fetch(`${API}/v1/setup`);
+    if (!res.ok) throw new Error("setup status failed");
+    return res.json() as Promise<{
+      require_auth: boolean;
+      claimable: boolean;
+      claimed: boolean;
+      disabled: boolean;
+      hint: string;
+    }>;
+  },
+  setupClaim: async () => {
+    const res = await fetch(`${API}/v1/setup/claim`, { method: "POST" });
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(
+        (j as { detail?: string }).detail || res.statusText || "claim failed"
+      );
+    }
+    return j as { ok: boolean; token: string; message?: string };
+  },
   listRooms: () => req<{ rooms: Room[] }>("/v1/rooms"),
   createRoom: (body: {
     name: string;

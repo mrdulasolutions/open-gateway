@@ -67,6 +67,7 @@ class Store:
         self._memory_api_keys: dict[str, dict[str, Any]] = {}  # id -> record
         self._memory_api_by_hash: dict[str, str] = {}  # hash -> id
         self._memory_push: dict[str, dict[str, Any]] = {}  # id -> sub
+        self._memory_meta: dict[str, str] = {}
 
         # db_path=... means "use default from env"; None means memory-only
         if db_path is ...:
@@ -131,6 +132,17 @@ class Store:
 
     def enable_audit(self, enabled: bool = True) -> None:
         self._audit_enabled = enabled
+
+    def get_meta(self, key: str) -> Optional[str]:
+        if self._db and hasattr(self._db, "get_meta"):
+            return self._db.get_meta(key)
+        return self._memory_meta.get(key)
+
+    def set_meta(self, key: str, value: str) -> None:
+        if self._db and hasattr(self._db, "set_meta"):
+            self._db.set_meta(key, value)
+        else:
+            self._memory_meta[key] = value
 
     def attach_redis(self, bus: Any) -> None:
         """Attach optional RedisBus for multi-worker event fan-out + pair codes."""
