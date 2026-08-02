@@ -479,6 +479,11 @@ async def test_gateways_list_includes_self(client: AsyncClient):
 @pytest.mark.asyncio
 async def test_public_mode_requires_auth():
     from opengateway.config import GatewayConfig, GatewayMode
+    import opengateway.auth as auth_mod
+
+    # Isolate rate-limit buckets for this test
+    with auth_mod._fail_lock:
+        auth_mod._fail_buckets.clear()
 
     store = Store(db_path=None)
     cfg = GatewayConfig(
@@ -506,6 +511,50 @@ async def test_public_mode_requires_auth():
         # Query token works (SSE-style)
         r3 = await ac.get("/v1/rooms", params={"token": "secret-token-xyz"})
         assert r3.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_auth_rate_limit_after_failures():
+    from opengateway.config import GatewayConfig, GatewayMode
+    import opengateway.auth as auth_mod
+
+    with auth_mod._fail_lock:
+        auth_mod._fail_buckets.clear()
+    # Tighten limits for a fast test
+    old_max, old_win = auth_mod._AUTH_FAIL_MAX, auth_mod._AUTH_FAIL_WINDOW_SEC
+    auth_mod._AUTH_FAIL_MAX = 5
+    auth_mod._AUTH_FAIL_WINDOW_SEC = 60.0
+    try:
+        store = Store(db_path=None)
+        cfg = GatewayConfig(
+            mode=GatewayMode.PUBLIC,
+            host="0.0.0.0",
+            auth_token="good-token",
+            require_auth=True,
+            network="lan",
+            name="rate",
+        )
+        app = create_app(store, config=cfg)
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as ac:
+            for _ in range(5):
+                r = await ac.get("/v1/rooms")
+                assert r.status_code == 401
+            r = await ac.get("/v1/rooms")
+            assert r.status_code == 429
+            # Good token after cooldown clear: reset bucket to prove recovery path
+            with auth_mod._fail_lock:
+                auth_mod._fail_buckets.clear()
+            ok = await ac.get(
+                "/v1/rooms",
+                headers={"Authorization": "Bearer good-token"},
+            )
+            assert ok.status_code == 200
+    finally:
+        auth_mod._AUTH_FAIL_MAX = old_max
+        auth_mod._AUTH_FAIL_WINDOW_SEC = old_win
+        with auth_mod._fail_lock:
+            auth_mod._fail_buckets.clear()
 
 
 @pytest.mark.asyncio

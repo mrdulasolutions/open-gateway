@@ -22,6 +22,24 @@ uv run opengateway serve
 - UI: `http://127.0.0.1:8765/ui/`
 - Badge: **Internal (loopback)**
 
+### Dual process: internal + LAN at once
+
+One process owns one port. Run **two** processes for both:
+
+```bash
+# Terminal A — local agents only
+uv run opengateway serve --mode internal --port 8765
+
+# Terminal B — LAN / other machines
+export OPENGATEWAY_AUTH_TOKEN="$(openssl rand -hex 24)"
+uv run opengateway serve --mode public --via open --network lan \
+  --host 0.0.0.0 --port 8766 --token "$OPENGATEWAY_AUTH_TOKEN" \
+  --public-url "http://$(ipconfig getifaddr en0):8766"
+```
+
+Local MCP → `http://127.0.0.1:8765` · remote agents → `http://<lan-ip>:8766` + token.  
+Use separate `OPENGATEWAY_DB` paths if you need isolated state (default SQLite is shared if both use the same default path — often what you want for one hub).
+
 ## LAN gateway (same Wi‑Fi / local network)
 
 ```bash

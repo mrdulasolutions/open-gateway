@@ -84,6 +84,8 @@ uv run pytest && cd webapp && bun run build
 | Room chat public (not only DMs) | Covered by product behavior |
 | Stale agents offline after 120s idle | Covered by tests |
 | Wait `next_since` cursor | Covered by tests |
+| Auth failure rate limit (429) | Covered by tests |
+| Version / tags | **`v0.0.1` first tag** |
 
 ## Stale presence
 

@@ -1,24 +1,37 @@
 # Changelog
 
-## 0.1.1 — 2026-08-02
+Versioning starts at **0.0.1**. Git tags use the form `v0.0.1`, `v0.0.2`, …
 
-### Production hardening (multi-machine LAN test)
+## 0.0.1 — 2026-08-02
 
-- **Auth:** MCP and CLI forward `OPENGATEWAY_AUTH_TOKEN` on all HTTP calls
-- **LAN badge:** open LAN binds no longer mislabeled as Tailnet (Serve)
-- **Room chat:** `@name` stays public; private only with explicit DM / `to_participant_id`
-- **Nudges:** only **online** non-human agents receive nudge DMs + tasks
-- **Stale agents:** ONLINE participants idle >120s become offline; their open nudge tasks cancel
-- **Wait cursor:** `GET .../messages/wait` returns `next_since` / `last_id` / `count`
-- **CLI:** `opengateway agent-loop` for REST long-poll presence without MCP
-- **UI:** notification bell, typed search (DM vs room msg), closed sidebars by default, auth banner
-- **Docs:** `docs/PRODUCTION.md`, LAN gateway section, Live Ops screenshot
+First tagged baseline of OpenGateway.
 
-### API / runtime
+### Core
+- Rooms, participants, messages, tasks, artifacts
+- ACP-compatible `/agents` + `/runs` + built-ins (echo, room-facilitator, room-broadcast)
+- MCP stdio bridge (Grok, Claude Code, Cursor, Codex, Hermes)
+- Realtime: SSE, long-poll (`wait` + `next_since` cursor), WebSocket chat
+- SQLite persistence (`~/.opengateway/state.db`)
 
-- FastAPI lifespan startup (replaces deprecated `on_event`)
-- Gateway modes: internal | public | serve | funnel with correct bind strategy
+### Gateways & security
+- Modes: internal | public | serve | funnel
+- Network badges: Internal (loopback) · **LAN** · Tailnet (Serve) · Internet (Funnel)
+- Bearer auth required for non-loopback; MCP/CLI forward `OPENGATEWAY_AUTH_TOKEN`
+- Auth failure rate limit (per-IP) on public modes
+- Optional Tailscale identity headers only on localhost bind
+- Soft-expire ONLINE agents after 120s idle; cancel their open nudge tasks
+- Nudges only target **online** non-human agents
 
-## 0.1.0 — 2026-08-01
+### Live Ops UI
+- Vite + React day/night console
+- Global search with type chips (DM vs room msg, agent, task, …)
+- Notification bell (DMs, mentions, room pings, tasks)
+- Sidebars collapsed by default
+- Auth banner when public mode needs a token
+- Prebuilt `webapp/dist` committed for zero-Node serve
 
-Initial public release: ACP-compatible hub, MCP bridge, rooms/tasks/artifacts, SQLite, Live Ops UI.
+### CLI
+- `serve`, `mcp`, `status`, `demo`, `monitor`, `chat`, `agent-loop`, `ui`
+
+### Docs
+- README (with UI screenshot), PRODUCTION, GATEWAYS, ROADMAP, SECURITY, NOTICE, Apache-2.0 (© MR Dula Enterprise, LLC)

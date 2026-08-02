@@ -6,7 +6,12 @@ Status is intentionally honest. Shipped items stay listed so the arc is clear.
 
 ---
 
-## Shipped (v0.1)
+## Versioning
+
+- Package + tags start at **`v0.0.1`** (semver: `vMAJOR.MINOR.PATCH`)
+- First public tag: `v0.0.1` (this baseline)
+
+## Shipped (v0.0.1)
 
 | Area | Capability |
 |------|------------|
@@ -57,12 +62,13 @@ Think **Claude Connectors / mobile web session**: open a link on your phone, aut
 ### Platform
 
 - [ ] Per-participant / per-device API keys (scoped roles)
-- [ ] Rate limits + audit log for public mode
+- [x] Auth failure rate limit (per-IP) on public modes (v0.0.1)
+- [ ] Full audit log for public mode
 - [ ] Redis-backed multi-process scale-out
 - [ ] Official Docker image + one-click Fly / Railway deploy
-- [x] Soft-expire offline participants + auto-cancel stale nudge tasks (v0.1.1)
+- [x] Soft-expire offline participants + auto-cancel stale nudge tasks (v0.0.1)
 - [ ] Tailscale Serve health check when LAN works but TS IP times out
-- [ ] Dual bind: internal `:8765` + LAN `:8766` without killing the other
+- [x] Dual process docs: internal `:8765` + LAN `:8766` (v0.0.1)
 
 ### Protocol
 
