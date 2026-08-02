@@ -180,8 +180,9 @@ def create_app(
         allow_methods=["*"],
         allow_headers=["*"],
     )
-    if cfg.require_auth and cfg.auth_token:
-        app.add_middleware(BearerAuthMiddleware, config=cfg)
+    if cfg.require_auth:
+        # Master OPENGATEWAY_AUTH_TOKEN and/or per-device API keys
+        app.add_middleware(BearerAuthMiddleware, config=cfg, store=st)
 
     app.state.store = st
     app.state.gateway_config = cfg
@@ -203,6 +204,8 @@ def create_app(
             "base_url": cfg.base_url,
             "audit": st._audit_enabled,
             "redis": bool(getattr(app.state, "redis_bus", None)),
+            "backend": getattr(st, "backend_kind", "memory"),
+            "push": __import__("opengateway.push", fromlist=["vapid_configured"]).vapid_configured(),
         }
 
     @app.get("/v1/audit")
@@ -226,6 +229,92 @@ def create_app(
             "count": len(items),
             "enabled": True,
         }
+
+    # ── Per-device API keys ────────────────────────────────────────────────
+
+    @app.get("/v1/keys")
+    async def list_keys() -> dict[str, Any]:
+        """List device API keys (metadata only — secrets never re-shown)."""
+        return {"keys": await st.list_api_keys()}
+
+    @app.post("/v1/keys")
+    async def create_key(request: Request) -> dict[str, Any]:
+        """Mint a device API key. Secret returned once in ``token``."""
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if not isinstance(body, dict):
+            body = {}
+        created = await st.create_api_key(
+            name=str(body.get("name") or "device"),
+            scopes=body.get("scopes"),
+            role=str(body.get("role") or "contributor"),
+            device_label=str(body.get("device_label") or body.get("device") or ""),
+            metadata=body.get("metadata") if isinstance(body.get("metadata"), dict) else {},
+        )
+        return created
+
+    @app.delete("/v1/keys/{key_id}")
+    async def delete_key(key_id: str, revoke: bool = Query(False)) -> dict[str, str]:
+        if revoke:
+            ok = await st.revoke_api_key(key_id)
+            if not ok:
+                raise HTTPException(status_code=404, detail="Key not found")
+            return {"status": "revoked", "id": key_id}
+        ok = await st.delete_api_key(key_id)
+        if not ok:
+            raise HTTPException(status_code=404, detail="Key not found")
+        return {"status": "deleted", "id": key_id}
+
+    # ── Web Push ──────────────────────────────────────────────────────────
+
+    @app.get("/v1/push/vapid")
+    async def push_vapid() -> dict[str, Any]:
+        from opengateway.push import vapid_configured, vapid_public_key
+
+        pub = vapid_public_key()
+        return {
+            "configured": vapid_configured(),
+            "public_key": pub,
+            "hint": (
+                None
+                if pub
+                else "Set OPENGATEWAY_VAPID_PUBLIC + OPENGATEWAY_VAPID_PRIVATE (see docs/PUSH.md)"
+            ),
+        }
+
+    @app.post("/v1/push/subscribe")
+    async def push_subscribe(request: Request) -> dict[str, Any]:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if not isinstance(body, dict):
+            body = {}
+        sub = body.get("subscription") or body
+        try:
+            saved = await st.save_push_subscription(
+                subscription=sub if isinstance(sub, dict) else {},
+                participant_id=body.get("participant_id"),
+                device_label=str(body.get("device_label") or body.get("label") or ""),
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        return saved
+
+    @app.get("/v1/push/subscriptions")
+    async def push_list(participant_id: Optional[str] = None) -> dict[str, Any]:
+        return {
+            "subscriptions": await st.list_push_subscriptions(participant_id),
+        }
+
+    @app.delete("/v1/push/subscriptions/{sub_id}")
+    async def push_delete(sub_id: str) -> dict[str, str]:
+        ok = await st.delete_push_subscription(sub_id)
+        if not ok:
+            raise HTTPException(status_code=404, detail="Subscription not found")
+        return {"status": "deleted", "id": sub_id}
 
     @app.get("/")
     async def root() -> RedirectResponse:

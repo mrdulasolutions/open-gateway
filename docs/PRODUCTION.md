@@ -124,10 +124,13 @@ uv run pytest && cd webapp && bun run build
 | Feature | Env / endpoint |
 |---------|----------------|
 | Audit log | `OPENGATEWAY_AUDIT=true` (default on when auth required) · `GET /v1/audit` |
+| Device API keys | `POST /v1/keys` · [API_KEYS.md](API_KEYS.md) |
+| Postgres | `OPENGATEWAY_DATABASE_URL` · [POSTGRES.md](POSTGRES.md) |
+| Mobile push | VAPID env + Settings · [PUSH.md](PUSH.md) |
 | Redis fan-out | `OPENGATEWAY_REDIS_URL` + `uv sync --extra redis` · [SCALE.md](SCALE.md) |
 | Fly / Railway | [DEPLOY.md](DEPLOY.md) · `fly.toml` · `railway.toml` |
 | PyPI / GHCR | Tag `v*` → publish workflow |
 
 ## Known follow-ups
 
-Tracked in [ROADMAP.md](ROADMAP.md): per-device API keys; Postgres multi-writer; push/wake for mobile.
+Tracked in [ROADMAP.md](ROADMAP.md): native push providers (APNs/FCM beyond Web Push); Postgres import tool; per-key rate limits.

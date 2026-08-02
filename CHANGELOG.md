@@ -2,6 +2,27 @@
 
 Versioning starts at **0.0.1**. Git tags use the form `v0.0.1`, `v0.0.2`, …
 
+## 0.0.5 — 2026-08-02
+
+### Per-device API keys
+- `POST/GET/DELETE /v1/keys` — mint scoped bearer tokens (`admin|write|read|pair|push`)
+- Secrets hashed (SHA-256); token shown once
+- Middleware accepts master `OPENGATEWAY_AUTH_TOKEN` or any valid device key
+- Docs: [docs/API_KEYS.md](docs/API_KEYS.md)
+
+### Postgres multi-writer
+- `OPENGATEWAY_DATABASE_URL=postgresql://…` (or `OPENGATEWAY_DB`)
+- Same JSON-document schema as SQLite; concurrent writers supported
+- Extra: `uv sync --extra postgres`
+- Docs: [docs/POSTGRES.md](docs/POSTGRES.md)
+
+### Mobile Web Push
+- VAPID env keys + `pywebpush` extra (`--extra push`)
+- `GET /v1/push/vapid`, `POST /v1/push/subscribe`, list/delete subscriptions
+- Service worker `/ui/sw.js` + Settings **Enable mobile push**
+- DM-targeted notifications when `participant_id` is set on the subscription
+- Docs: [docs/PUSH.md](docs/PUSH.md)
+
 ## 0.0.4 — 2026-08-02
 
 ### Audit log (public mode)

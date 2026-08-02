@@ -616,10 +616,12 @@ export function OpsSidebar({
                 className="field-input mt-1 font-mono text-xs"
               />
             </label>
+            <PushEnableButton participantId={participantId} />
             <p className="text-[11px] leading-relaxed text-zinc-500">
               Use <strong>@all</strong> for everyone. DMs stay private — only
               you and the peer see them. Click a participant or DM row to open
-              a private thread.
+              a private thread. Device API keys:{" "}
+              <code className="text-[10px]">POST /v1/keys</code>.
             </p>
           </div>
         </Accordion>
@@ -923,4 +925,79 @@ function PairQrModal({
       </div>
     </div>
   );
+}
+
+/** Enable Web Push when VAPID is configured on the gateway. */
+function PushEnableButton({
+  participantId,
+}: {
+  participantId: string | null;
+}) {
+  const [status, setStatus] = useState<string>("");
+  const [busy, setBusy] = useState(false);
+
+  const enable = async () => {
+    setBusy(true);
+    setStatus("");
+    try {
+      if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
+        setStatus("Push not supported in this browser");
+        return;
+      }
+      const vapid = await api.pushVapid();
+      if (!vapid.configured || !vapid.public_key) {
+        setStatus(vapid.hint || "VAPID not configured on gateway");
+        return;
+      }
+      const reg = await navigator.serviceWorker.register("/ui/sw.js", {
+        scope: "/ui/",
+      });
+      await navigator.serviceWorker.ready;
+      const perm = await Notification.requestPermission();
+      if (perm !== "granted") {
+        setStatus("Notification permission denied");
+        return;
+      }
+      const key = urlBase64ToUint8Array(vapid.public_key);
+      const sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: key as BufferSource,
+      });
+      await api.pushSubscribe({
+        subscription: sub.toJSON(),
+        participant_id: participantId || undefined,
+        device_label: "mobile-web",
+      });
+      setStatus("Push enabled for this device");
+    } catch (e) {
+      setStatus(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="space-y-1">
+      <button
+        type="button"
+        disabled={busy}
+        onClick={() => void enable()}
+        className="w-full rounded-xl border border-zinc-200 px-3 py-2 text-xs font-semibold text-zinc-700 hover:bg-zinc-50 disabled:opacity-50 dark:border-white/10 dark:text-zinc-200 dark:hover:bg-white/5"
+      >
+        {busy ? "Enabling…" : "Enable mobile push"}
+      </button>
+      {status && (
+        <p className="text-[10px] leading-snug text-zinc-500">{status}</p>
+      )}
+    </div>
+  );
+}
+
+function urlBase64ToUint8Array(base64String: string): Uint8Array {
+  const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
+  const raw = atob(base64);
+  const out = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+  return out;
 }

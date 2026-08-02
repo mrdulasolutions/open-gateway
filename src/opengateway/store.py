@@ -24,8 +24,15 @@ from opengateway.models import (
     TaskStatus,
     utcnow,
 )
+from opengateway.api_keys import (
+    generate_secret,
+    hash_secret,
+    normalize_scopes,
+    prefix_of,
+)
 from opengateway.audit import audit_enabled, build_audit_entry
-from opengateway.persistence import SqlitePersistence, default_db_path
+from opengateway.models import new_id
+from opengateway.persistence import default_db_path, is_postgres_url, open_persistence
 
 
 class Store:
@@ -57,19 +64,26 @@ class Store:
         self._redis: Any = None  # optional RedisBus
         self._audit_enabled = bool(audit) if audit is not None else False
         self._memory_audit: deque[dict[str, Any]] = deque(maxlen=2000)
+        self._memory_api_keys: dict[str, dict[str, Any]] = {}  # id -> record
+        self._memory_api_by_hash: dict[str, str] = {}  # hash -> id
+        self._memory_push: dict[str, dict[str, Any]] = {}  # id -> sub
 
         # db_path=... means "use default from env"; None means memory-only
         if db_path is ...:
             resolved = default_db_path()
         elif db_path is None:
             resolved = None
+        elif isinstance(db_path, str) and is_postgres_url(db_path):
+            resolved = db_path
         else:
             resolved = Path(db_path).expanduser()
 
         self.db_path = resolved
-        self._db: Optional[SqlitePersistence] = None
+        self._db: Any = None
+        self.backend_kind = "memory"
         if resolved is not None:
-            self._db = SqlitePersistence(resolved)
+            self._db = open_persistence(resolved)
+            self.backend_kind = "postgres" if is_postgres_url(resolved) else "sqlite"
             self._load_from_db()
 
     @property
@@ -89,6 +103,7 @@ class Store:
         self.forks = defaultdict(list, data.get("forks") or {})
         self.gateways = data.get("gateways") or {}
         self.agents = data["agents"]
+        # API keys / push live only in DB (or memory maps); loaded on demand
 
     def _persist_room(self, room: Room) -> None:
         if self._db:
@@ -524,7 +539,254 @@ class Store:
                 "to": msg.to_participant_id,
             },
         )
+        # Best-effort mobile push (non-blocking failures)
+        try:
+            await self._notify_push_for_message(msg)
+        except Exception:
+            pass
         return msg
+
+    # ── API keys ───────────────────────────────────────────────────────────
+
+    def _public_key(self, rec: dict[str, Any]) -> dict[str, Any]:
+        return {
+            k: rec.get(k)
+            for k in (
+                "id",
+                "name",
+                "key_prefix",
+                "scopes",
+                "role",
+                "device_label",
+                "created_at",
+                "last_used_at",
+                "revoked_at",
+                "metadata",
+            )
+        }
+
+    async def create_api_key(
+        self,
+        *,
+        name: str,
+        scopes: Optional[list[str]] = None,
+        role: str = "contributor",
+        device_label: str = "",
+        metadata: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        secret = generate_secret()
+        rec = {
+            "id": new_id(),
+            "name": (name or "device").strip() or "device",
+            "key_prefix": prefix_of(secret),
+            "key_hash": hash_secret(secret),
+            "scopes": normalize_scopes(scopes),
+            "role": role or "contributor",
+            "device_label": device_label or "",
+            "created_at": utcnow().isoformat(),
+            "last_used_at": None,
+            "revoked_at": None,
+            "metadata": metadata or {},
+        }
+        if self._db:
+            self._db.save_api_key(rec)
+        else:
+            self._memory_api_keys[rec["id"]] = rec
+            self._memory_api_by_hash[rec["key_hash"]] = rec["id"]
+        await self.audit(
+            "api_key.create",
+            actor=name,
+            resource_type="api_key",
+            resource_id=rec["id"],
+            detail={"scopes": rec["scopes"], "device_label": device_label},
+        )
+        out = self._public_key(rec)
+        out["token"] = secret  # shown once
+        return out
+
+    async def list_api_keys(self) -> list[dict[str, Any]]:
+        if self._db:
+            rows = self._db.list_api_keys()
+        else:
+            rows = list(self._memory_api_keys.values())
+        return [self._public_key(r) for r in rows if not r.get("revoked_at")]
+
+    async def revoke_api_key(self, key_id: str) -> bool:
+        if self._db:
+            rows = self._db.list_api_keys()
+            rec = next((r for r in rows if r.get("id") == key_id), None)
+            if not rec:
+                return False
+            rec["revoked_at"] = utcnow().isoformat()
+            self._db.save_api_key(rec)
+        else:
+            rec = self._memory_api_keys.get(key_id)
+            if not rec:
+                return False
+            rec["revoked_at"] = utcnow().isoformat()
+        await self.audit(
+            "api_key.revoke",
+            resource_type="api_key",
+            resource_id=key_id,
+        )
+        return True
+
+    async def delete_api_key(self, key_id: str) -> bool:
+        if self._db:
+            ok = self._db.delete_api_key(key_id)
+        else:
+            rec = self._memory_api_keys.pop(key_id, None)
+            if rec:
+                self._memory_api_by_hash.pop(rec.get("key_hash", ""), None)
+            ok = rec is not None
+        if ok:
+            await self.audit(
+                "api_key.delete",
+                resource_type="api_key",
+                resource_id=key_id,
+            )
+        return ok
+
+    async def verify_api_key(self, secret: str) -> Optional[dict[str, Any]]:
+        """Return public key metadata if secret is valid and not revoked."""
+        if not secret:
+            return None
+        h = hash_secret(secret)
+        rec: Optional[dict[str, Any]] = None
+        if self._db:
+            rec = self._db.get_api_key_by_hash(h)
+        else:
+            kid = self._memory_api_by_hash.get(h)
+            rec = self._memory_api_keys.get(kid) if kid else None
+        if not rec or rec.get("revoked_at"):
+            return None
+        rec["last_used_at"] = utcnow().isoformat()
+        if self._db:
+            self._db.save_api_key(rec)
+        return self._public_key(rec)
+
+    # ── Web Push subscriptions ─────────────────────────────────────────────
+
+    async def save_push_subscription(
+        self,
+        *,
+        subscription: dict[str, Any],
+        participant_id: Optional[str] = None,
+        device_label: str = "",
+    ) -> dict[str, Any]:
+        endpoint = (subscription or {}).get("endpoint") or ""
+        if not endpoint:
+            raise ValueError("subscription.endpoint required")
+        sub = {
+            "id": new_id(),
+            "endpoint": endpoint,
+            "subscription": subscription,
+            "participant_id": participant_id,
+            "device_label": device_label or "",
+            "created_at": utcnow().isoformat(),
+        }
+        # Replace same endpoint
+        if self._db:
+            self._db.delete_push_sub_by_endpoint(endpoint)
+            self._db.save_push_sub(sub)
+        else:
+            dead = [
+                i
+                for i, s in self._memory_push.items()
+                if s.get("endpoint") == endpoint
+            ]
+            for i in dead:
+                self._memory_push.pop(i, None)
+            self._memory_push[sub["id"]] = sub
+        await self.audit(
+            "push.subscribe",
+            resource_type="push",
+            resource_id=sub["id"],
+            detail={"participant_id": participant_id, "device_label": device_label},
+        )
+        return {
+            "id": sub["id"],
+            "endpoint": endpoint,
+            "participant_id": participant_id,
+            "device_label": device_label,
+        }
+
+    async def list_push_subscriptions(
+        self, participant_id: Optional[str] = None
+    ) -> list[dict[str, Any]]:
+        if self._db:
+            rows = self._db.list_push_subs(participant_id)
+        else:
+            rows = list(self._memory_push.values())
+            if participant_id:
+                rows = [s for s in rows if s.get("participant_id") == participant_id]
+        return [
+            {
+                "id": r["id"],
+                "endpoint": r.get("endpoint"),
+                "participant_id": r.get("participant_id"),
+                "device_label": r.get("device_label"),
+                "created_at": r.get("created_at"),
+            }
+            for r in rows
+        ]
+
+    async def delete_push_subscription(self, sub_id: str) -> bool:
+        if self._db:
+            return self._db.delete_push_sub(sub_id)
+        return self._memory_push.pop(sub_id, None) is not None
+
+    async def _notify_push_for_message(self, msg: RoomMessage) -> None:
+        from opengateway.push import (
+            notification_for_message,
+            send_web_push,
+            vapid_configured,
+        )
+
+        if not vapid_configured():
+            return
+        # Target: explicit DM recipient, else all subs (room broadcast — careful)
+        targets: list[dict[str, Any]]
+        if self._db:
+            all_subs = self._db.list_push_subs()
+        else:
+            all_subs = list(self._memory_push.values())
+        if msg.to_participant_id:
+            targets = [
+                s
+                for s in all_subs
+                if s.get("participant_id") == msg.to_participant_id
+            ]
+        else:
+            # Broadcast: only subs without a participant filter or room-wide devices
+            targets = [
+                s
+                for s in all_subs
+                if not s.get("participant_id")
+                or s.get("participant_id") != msg.from_participant_id
+            ]
+            # Cap room broadcast spam
+            targets = targets[:20]
+        preview = ""
+        try:
+            preview = msg.message.text() if msg.message else ""
+        except Exception:
+            preview = ""
+        payload = notification_for_message(
+            room_id=msg.room_id,
+            from_name=msg.from_name or "agent",
+            preview=preview,
+            is_dm=bool(msg.to_participant_id),
+        )
+        for s in targets:
+            sub_info = s.get("subscription") or {}
+            ok, err = send_web_push(sub_info, payload)
+            if not ok and err and "410" in err:
+                # Gone — drop
+                if self._db:
+                    self._db.delete_push_sub(s["id"])
+                else:
+                    self._memory_push.pop(s["id"], None)
 
     async def list_messages(
         self,

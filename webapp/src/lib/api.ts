@@ -266,6 +266,46 @@ export const api = {
       probes: { host: string; port: number; ok: boolean; error?: string }[];
       recommended: { mode: string; commands: string[]; why: string };
     }>("/v1/network"),
+  listKeys: () => req<{ keys: ApiKeyMeta[] }>("/v1/keys"),
+  createKey: (body: {
+    name: string;
+    scopes?: string[];
+    role?: string;
+    device_label?: string;
+  }) =>
+    req<ApiKeyMeta & { token: string }>("/v1/keys", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  deleteKey: (id: string, revoke = false) =>
+    req<{ status: string }>(
+      `/v1/keys/${id}${revoke ? "?revoke=true" : ""}`,
+      { method: "DELETE" }
+    ),
+  pushVapid: () =>
+    req<{ configured: boolean; public_key: string | null; hint?: string }>(
+      "/v1/push/vapid"
+    ),
+  pushSubscribe: (body: {
+    subscription: PushSubscriptionJSON;
+    participant_id?: string;
+    device_label?: string;
+  }) =>
+    req<{ id: string; endpoint: string }>("/v1/push/subscribe", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+};
+
+export type ApiKeyMeta = {
+  id: string;
+  name: string;
+  key_prefix: string;
+  scopes: string[];
+  role: string;
+  device_label: string;
+  created_at?: string;
+  revoked_at?: string | null;
 };
 
 export function isAllCall(text: string): boolean {

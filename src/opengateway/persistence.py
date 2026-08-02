@@ -24,16 +24,49 @@ from opengateway.models import (
 
 
 DEFAULT_DB_ENV = "OPENGATEWAY_DB"
+DATABASE_URL_ENV = "OPENGATEWAY_DATABASE_URL"
 
 
-def default_db_path() -> Optional[Path]:
-    """Resolve DB path from env. Empty / 'none' / ':memory:' disables disk."""
+def default_db_path() -> Optional[Path | str]:
+    """Resolve DB path or Postgres URL from env.
+
+    - ``OPENGATEWAY_DATABASE_URL=postgresql://…`` → multi-writer Postgres
+    - ``OPENGATEWAY_DB=postgresql://…`` → same
+    - ``OPENGATEWAY_DB=/path/state.db`` → SQLite file
+    - empty → ``~/.opengateway/state.db``
+    - ``none`` / ``:memory:`` → no disk
+    """
+    url = os.environ.get(DATABASE_URL_ENV, "").strip()
+    if url:
+        return url
     raw = os.environ.get(DEFAULT_DB_ENV, "").strip()
     if raw.lower() in {"none", "off", "false", "0", ":memory:"}:
         return None
     if raw:
+        if raw.startswith("postgres://") or raw.startswith("postgresql://"):
+            # normalize postgres:// → postgresql:// for psycopg
+            if raw.startswith("postgres://"):
+                raw = "postgresql://" + raw[len("postgres://") :]
+            return raw
         return Path(raw).expanduser()
     return Path.home() / ".opengateway" / "state.db"
+
+
+def is_postgres_url(spec: Any) -> bool:
+    s = str(spec or "")
+    return s.startswith("postgresql://") or s.startswith("postgres://")
+
+
+def open_persistence(spec: Path | str) -> Any:
+    """Factory: SQLite file path or Postgres URL."""
+    if is_postgres_url(spec):
+        from opengateway.postgres_persistence import PostgresPersistence
+
+        url = str(spec)
+        if url.startswith("postgres://"):
+            url = "postgresql://" + url[len("postgres://") :]
+        return PostgresPersistence(url)
+    return SqlitePersistence(Path(spec))
 
 
 class SqlitePersistence:
@@ -102,6 +135,17 @@ class SqlitePersistence:
                 CREATE TABLE IF NOT EXISTS meta (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS api_keys (
+                    id TEXT PRIMARY KEY,
+                    key_hash TEXT NOT NULL UNIQUE,
+                    data TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(key_hash);
+                CREATE TABLE IF NOT EXISTS push_subs (
+                    id TEXT PRIMARY KEY,
+                    endpoint TEXT NOT NULL UNIQUE,
+                    data TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS audit_log (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -213,6 +257,66 @@ class SqlitePersistence:
         with self._lock:
             self._conn.execute("DELETE FROM gateways WHERE id = ?", (gateway_id,))
             self._conn.commit()
+
+    def save_api_key(self, record: dict[str, Any]) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO api_keys (id, key_hash, data) VALUES (?, ?, ?)",
+                (record["id"], record["key_hash"], json.dumps(record)),
+            )
+            self._conn.commit()
+
+    def delete_api_key(self, key_id: str) -> bool:
+        with self._lock:
+            cur = self._conn.execute("DELETE FROM api_keys WHERE id = ?", (key_id,))
+            self._conn.commit()
+            return cur.rowcount > 0
+
+    def get_api_key_by_hash(self, key_hash: str) -> Optional[dict[str, Any]]:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT data FROM api_keys WHERE key_hash = ?", (key_hash,)
+            ).fetchone()
+        if not row:
+            return None
+        return json.loads(row["data"])
+
+    def list_api_keys(self) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute("SELECT data FROM api_keys").fetchall()
+        return [json.loads(r["data"]) for r in rows]
+
+    def save_push_sub(self, sub: dict[str, Any]) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO push_subs (id, endpoint, data) VALUES (?, ?, ?)",
+                (sub["id"], sub["endpoint"], json.dumps(sub)),
+            )
+            self._conn.commit()
+
+    def delete_push_sub(self, sub_id: str) -> bool:
+        with self._lock:
+            cur = self._conn.execute("DELETE FROM push_subs WHERE id = ?", (sub_id,))
+            self._conn.commit()
+            return cur.rowcount > 0
+
+    def delete_push_sub_by_endpoint(self, endpoint: str) -> bool:
+        with self._lock:
+            cur = self._conn.execute(
+                "DELETE FROM push_subs WHERE endpoint = ?", (endpoint,)
+            )
+            self._conn.commit()
+            return cur.rowcount > 0
+
+    def list_push_subs(
+        self, participant_id: Optional[str] = None
+    ) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute("SELECT data FROM push_subs").fetchall()
+        items = [json.loads(r["data"]) for r in rows]
+        if participant_id:
+            items = [s for s in items if s.get("participant_id") == participant_id]
+        return items
 
     def append_audit(self, entry: dict[str, Any]) -> dict[str, Any]:
         """Persist one audit row; returns entry with id + created_at."""

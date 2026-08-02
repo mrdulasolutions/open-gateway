@@ -5,12 +5,13 @@ from __future__ import annotations
 import time
 from collections import defaultdict, deque
 from threading import Lock
-from typing import Callable, Deque, Optional
+from typing import Any, Callable, Deque, Optional
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
+from opengateway.api_keys import SCOPE_ADMIN, scopes_allow
 from opengateway.config import GatewayConfig
 
 # Paths that stay open for health / static UI bootstrap
@@ -81,12 +82,18 @@ def clear_auth_failures(ip: str) -> None:
 
 
 class BearerAuthMiddleware(BaseHTTPMiddleware):
-    def __init__(self, app, config: GatewayConfig):
+    def __init__(self, app, config: GatewayConfig, store: Any = None):
         super().__init__(app)
         self.config = config
+        self.store = store
 
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
-        if not self.config.require_auth or not self.config.auth_token:
+        # Auth off only when not required
+        if not self.config.require_auth:
+            return await call_next(request)
+        # Require either master token configured OR device keys in store
+        has_master = bool(self.config.auth_token)
+        if not has_master and self.store is None:
             return await call_next(request)
 
         path = request.url.path or "/"
@@ -95,6 +102,9 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
         # Phone pair redeem is public (code is the secret); create still requires auth
         if path.rstrip("/") == "/v1/pair/redeem" and request.method in {"POST", "OPTIONS"}:
+            return await call_next(request)
+        # Push VAPID public key is safe to expose
+        if path.rstrip("/") == "/v1/push/vapid" and request.method in {"GET", "OPTIONS"}:
             return await call_next(request)
 
         ip = _client_ip(request)
@@ -111,15 +121,46 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
 
         # Bearer / query token
         token = _extract_token(request)
-        if token and _const_eq(token, self.config.auth_token):
+        request.state.auth_kind = None
+        request.state.api_key = None
+        request.state.auth_scopes = [SCOPE_ADMIN]
+
+        if token and has_master and _const_eq(token, self.config.auth_token):
             _clear_auth_failures(ip)
+            request.state.auth_kind = "master"
+            request.state.auth_scopes = [SCOPE_ADMIN]
             return await call_next(request)
+
+        # Per-device API keys
+        if token and self.store is not None:
+            try:
+                key = await self.store.verify_api_key(token)
+            except Exception:
+                key = None
+            if key:
+                scopes = key.get("scopes") or []
+                if not scopes_allow(scopes, request.method, path):
+                    return JSONResponse(
+                        status_code=403,
+                        content={
+                            "detail": "API key scope does not allow this action",
+                            "scopes": scopes,
+                            "path": path,
+                        },
+                    )
+                _clear_auth_failures(ip)
+                request.state.auth_kind = "api_key"
+                request.state.api_key = key
+                request.state.auth_scopes = scopes
+                return await call_next(request)
 
         # Optional: Tailscale Serve identity headers (ONLY when bound to localhost)
         if self.config.trust_tailscale_identity and self.config.is_localhost_bind:
             identity = _extract_tailscale_identity(request)
             if identity:
                 request.state.tailscale_user = identity
+                request.state.auth_kind = "tailscale"
+                request.state.auth_scopes = [SCOPE_ADMIN]
                 _clear_auth_failures(ip)
                 return await call_next(request)
 
@@ -130,14 +171,14 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
         return JSONResponse(
             status_code=401,
             content={
-                "detail": "Unauthorized — set Authorization: Bearer <OPENGATEWAY_AUTH_TOKEN>",
+                "detail": "Unauthorized — set Authorization: Bearer <token or device API key>",
                 "mode": self.config.mode.value,
                 "network": self.config.network,
                 "hint": (
                     "Behind Tailscale Serve on localhost you may also rely on "
                     "Tailscale-User-* identity headers when trust is enabled."
                     if self.config.trust_tailscale_identity
-                    else "Paste the gateway token in Live Ops → Settings."
+                    else "Use the master OPENGATEWAY_AUTH_TOKEN or a device API key from POST /v1/keys."
                 ),
             },
             headers={"WWW-Authenticate": "Bearer"},

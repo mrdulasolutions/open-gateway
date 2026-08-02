@@ -408,6 +408,55 @@ async def test_network_diagnostics(client: AsyncClient):
 
 
 @pytest.mark.asyncio
+async def test_device_api_keys_scoped(tmp_path):
+    """Master token can mint device keys; scoped key can read but not mint keys."""
+    from opengateway.config import GatewayConfig, GatewayMode
+    from opengateway.server import create_app
+    from opengateway.store import Store
+
+    st = Store(db_path=tmp_path / "keys.db", audit=True)
+    cfg = GatewayConfig(
+        mode=GatewayMode.PUBLIC,
+        host="127.0.0.1",
+        port=8765,
+        auth_token="master-secret-key",
+        require_auth=True,
+        network="lan",
+        name="keys-gw",
+    )
+    app = create_app(store=st, config=cfg)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as c:
+        master = {"Authorization": "Bearer master-secret-key"}
+        created = (
+            await c.post(
+                "/v1/keys",
+                json={
+                    "name": "phone",
+                    "device_label": "iPhone",
+                    "scopes": ["read", "write"],
+                    "role": "observer",
+                },
+                headers=master,
+            )
+        ).json()
+        assert created.get("token", "").startswith("ogk_")
+        device = {"Authorization": f"Bearer {created['token']}"}
+        # Device can list rooms
+        r = await c.get("/v1/rooms", headers=device)
+        assert r.status_code == 200
+        # Device cannot mint keys (admin-only)
+        denied = await c.post(
+            "/v1/keys",
+            json={"name": "evil", "scopes": ["admin"]},
+            headers=device,
+        )
+        assert denied.status_code == 403
+        listed = (await c.get("/v1/keys", headers=master)).json()["keys"]
+        assert any(k["id"] == created["id"] for k in listed)
+
+
+@pytest.mark.asyncio
 async def test_audit_log_public_mode(tmp_path, monkeypatch):
     """Public/auth gateways record redacted audit entries."""
     monkeypatch.setenv("OPENGATEWAY_AUDIT", "true")
@@ -450,6 +499,15 @@ async def test_audit_log_public_mode(tmp_path, monkeypatch):
         # Secrets must not appear raw in detail blobs
         blob = str(audit)
         assert "test-token-audit" not in blob
+
+
+@pytest.mark.asyncio
+async def test_push_vapid_endpoint(client: AsyncClient):
+    r = await client.get("/v1/push/vapid")
+    assert r.status_code == 200
+    body = r.json()
+    assert "configured" in body
+    assert body["configured"] is False
 
 
 @pytest.mark.asyncio
