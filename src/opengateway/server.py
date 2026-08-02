@@ -29,6 +29,7 @@ from sse_starlette.sse import EventSourceResponse
 
 from opengateway import __version__
 from opengateway.acp_handlers import BUILTIN_AGENTS, dispatch_acp_run
+from opengateway.audit import audit_enabled
 from opengateway.auth import (
     BearerAuthMiddleware,
     auth_failures_blocked,
@@ -37,6 +38,7 @@ from opengateway.auth import (
     record_auth_failure,
 )
 from opengateway.config import GatewayConfig, load_gateway_config, local_ips, network_ui_label
+from opengateway.redis_bus import try_create_bus
 from opengateway.models import (
     AgentManifest,
     AgentsListResponse,
@@ -111,8 +113,14 @@ def create_app(
     config: GatewayConfig | None = None,
 ) -> FastAPI:
     """Build the FastAPI app. Pass a Store, or a fresh default (SQLite unless OPENGATEWAY_DB=none)."""
-    st = store if store is not None else Store()
     cfg = config or load_gateway_config()
+    if store is not None:
+        st = store
+    else:
+        st = Store(audit=audit_enabled(cfg.require_auth))
+    # Honor config even when a custom store is passed without audit flag
+    if audit_enabled(cfg.require_auth):
+        st.enable_audit(True)
 
     # Register self in gateway registry (also used at lifespan startup)
     async def _ensure_self_gateway() -> GatewayRecord:
@@ -139,8 +147,20 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        bus = None
+        try:
+            bus = await try_create_bus()
+        except Exception:
+            bus = None
+        if bus is not None:
+            st.attach_redis(bus)
+            app.state.redis_bus = bus
+        else:
+            app.state.redis_bus = None
         await _ensure_self_gateway()
         yield
+        if bus is not None:
+            await bus.close()
 
     app = FastAPI(
         title="OpenGateway",
@@ -181,6 +201,30 @@ def create_app(
             "network": cfg.network,
             "require_auth": cfg.require_auth,
             "base_url": cfg.base_url,
+            "audit": st._audit_enabled,
+            "redis": bool(getattr(app.state, "redis_bus", None)),
+        }
+
+    @app.get("/v1/audit")
+    async def list_audit(
+        limit: int = Query(100, ge=1, le=500),
+        action: Optional[str] = Query(None),
+        room_id: Optional[str] = Query(None),
+        since_id: Optional[int] = Query(None),
+    ) -> dict[str, Any]:
+        """Append-only audit trail (enabled for public/auth gateways by default)."""
+        if not st._audit_enabled:
+            raise HTTPException(
+                status_code=404,
+                detail="Audit log disabled — set OPENGATEWAY_AUDIT=true or use public auth mode",
+            )
+        items = await st.list_audit(
+            limit=limit, action=action, room_id=room_id, since_id=since_id
+        )
+        return {
+            "audit": items,
+            "count": len(items),
+            "enabled": True,
         }
 
     @app.get("/")

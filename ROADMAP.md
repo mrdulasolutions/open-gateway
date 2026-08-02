@@ -63,12 +63,12 @@ Think **Claude Connectors / mobile web session**: open a link on your phone, aut
 
 - [ ] Per-participant / per-device API keys (scoped roles)
 - [x] Auth failure rate limit (per-IP) on public modes (v0.0.1)
-- [ ] Full audit log for public mode
-- [ ] Redis-backed multi-process scale-out
+- [x] Full audit log for public mode (`GET /v1/audit`, SQLite) (v0.0.4)
+- [x] Redis-backed multi-process scale-out (event bus + pair codes) (v0.0.4)
 - [x] Docker + Compose packaging (`Dockerfile`, `docker-compose.yml`) (v0.0.3)
 - [x] UI inside wheel / `uv tool install` from git (v0.0.3)
-- [ ] Publish to PyPI + GHCR image tags
-- [ ] One-click Fly / Railway deploy
+- [x] Publish to PyPI + GHCR image tags (GitHub Actions on `v*`) (v0.0.4)
+- [x] One-click Fly / Railway deploy (`fly.toml`, `railway.toml`, docs/DEPLOY.md) (v0.0.4)
 - [x] Soft-expire offline participants + auto-cancel stale nudge tasks (v0.0.1)
 - [x] Tailscale doctor + Serve-first path (`opengateway doctor`, `/v1/network`) (v0.0.1+)
 - [x] Dual process docs: internal `:8765` + LAN `:8766` (v0.0.1)

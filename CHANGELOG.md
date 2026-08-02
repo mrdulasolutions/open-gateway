@@ -2,6 +2,25 @@
 
 Versioning starts at **0.0.1**. Git tags use the form `v0.0.1`, `v0.0.2`, …
 
+## 0.0.4 — 2026-08-02
+
+### Audit log (public mode)
+- SQLite `audit_log` table + in-memory fallback
+- Enabled by default when auth is required; force with `OPENGATEWAY_AUDIT=true`
+- `GET /v1/audit` (auth required) with action / room filters
+- Redacts token/password-like fields
+
+### Redis multi-process scale-out
+- Optional `OPENGATEWAY_REDIS_URL` / `REDIS_URL` + extra `opengateway[redis]`
+- Cross-worker event fan-out for SSE / wait
+- Shared pair codes across workers
+- Docs: [docs/SCALE.md](docs/SCALE.md)
+
+### Publish & deploy
+- GitHub Actions: CI on `main`, Publish (PyPI + GHCR) on `v*` tags
+- `fly.toml` + `railway.toml` + [docs/DEPLOY.md](docs/DEPLOY.md)
+- Compose / Docker image tag `0.0.4`
+
 ## 0.0.3 — 2026-08-02
 
 ### Packaging

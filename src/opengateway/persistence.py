@@ -103,6 +103,21 @@ class SqlitePersistence:
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS audit_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    actor TEXT,
+                    room_id TEXT,
+                    resource_type TEXT,
+                    resource_id TEXT,
+                    outcome TEXT NOT NULL DEFAULT 'ok',
+                    ip TEXT,
+                    detail TEXT NOT NULL DEFAULT '{}'
+                );
+                CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_log(created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_log(action);
+                CREATE INDEX IF NOT EXISTS idx_audit_room ON audit_log(room_id);
                 """
             )
             self._conn.commit()
@@ -198,6 +213,96 @@ class SqlitePersistence:
         with self._lock:
             self._conn.execute("DELETE FROM gateways WHERE id = ?", (gateway_id,))
             self._conn.commit()
+
+    def append_audit(self, entry: dict[str, Any]) -> dict[str, Any]:
+        """Persist one audit row; returns entry with id + created_at."""
+        from opengateway.models import utcnow
+
+        created = entry.get("created_at") or utcnow().isoformat()
+        detail = entry.get("detail") or {}
+        if not isinstance(detail, str):
+            detail = json.dumps(detail)
+        with self._lock:
+            cur = self._conn.execute(
+                """
+                INSERT INTO audit_log
+                  (created_at, action, actor, room_id, resource_type, resource_id, outcome, ip, detail)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    created,
+                    entry.get("action") or "unknown",
+                    entry.get("actor"),
+                    entry.get("room_id"),
+                    entry.get("resource_type"),
+                    entry.get("resource_id"),
+                    entry.get("outcome") or "ok",
+                    entry.get("ip"),
+                    detail,
+                ),
+            )
+            self._conn.commit()
+            row_id = cur.lastrowid
+        out = dict(entry)
+        out["id"] = row_id
+        out["created_at"] = created
+        if isinstance(out.get("detail"), str):
+            try:
+                out["detail"] = json.loads(out["detail"])
+            except Exception:
+                pass
+        return out
+
+    def list_audit(
+        self,
+        *,
+        limit: int = 100,
+        action: Optional[str] = None,
+        room_id: Optional[str] = None,
+        since_id: Optional[int] = None,
+    ) -> list[dict[str, Any]]:
+        limit = max(1, min(int(limit), 500))
+        clauses: list[str] = []
+        params: list[Any] = []
+        if action:
+            clauses.append("action = ?")
+            params.append(action)
+        if room_id:
+            clauses.append("room_id = ?")
+            params.append(room_id)
+        if since_id is not None:
+            clauses.append("id > ?")
+            params.append(int(since_id))
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        sql = (
+            f"SELECT id, created_at, action, actor, room_id, resource_type, "
+            f"resource_id, outcome, ip, detail FROM audit_log {where} "
+            f"ORDER BY id DESC LIMIT ?"
+        )
+        params.append(limit)
+        rows: list[dict[str, Any]] = []
+        with self._lock:
+            for row in self._conn.execute(sql, params):
+                detail: Any = row["detail"]
+                try:
+                    detail = json.loads(detail) if detail else {}
+                except Exception:
+                    pass
+                rows.append(
+                    {
+                        "id": row["id"],
+                        "created_at": row["created_at"],
+                        "action": row["action"],
+                        "actor": row["actor"],
+                        "room_id": row["room_id"],
+                        "resource_type": row["resource_type"],
+                        "resource_id": row["resource_id"],
+                        "outcome": row["outcome"],
+                        "ip": row["ip"],
+                        "detail": detail,
+                    }
+                )
+        return rows
 
     def load_all(self) -> dict[str, Any]:
         """Return hydrated domain objects for Store."""

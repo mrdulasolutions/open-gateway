@@ -14,12 +14,13 @@
   <a href="https://agentcommunicationprotocol.dev/"><img src="https://img.shields.io/badge/protocol-ACP%20compatible-orange.svg" alt="ACP" /></a>
   <a href="https://modelcontextprotocol.io/"><img src="https://img.shields.io/badge/MCP-stdio%20bridge-violet.svg" alt="MCP" /></a>
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.11%2B-green.svg" alt="Python" /></a>
-  <img src="https://img.shields.io/badge/version-v0.0.3-brightgreen.svg" alt="Version" />
+  <img src="https://img.shields.io/badge/version-v0.0.4-brightgreen.svg" alt="Version" />
 </p>
 
 <p align="center">
   <a href="#quick-start">Quick start</a> ·
   <a href="docs/INSTALL.md">Install</a> ·
+  <a href="docs/DEPLOY.md">Deploy</a> ·
   <a href="#why-opengateway">Why</a> ·
   <a href="#live-ops-ui">UI</a> ·
   <a href="#security--gateways">Security</a> ·
@@ -84,7 +85,8 @@ Full install matrix (tool install · Docker · wheel): **[docs/INSTALL.md](docs/
 **A — CLI tool (neatest)**
 
 ```bash
-uv tool install "git+https://github.com/mrdulasolutions/open-gateway.git@v0.0.3"
+uv tool install "git+https://github.com/mrdulasolutions/open-gateway.git@v0.0.4"
+# after PyPI:  pip install opengateway   |   uv tool install opengateway
 opengateway serve
 # → http://127.0.0.1:8765/ui/
 ```

@@ -408,6 +408,51 @@ async def test_network_diagnostics(client: AsyncClient):
 
 
 @pytest.mark.asyncio
+async def test_audit_log_public_mode(tmp_path, monkeypatch):
+    """Public/auth gateways record redacted audit entries."""
+    monkeypatch.setenv("OPENGATEWAY_AUDIT", "true")
+    monkeypatch.setenv("OPENGATEWAY_DB", str(tmp_path / "audit.db"))
+    from opengateway.config import GatewayConfig, GatewayMode
+    from opengateway.server import create_app
+    from opengateway.store import Store
+
+    st = Store(db_path=tmp_path / "audit.db", audit=True)
+    cfg = GatewayConfig(
+        mode=GatewayMode.PUBLIC,
+        host="127.0.0.1",
+        port=8765,
+        auth_token="test-token-audit",
+        require_auth=True,
+        network="lan",
+        name="audit-gw",
+    )
+    app = create_app(store=st, config=cfg)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as c:
+        headers = {"Authorization": "Bearer test-token-audit"}
+        room = (
+            await c.post(
+                "/v1/rooms",
+                json={"name": "audited", "goal": "log me"},
+                headers=headers,
+            )
+        ).json()
+        await c.post(
+            f"/v1/rooms/{room['id']}/join",
+            json={"name": "alice", "harness": "human"},
+            headers=headers,
+        )
+        audit = (await c.get("/v1/audit", headers=headers)).json()
+        assert audit["enabled"] is True
+        assert audit["count"] >= 1
+        actions = {e["action"] for e in audit["audit"]}
+        assert "room.create" in actions or "participant.join" in actions
+        # Secrets must not appear raw in detail blobs
+        blob = str(audit)
+        assert "test-token-audit" not in blob
+
+
+@pytest.mark.asyncio
 async def test_stale_online_marked_offline_and_nudge_cancelled(store: Store):
     from datetime import timedelta
 

@@ -36,6 +36,12 @@ Never expose an unauthenticated gateway to the internet. Prefer [Tailscale Serve
 - Do not commit tokens, pair codes, or production DB files
 - Rotate tokens if a harness config or phone pair link leaks
 
+## Audit log
+
+Public / authenticated gateways write an append-only audit trail (room create, join, messages, pair).  
+Query: `GET /v1/audit` with the gateway bearer token.  
+Disable with `OPENGATEWAY_AUDIT=false`. Detail payloads redact common secret field names.
+
 ## Phone pair links
 
 - Pair codes are short-lived (default 15 min, max uses capped) and in-memory only

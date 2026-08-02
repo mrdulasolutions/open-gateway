@@ -1,0 +1,49 @@
+# OpenGateway on Fly.io — https://fly.io
+#
+#   fly launch --no-deploy   # first time (uses this file)
+#   fly secrets set OPENGATEWAY_AUTH_TOKEN="$(openssl rand -hex 24)"
+#   fly deploy
+#   fly open /ui/
+#
+# Optional Redis for multi-machine fan-out:
+#   fly redis create
+#   fly secrets set OPENGATEWAY_REDIS_URL="redis://..."
+
+app = "opengateway"  # change to a unique name: fly apps create <name>
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  OPENGATEWAY_MODE = "public"
+  OPENGATEWAY_VIA = "open"
+  OPENGATEWAY_NETWORK = "public"
+  OPENGATEWAY_HOST = "0.0.0.0"
+  OPENGATEWAY_PORT = "8765"
+  OPENGATEWAY_DB = "/data/state.db"
+  OPENGATEWAY_AUDIT = "true"
+
+[http_service]
+  internal_port = 8765
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ["app"]
+
+  [[http_service.checks]]
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "10s"
+    method = "GET"
+    path = "/ping"
+
+[[mounts]]
+  source = "og_data"
+  destination = "/data"
+
+[[vm]]
+  memory = "512mb"
+  cpu_kind = "shared"
+  cpus = 1

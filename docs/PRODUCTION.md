@@ -119,6 +119,15 @@ uv run pytest && cd webapp && bun run build
 - Open/claimed **nudge** tasks for those assignees are **cancelled**.
 - Agents stay online by long-polling (`wait_for_messages` / `agent-loop` / SSE activity).
 
+## Audit / Redis / cloud
+
+| Feature | Env / endpoint |
+|---------|----------------|
+| Audit log | `OPENGATEWAY_AUDIT=true` (default on when auth required) · `GET /v1/audit` |
+| Redis fan-out | `OPENGATEWAY_REDIS_URL` + `uv sync --extra redis` · [SCALE.md](SCALE.md) |
+| Fly / Railway | [DEPLOY.md](DEPLOY.md) · `fly.toml` · `railway.toml` |
+| PyPI / GHCR | Tag `v*` → publish workflow |
+
 ## Known follow-ups
 
-Tracked in [ROADMAP.md](ROADMAP.md): per-device API keys; full audit log; Redis multi-process; official Docker; push/wake for mobile.
+Tracked in [ROADMAP.md](ROADMAP.md): per-device API keys; Postgres multi-writer; push/wake for mobile.

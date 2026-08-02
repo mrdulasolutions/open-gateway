@@ -142,6 +142,15 @@ Skill playbook: [`skills/opengateway-collab/SKILL.md`](../skills/opengateway-col
 
 ---
 
+## Cloud deploy
+
+See **[DEPLOY.md](DEPLOY.md)** for Fly.io, Railway, GHCR, and Redis multi-worker.
+
+```bash
+fly deploy          # after fly.toml + secrets
+# or Railway from GitHub with railway.toml
+```
+
 ## Production checklist
 
 See [PRODUCTION.md](PRODUCTION.md) and [GATEWAYS.md](GATEWAYS.md).

@@ -24,6 +24,7 @@ from opengateway.models import (
     TaskStatus,
     utcnow,
 )
+from opengateway.audit import audit_enabled, build_audit_entry
 from opengateway.persistence import SqlitePersistence, default_db_path
 
 
@@ -34,6 +35,8 @@ class Store:
         self,
         event_history: int = 2000,
         db_path: Union[str, Path, None] = ...,  # type: ignore[assignment]
+        *,
+        audit: Optional[bool] = None,
     ) -> None:
         self._lock = asyncio.Lock()
         self.rooms: dict[str, Room] = {}
@@ -46,11 +49,14 @@ class Store:
         self.gateways: dict[str, GatewayRecord] = {}
         self.agents: dict[str, RegisteredAgent] = {}
         self.runs: dict[str, Run] = {}
-        # Short-lived phone/mobile pair codes (in-memory only)
+        # Short-lived phone/mobile pair codes (in-memory only; Redis optional)
         self.pair_codes: dict[str, dict[str, Any]] = {}
         self._events: deque[GatewayEvent] = deque(maxlen=event_history)
         self._subscribers: list[asyncio.Queue[GatewayEvent]] = []
         self._seq = 0
+        self._redis: Any = None  # optional RedisBus
+        self._audit_enabled = bool(audit) if audit is not None else False
+        self._memory_audit: deque[dict[str, Any]] = deque(maxlen=2000)
 
         # db_path=... means "use default from env"; None means memory-only
         if db_path is ...:
@@ -108,6 +114,84 @@ class Store:
         if self._db:
             self._db.save_agent(agent)
 
+    def enable_audit(self, enabled: bool = True) -> None:
+        self._audit_enabled = enabled
+
+    def attach_redis(self, bus: Any) -> None:
+        """Attach optional RedisBus for multi-worker event fan-out + pair codes."""
+        self._redis = bus
+        if bus is not None:
+            bus.start_listener(self._on_remote_event)
+
+    def _on_remote_event(self, raw: dict[str, Any]) -> None:
+        """Fan remote Redis events into local SSE subscribers (no re-publish)."""
+        try:
+            event = GatewayEvent.model_validate(raw)
+        except Exception:
+            return
+        self._events.append(event)
+        dead: list[asyncio.Queue[GatewayEvent]] = []
+        for q in self._subscribers:
+            try:
+                q.put_nowait(event)
+            except asyncio.QueueFull:
+                dead.append(q)
+        for q in dead:
+            if q in self._subscribers:
+                self._subscribers.remove(q)
+
+    async def audit(
+        self,
+        action: str,
+        *,
+        actor: Optional[str] = None,
+        room_id: Optional[str] = None,
+        resource_type: Optional[str] = None,
+        resource_id: Optional[str] = None,
+        detail: Optional[dict[str, Any]] = None,
+        ip: Optional[str] = None,
+        outcome: str = "ok",
+    ) -> Optional[dict[str, Any]]:
+        if not self._audit_enabled:
+            return None
+        entry = build_audit_entry(
+            action=action,
+            actor=actor,
+            room_id=room_id,
+            resource_type=resource_type,
+            resource_id=resource_id,
+            detail=detail,
+            ip=ip,
+            outcome=outcome,
+        )
+        if self._db:
+            return self._db.append_audit(entry)
+        entry["id"] = len(self._memory_audit) + 1
+        entry["created_at"] = utcnow().isoformat()
+        self._memory_audit.appendleft(entry)
+        return entry
+
+    async def list_audit(
+        self,
+        *,
+        limit: int = 100,
+        action: Optional[str] = None,
+        room_id: Optional[str] = None,
+        since_id: Optional[int] = None,
+    ) -> list[dict[str, Any]]:
+        if self._db:
+            return self._db.list_audit(
+                limit=limit, action=action, room_id=room_id, since_id=since_id
+            )
+        items = list(self._memory_audit)
+        if action:
+            items = [e for e in items if e.get("action") == action]
+        if room_id:
+            items = [e for e in items if e.get("room_id") == room_id]
+        if since_id is not None:
+            items = [e for e in items if int(e.get("id") or 0) > since_id]
+        return items[: max(1, min(limit, 500))]
+
     async def emit(self, event: GatewayEvent) -> GatewayEvent:
         async with self._lock:
             self._seq += 1
@@ -122,6 +206,12 @@ class Store:
                     dead.append(q)
             for q in dead:
                 self._subscribers.remove(q)
+        # Cross-process fan-out (best-effort)
+        if self._redis is not None:
+            try:
+                await self._redis.publish_event(event.model_dump(mode="json"))
+            except Exception:
+                pass
         return event
 
     def subscribe(self, maxsize: int = 256) -> asyncio.Queue[GatewayEvent]:
@@ -158,6 +248,14 @@ class Store:
             self._persist_room(room)
         await self.emit(
             GatewayEvent(type="room", room_id=room.id, payload={"action": "created", "room": room.model_dump(mode="json")})
+        )
+        await self.audit(
+            "room.create",
+            actor=room.created_by,
+            room_id=room.id,
+            resource_type="room",
+            resource_id=room.id,
+            detail={"name": room.name},
         )
         return room
 
@@ -201,6 +299,14 @@ class Store:
                 room_id=room_id,
                 payload={"action": "joined", "participant": participant.model_dump(mode="json")},
             )
+        )
+        await self.audit(
+            "participant.join",
+            actor=participant.name,
+            room_id=room_id,
+            resource_type="participant",
+            resource_id=participant.id,
+            detail={"harness": str(participant.harness), "role": participant.role},
         )
         return participant
 
@@ -406,6 +512,17 @@ class Store:
                 room_id=msg.room_id,
                 payload={"message": msg.model_dump(mode="json")},
             )
+        )
+        await self.audit(
+            "message.post",
+            actor=msg.from_name,
+            room_id=msg.room_id,
+            resource_type="message",
+            resource_id=msg.id,
+            detail={
+                "dm": bool(msg.to_participant_id),
+                "to": msg.to_participant_id,
+            },
         )
         return msg
 
@@ -660,7 +777,7 @@ class Store:
         label: str = "",
         ttl_seconds: int = 900,
     ) -> dict[str, Any]:
-        """Create a short-lived pair code for phone/web join (in-memory)."""
+        """Create a short-lived pair code (memory + optional Redis for multi-worker)."""
         import secrets
         from datetime import timedelta
 
@@ -680,6 +797,18 @@ class Store:
         async with self._lock:
             self._purge_expired_pairs()
             self.pair_codes[code] = rec
+        if self._redis is not None:
+            try:
+                await self._redis.pair_set(code, rec, ttl_seconds)
+            except Exception:
+                pass
+        await self.audit(
+            "pair.create",
+            room_id=room_id,
+            resource_type="pair",
+            resource_id=code,
+            detail={"label": label, "ttl_seconds": ttl_seconds},
+        )
         return dict(rec)
 
     def _purge_expired_pairs(self) -> None:
@@ -702,16 +831,40 @@ class Store:
             self.pair_codes.pop(c, None)
 
     async def redeem_pair_code(self, code: str) -> Optional[dict[str, Any]]:
+        key = (code or "").strip().upper()
+        # Prefer Redis when multi-worker (shared pair state)
+        if self._redis is not None:
+            try:
+                remote = await self._redis.pair_incr_uses(key)
+                if remote:
+                    await self.audit(
+                        "pair.redeem",
+                        room_id=remote.get("room_id"),
+                        resource_type="pair",
+                        resource_id=key,
+                        detail={"via": "redis"},
+                    )
+                    return remote
+            except Exception:
+                pass
         async with self._lock:
             self._purge_expired_pairs()
-            rec = self.pair_codes.get((code or "").strip().upper())
+            rec = self.pair_codes.get(key)
             if not rec:
                 return None
             rec["uses"] = int(rec.get("uses") or 0) + 1
             if rec["uses"] >= rec.get("max_uses", 5):
                 # keep until purge for race; still return once more
                 pass
-            return dict(rec)
+            out = dict(rec)
+        await self.audit(
+            "pair.redeem",
+            room_id=out.get("room_id"),
+            resource_type="pair",
+            resource_id=key,
+            detail={"via": "memory"},
+        )
+        return out
 
 
 def create_store(db_path: Union[str, Path, None] = ...) -> Store:  # type: ignore[assignment]
