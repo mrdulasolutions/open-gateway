@@ -35,7 +35,7 @@
 </p>
 
 <p align="center">
-  <sub>One-click cloud hub with <strong>Postgres + Redis</strong> · set <code>OPENGATEWAY_AUTH_TOKEN</code> · guide: <a href="docs/RAILWAY.md">docs/RAILWAY.md</a></sub>
+  <sub>One-click hub: <strong>Postgres + Redis</strong> · login · invite-only by default · set master token as a Variable · <a href="docs/RAILWAY.md">docs/RAILWAY.md</a></sub>
 </p>
 
 ---

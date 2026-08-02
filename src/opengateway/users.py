@@ -113,8 +113,12 @@ def slugify(name: str) -> str:
 
 
 def open_registration() -> bool:
-    """If true, new users can register into the first tenant without invite."""
-    return os.environ.get("OPENGATEWAY_OPEN_REGISTRATION", "true").lower() in {
+    """If true, new users can register into the first tenant without invite.
+
+    Default **false** (production / Railway): first user is always allowed when
+    the hub has zero users; later signups need an invite unless this is enabled.
+    """
+    return os.environ.get("OPENGATEWAY_OPEN_REGISTRATION", "false").lower() in {
         "1",
         "true",
         "yes",

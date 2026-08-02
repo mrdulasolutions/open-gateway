@@ -1,11 +1,12 @@
 # OpenGateway — Railway config-as-code (also see railway.json)
-# One-click: README "Deploy on Railway" button
-# Docs: docs/RAILWAY.md
+# One-click: https://railway.com/deploy/open-gateway
+# Docs: docs/RAILWAY.md · docs/RAILWAY_TEMPLATE.md
 #
 # After deploy:
-#   1. Set OPENGATEWAY_AUTH_TOKEN (or copy the generated one from first-boot logs)
-#   2. Mount a Railway Volume at /data
-#   3. Generate domain → https://<app>.up.railway.app/ui/
+#   1. Confirm OPENGATEWAY_AUTH_TOKEN is a Railway Variable (not only first-boot log)
+#   2. Prefer Postgres + Redis plugins (no Volume required)
+#   3. Domain is auto-wired → OPENGATEWAY_PUBLIC_URL via entrypoint
+#   4. Open /ui/ → create admin → mint agent tokens for MCP
 
 [build]
 builder = "DOCKERFILE"

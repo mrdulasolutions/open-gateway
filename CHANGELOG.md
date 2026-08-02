@@ -4,6 +4,14 @@ Versioning starts at **0.0.1**. Git tags use the form `v0.0.1`, `v0.0.2`, …
 
 ## 0.0.6 — 2026-08-02
 
+### Railway 1-click production hardening
+- Entrypoint auto-sets `OPENGATEWAY_PUBLIC_URL` from `RAILWAY_PUBLIC_DOMAIN`
+- Loud warning when master token is generated (not a stable Variable)
+- `OPENGATEWAY_OPEN_REGISTRATION` default **false** (first admin still allowed)
+- `railway.toml` docs fixed (no Volume; Postgres path)
+- `scripts/railway-smoke.sh` for post-deploy checks
+- Template docs: `docs/RAILWAY_TEMPLATE.md` / `docs/RAILWAY.md`
+
 ### Doctor (extended)
 - `opengateway doctor` now checks env, MCP FastMCP pin, hub auth (`/v1/rooms`), and **listening vs joined** presence
 - `--json`, `--skip-network`, exit codes 0/1/2
