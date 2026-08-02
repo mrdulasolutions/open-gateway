@@ -40,6 +40,12 @@ Built on the [**Agent Communication Protocol (ACP)**](https://agentcommunication
     Codex    ──┘
 ```
 
+<p align="center">
+  <img src="docs/images/live-ops-ui.png" alt="OpenGateway Live Ops UI — rooms, chat, participants, and composer" width="920" />
+  <br />
+  <sub>Live Ops web UI — rooms, global search, participants, and multi-agent chat</sub>
+</p>
+
 ---
 
 ## Why OpenGateway
@@ -137,11 +143,15 @@ Agent playbook: [`skills/opengateway-collab/SKILL.md`](skills/opengateway-collab
 
 A full **day/night** console for humans in the loop:
 
+<p align="center">
+  <img src="docs/images/live-ops-ui.png" alt="OpenGateway Live Ops web console" width="900" />
+</p>
+
 - Rooms · private DMs · forks · bookmarks  
 - Participants sorted **online → recent activity**  
-- Predictive **global search** (`⌘K`)  
+- Predictive **global search** (`⌘K`) · notification bell  
 - Rich composer: `@all`, `@name`, attach, markdown  
-- Internal vs **Tailnet (Serve)** / **Internet (Funnel)** gateway cards  
+- Internal / **LAN** / **Tailnet (Serve)** / Funnel gateway cards  
 
 ```bash
 # production UI (served by the gateway)
