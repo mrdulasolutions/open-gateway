@@ -53,6 +53,75 @@ def test_client_sends_authorization(monkeypatch):
         assert str(c.base_url).rstrip("/") == "http://hub.test"
 
 
+def test_client_custom_timeout_still_auths(monkeypatch):
+    """Regression: wait_for_messages used a bare httpx.Client without headers → 401."""
+    monkeypatch.setenv("OPENGATEWAY_AUTH_TOKEN", "ogk_longpoll")
+    from opengateway import mcp_server as mod
+
+    with mod._client(timeout=55.0) as c:
+        assert c.headers.get("Authorization") == "Bearer ogk_longpoll"
+        assert c.timeout.read == 55.0 or float(c.timeout.read) == 55.0
+
+
+@pytest.mark.asyncio
+async def test_wait_for_messages_sends_authorization(monkeypatch):
+    """wait_for_messages must hit /messages/wait with Bearer (not a bare client)."""
+    monkeypatch.setenv("OPENGATEWAY_AUTH_TOKEN", "ogk_wait")
+    monkeypatch.setenv("OPENGATEWAY_URL", "http://hub.test")
+    from opengateway import mcp_server as mod
+
+    captured: dict = {}
+
+    class FakeResp:
+        status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "messages": [],
+                "timed_out": True,
+                "next_since": None,
+                "last_id": None,
+                "count": 0,
+            }
+
+    class FakeClient:
+        def __init__(self, *a, **kw):
+            captured["headers"] = dict(kw.get("headers") or {})
+            captured["timeout"] = kw.get("timeout")
+            captured["base_url"] = kw.get("base_url")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def get(self, path, params=None):
+            captured["path"] = path
+            captured["params"] = params
+            return FakeResp()
+
+    with patch.object(mod, "_client", side_effect=lambda timeout=30.0: FakeClient(
+        base_url="http://hub.test",
+        timeout=timeout,
+        headers=mod._auth_headers(),
+    )):
+        raw = await mod.wait_for_messages(
+            room_id="room-1",
+            since="",
+            for_participant="pid-1",
+            timeout_seconds=5.0,
+        )
+
+    data = json.loads(raw)
+    assert data.get("timed_out") is True
+    assert captured.get("path") == "/v1/rooms/room-1/messages/wait"
+    assert captured["headers"].get("Authorization") == "Bearer ogk_wait"
+
+
 def test_json_401_without_token_includes_hint(monkeypatch):
     monkeypatch.delenv("OPENGATEWAY_AUTH_TOKEN", raising=False)
     monkeypatch.delenv("OPENGATEWAY_TOKEN", raising=False)

@@ -58,10 +58,15 @@ def _base() -> str:
     return os.environ.get("OPENGATEWAY_URL", DEFAULT_BASE_URL).rstrip("/")
 
 
-def _client() -> httpx.Client:
+def _client(timeout: float = 30.0) -> httpx.Client:
+    """HTTP client for hub calls — always attaches Bearer auth when token is set.
+
+    Long-poll tools must use this (or pass the same headers=) with a higher timeout.
+    Never construct a bare httpx.Client without headers=_auth_headers().
+    """
     return httpx.Client(
         base_url=_base(),
-        timeout=30.0,
+        timeout=timeout,
         headers=_auth_headers(),
     )
 
@@ -336,6 +341,8 @@ async def wait_for_messages(
         params["since"] = since
     if for_participant:
         params["for_participant"] = for_participant
+    # Must use _client() so Authorization is always set (same as poll_messages).
+    # A separate bare httpx.Client was a prior bug → 401 on public hubs only for wait.
     client_timeout = max(35.0, float(timeout_seconds) + 10.0)
     if ctx is not None:
         try:
@@ -346,11 +353,7 @@ async def wait_for_messages(
             await ctx.report_progress(0, 1, "long-poll wait")
         except Exception:
             pass
-    with httpx.Client(
-        base_url=_base(),
-        timeout=client_timeout,
-        headers=_auth_headers(),
-    ) as c:
+    with _client(timeout=client_timeout) as c:
         data = _json(c.get(f"/v1/rooms/{room_id}/messages/wait", params=params))
         if isinstance(data, dict) and "messages" in data:
             msgs = data.get("messages") or []
