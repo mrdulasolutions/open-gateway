@@ -1,16 +1,11 @@
-# OpenGateway on Railway — https://railway.app
+# OpenGateway — Railway config-as-code (also see railway.json)
+# One-click: README "Deploy on Railway" button
+# Docs: docs/RAILWAY.md
 #
-#   1. New project → Deploy from GitHub → this repo
-#   2. Variables:
-#        OPENGATEWAY_AUTH_TOKEN=<openssl rand -hex 24>
-#        OPENGATEWAY_MODE=public
-#        OPENGATEWAY_VIA=open
-#        OPENGATEWAY_NETWORK=public
-#        OPENGATEWAY_AUDIT=true
-#        OPENGATEWAY_DB=/data/state.db
-#   3. Add a Railway Volume mounted at /data (Dockerfile VOLUME is not allowed)
-#   4. Optional Redis plugin → OPENGATEWAY_REDIS_URL=${{Redis.REDIS_URL}}
-#   5. Generate domain → https://<app>.up.railway.app/ui/
+# After deploy:
+#   1. Set OPENGATEWAY_AUTH_TOKEN (or copy the generated one from first-boot logs)
+#   2. Mount a Railway Volume at /data
+#   3. Generate domain → https://<app>.up.railway.app/ui/
 
 [build]
 builder = "DOCKERFILE"
@@ -18,6 +13,6 @@ dockerfilePath = "Dockerfile"
 
 [deploy]
 healthcheckPath = "/ping"
-healthcheckTimeout = 30
+healthcheckTimeout = 120
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 5

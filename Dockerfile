@@ -1,5 +1,5 @@
 # OpenGateway — multi-agent hub (API + Live Ops UI)
-# UI is baked into the Python package (src/opengateway/static); no Node at runtime.
+# Railway-safe: no Docker VOLUME; honors $PORT via docker-entrypoint.sh
 FROM python:3.12-slim AS runtime
 
 LABEL org.opencontainers.image.title="OpenGateway" \
@@ -14,35 +14,34 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     OPENGATEWAY_PORT=8765 \
     OPENGATEWAY_MODE=public \
     OPENGATEWAY_VIA=open \
-    OPENGATEWAY_NETWORK=lan
+    OPENGATEWAY_NETWORK=public \
+    OPENGATEWAY_DB=/data/state.db \
+    OPENGATEWAY_AUDIT=true
 
 WORKDIR /app
 
-# System deps minimal; uv for fast install
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl ca-certificates \
+    && apt-get install -y --no-install-recommends curl ca-certificates openssl \
     && rm -rf /var/lib/apt/lists/* \
     && pip install --no-cache-dir uv
 
-# Copy project and install as package (includes static UI)
 COPY pyproject.toml README.md LICENSE NOTICE ./
 COPY src ./src
 COPY webapp/dist ./webapp/dist
-# Ensure package static is present even if builder skipped sync
+COPY docker-entrypoint.sh /docker-entrypoint.sh
+
 RUN mkdir -p src/opengateway/static \
     && cp -R webapp/dist/* src/opengateway/static/ \
-    && uv pip install --system --no-cache .
+    && uv pip install --system --no-cache . \
+    && mkdir -p /data \
+    && chmod 777 /data \
+    && chmod +x /docker-entrypoint.sh
 
-# Data dir for SQLite. Do NOT use Docker VOLUME — Railway rejects it.
-# Attach a Railway Volume (or Fly mount) at /data for persistence.
-RUN mkdir -p /data && chmod 777 /data
-ENV OPENGATEWAY_DB=/data/state.db
-
+# Do NOT add Docker VOLUME — Railway rejects it. Mount a Railway Volume at /data.
 EXPOSE 8765
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD curl -fsS "http://127.0.0.1:${OPENGATEWAY_PORT}/ping" || exit 1
+# Healthcheck uses PORT if set (Railway injects it at runtime; build default 8765)
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=5 \
+  CMD curl -fsS "http://127.0.0.1:${PORT:-8765}/ping" || exit 1
 
-# Token required for public bind — set OPENGATEWAY_AUTH_TOKEN at run time
-ENTRYPOINT ["opengateway", "serve"]
-CMD ["--mode", "public", "--via", "open", "--network", "lan", "--host", "0.0.0.0", "--port", "8765"]
+ENTRYPOINT ["/docker-entrypoint.sh"]

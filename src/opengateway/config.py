@@ -134,7 +134,8 @@ def load_gateway_config() -> GatewayConfig:
     elif via_raw in {"funnel"}:
         network_raw = network_raw or "funnel"
 
-    port = int(_env("OPENGATEWAY_PORT", "8765") or "8765")
+    # Railway/Fly inject PORT; prefer OPENGATEWAY_PORT, then PORT, then 8765
+    port = int(_env("OPENGATEWAY_PORT") or _env("PORT") or "8765")
     token = _env("OPENGATEWAY_AUTH_TOKEN") or None
     public_url = _env("OPENGATEWAY_PUBLIC_URL") or None
     name = _env(

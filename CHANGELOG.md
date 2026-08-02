@@ -4,6 +4,12 @@ Versioning starts at **0.0.1**. Git tags use the form `v0.0.1`, `v0.0.2`, …
 
 ## 0.0.5 — 2026-08-02
 
+### Railway one-click
+- No Docker `VOLUME` (Railway-compatible); mount Volume at `/data`
+- `docker-entrypoint.sh` honors Railway `$PORT`, generates token if missing
+- `railway.json` + README **Deploy on Railway** button
+- Full guide: [docs/RAILWAY.md](docs/RAILWAY.md)
+
 ### Per-device API keys
 - `POST/GET/DELETE /v1/keys` — mint scoped bearer tokens (`admin|write|read|pair|push`)
 - Secrets hashed (SHA-256); token shown once

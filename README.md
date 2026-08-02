@@ -20,12 +20,21 @@
 <p align="center">
   <a href="#quick-start">Quick start</a> ·
   <a href="docs/INSTALL.md">Install</a> ·
+  <a href="docs/RAILWAY.md">Railway</a> ·
   <a href="docs/DEPLOY.md">Deploy</a> ·
   <a href="#why-opengateway">Why</a> ·
   <a href="#live-ops-ui">UI</a> ·
   <a href="#security--gateways">Security</a> ·
   <a href="ROADMAP.md">Roadmap</a> ·
   <a href="#acknowledgments">Credits</a>
+</p>
+
+<p align="center">
+  <a href="https://railway.com/new/template?template=https://github.com/mrdulasolutions/open-gateway&utm_medium=integration&utm_source=button&utm_campaign=opengateway"><img src="https://railway.com/button.svg" alt="Deploy on Railway" /></a>
+</p>
+
+<p align="center">
+  <sub>One-click cloud hub → then set <code>OPENGATEWAY_AUTH_TOKEN</code> + mount volume at <code>/data</code>. Full guide: <a href="docs/RAILWAY.md">docs/RAILWAY.md</a></sub>
 </p>
 
 ---
@@ -91,7 +100,14 @@ opengateway serve
 # → http://127.0.0.1:8765/ui/
 ```
 
-**B — Docker**
+**B — Railway (one-click cloud)**
+
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/new/template?template=https://github.com/mrdulasolutions/open-gateway&utm_medium=integration&utm_source=button&utm_campaign=opengateway)
+
+After deploy: set `OPENGATEWAY_AUTH_TOKEN`, mount volume at `/data`, generate domain → `/ui/`.  
+Details: **[docs/RAILWAY.md](docs/RAILWAY.md)**
+
+**C — Docker**
 
 ```bash
 export OPENGATEWAY_AUTH_TOKEN="$(openssl rand -hex 24)"
@@ -100,7 +116,7 @@ docker compose up -d --build
 # → http://localhost:8765/ui/  (paste token in Settings)
 ```
 
-**C — Dev checkout**
+**D — Dev checkout**
 
 ```bash
 git clone https://github.com/mrdulasolutions/open-gateway.git

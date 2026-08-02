@@ -5,7 +5,7 @@
 | Platform | Config | Steps |
 |----------|--------|--------|
 | **Fly.io** | [`fly.toml`](../fly.toml) | `fly launch` → secrets → `fly deploy` |
-| **Railway** | [`railway.toml`](../railway.toml) | Connect GitHub → set token → deploy |
+| **Railway (1-click)** | [![Deploy](https://railway.com/button.svg)](https://railway.com/new/template?template=https://github.com/mrdulasolutions/open-gateway) | Full guide [RAILWAY.md](RAILWAY.md) |
 | **Docker** | [`docker-compose.yml`](../docker-compose.yml) | `docker compose up -d` |
 | **GHCR image** | CI on `v*` tags | `docker pull ghcr.io/mrdulasolutions/open-gateway:0.0.4` |
 
@@ -47,26 +47,16 @@ fly secrets set OPENGATEWAY_REDIS_URL="redis://default:…@….upstash.io:6379"
 
 ## Railway
 
-1. **New Project** → Deploy from GitHub → `open-gateway`
-2. **Variables**
+**One-click:** [Deploy on Railway](https://railway.com/new/template?template=https://github.com/mrdulasolutions/open-gateway) · full walkthrough **[RAILWAY.md](RAILWAY.md)**
 
-   | Name | Value |
-   |------|--------|
-   | `OPENGATEWAY_AUTH_TOKEN` | `openssl rand -hex 24` |
-   | `OPENGATEWAY_MODE` | `public` |
-   | `OPENGATEWAY_VIA` | `open` |
-   | `OPENGATEWAY_NETWORK` | `public` |
-   | `OPENGATEWAY_AUDIT` | `true` |
-   | `OPENGATEWAY_DB` | `/data/state.db` |
-   | `OPENGATEWAY_PUBLIC_URL` | `https://<your-app>.up.railway.app` (after domain) |
+Quick post-deploy:
 
-3. **Volume (required for persistence)** — Railway does **not** support Docker `VOLUME` in the Dockerfile.  
-   In the service → **Settings → Volumes** → Add volume → mount path **`/data`**.  
-   Without a volume, `/data/state.db` is ephemeral (lost on redeploy).
-4. Optional: add **Redis** plugin → `OPENGATEWAY_REDIS_URL=${{Redis.REDIS_URL}}`
-5. Generate domain → `https://…up.railway.app/ui/` → paste auth token in Settings
+1. Copy generated token from first-boot logs **or** set `OPENGATEWAY_AUTH_TOKEN`
+2. **Volumes** → mount **`/data`**
+3. Generate domain + set `OPENGATEWAY_PUBLIC_URL`
+4. Open `/ui/` → paste token
 
-`railway.toml` points the builder at the repo `Dockerfile`.
+Config files: `Dockerfile` + `docker-entrypoint.sh` (honors `$PORT`) + `railway.json` / `railway.toml`.
 
 ---
 

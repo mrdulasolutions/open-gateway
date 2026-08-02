@@ -48,7 +48,10 @@ def serve(
         None,
         help="Bind host (default: 127.0.0.1 internal/serve, 0.0.0.0 open public)",
     ),
-    port: int = typer.Option(8765, help="Bind port"),
+    port: Optional[int] = typer.Option(
+        None,
+        help="Bind port (default: OPENGATEWAY_PORT or PORT or 8765)",
+    ),
     mode: str = typer.Option(
         "internal",
         help="Mode: internal | public | serve (alias: tailscale) | funnel",
@@ -109,6 +112,13 @@ def serve(
     else:
         os.environ["OPENGATEWAY_MODE"] = mode_l
 
+    # Resolve port: CLI flag > OPENGATEWAY_PORT > PORT (Railway) > 8765
+    if port is None:
+        port = int(
+            os.environ.get("OPENGATEWAY_PORT")
+            or os.environ.get("PORT")
+            or "8765"
+        )
     os.environ["OPENGATEWAY_PORT"] = str(port)
     if via:
         os.environ["OPENGATEWAY_VIA"] = via
