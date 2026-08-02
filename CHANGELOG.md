@@ -4,6 +4,12 @@ Versioning starts at **0.0.1**. Git tags use the form `v0.0.1`, `v0.0.2`, …
 
 ## 0.0.3 — 2026-08-02
 
+### Packaging
+- Live Ops UI bundled in the Python package (`opengateway/static/`) for `uv tool install` / wheels
+- `docs/INSTALL.md` — tool install, Docker Compose, local wheel
+- `Dockerfile` + `docker-compose.yml` for one-command hub
+- `make package` / `make docker` / `make sync-static`
+
 ### Identity
 - Multi-word display names with spaces (e.g. `Mark Dula`)
 - Settings draft-on-type, commit on blur/Enter (no more space-eating PATCH-per-keystroke)

@@ -77,19 +77,30 @@ from opengateway.tailscale import network_diagnostics
 
 
 def _find_web_dir() -> Path | None:
-    """Locate UI assets — prefer Vite React build (webapp/dist), else static web/."""
+    """Locate Live Ops UI assets.
+
+    Order:
+    1. Packaged wheel data: ``opengateway/static`` (pip/uv tool install)
+    2. Dev tree: ``webapp/dist`` (Vite production build)
+    3. Legacy ``web/`` SPA
+    """
     here = Path(__file__).resolve()
-    root = here.parents[2]  # OpenGateway/
+    pkg_static = here.parent / "static"
+    # parents[2] is repo root only when running from a checkout (src/opengateway/…)
+    root = here.parents[2] if len(here.parents) > 2 else here.parent
     candidates = [
-        root / "webapp" / "dist",  # Vite + React production build
+        pkg_static,  # shipped inside the installed package
+        root / "webapp" / "dist",
         Path.cwd() / "webapp" / "dist",
-        root / "web",  # legacy static SPA
-        here.parents[1] / "web",
+        root / "web",
+        here.parents[1] / "web" if len(here.parents) > 1 else None,
         Path.cwd() / "web",
         Path.home() / "Code" / "OpenGateway" / "webapp" / "dist",
         Path.home() / "Code" / "OpenGateway" / "web",
     ]
     for c in candidates:
+        if c is None:
+            continue
         if (c / "index.html").is_file():
             return c
     return None

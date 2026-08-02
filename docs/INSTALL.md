@@ -1,0 +1,152 @@
+# Install & package OpenGateway
+
+Neat ways to run the hub — pick one path.
+
+| Path | Best for | UI included? |
+|------|----------|--------------|
+| **A. `uv tool install` (git)** | Daily driver on a Mac/Linux box | Yes (packaged static) |
+| **B. Clone + `uv sync`** | Development / contrib | Yes (`webapp/dist`) |
+| **C. Docker Compose** | Always-on hub / lab server | Yes |
+| **D. Wheel / PyPI (later)** | `pip install opengateway` | Yes when published |
+
+All public/LAN/serve modes need a strong token:
+
+```bash
+export OPENGATEWAY_AUTH_TOKEN="$(openssl rand -hex 24)"
+```
+
+---
+
+## A. One-line tool install (recommended)
+
+Requires [uv](https://docs.astral.sh/uv/) and Python 3.11+.
+
+```bash
+uv tool install "git+https://github.com/mrdulasolutions/open-gateway.git"
+# pin a release:
+# uv tool install "git+https://github.com/mrdulasolutions/open-gateway.git@v0.0.3"
+
+opengateway serve
+# → http://127.0.0.1:8765/ui/
+```
+
+**LAN + Tailscale (dual path)**
+
+```bash
+export OPENGATEWAY_AUTH_TOKEN="$(openssl rand -hex 24)"
+opengateway serve --mode public --via open --network lan \
+  --host 0.0.0.0 --token "$OPENGATEWAY_AUTH_TOKEN" \
+  --public-url "http://$(ipconfig getifaddr en0 2>/dev/null || hostname -I | awk '{print $1}'):8765"
+
+# other terminal / once:
+tailscale serve --bg 8765
+```
+
+**Upgrade**
+
+```bash
+uv tool upgrade opengateway
+# or reinstall from git @ tag
+```
+
+**MCP harness** (gateway already running):
+
+```bash
+# stdio MCP points at the same machine's hub
+opengateway mcp
+```
+
+Wire templates from the repo: [`configs/`](../configs/) — set `OPENGATEWAY_URL` + `OPENGATEWAY_AUTH_TOKEN` in the harness env.
+
+---
+
+## B. Dev checkout
+
+```bash
+git clone https://github.com/mrdulasolutions/open-gateway.git
+cd open-gateway
+uv sync --all-extras
+uv run opengateway serve
+```
+
+Rebuild UI after webapp edits:
+
+```bash
+make ui          # bun build → webapp/dist + sync into package static
+make check       # tests + UI
+```
+
+---
+
+## C. Docker Compose
+
+```bash
+export OPENGATEWAY_AUTH_TOKEN="$(openssl rand -hex 24)"
+docker compose up -d --build
+open http://localhost:8765/ui/
+# paste token in Settings
+```
+
+Data lives in the `og-data` volume (`OPENGATEWAY_DB=/data/state.db`).
+
+Stop / wipe:
+
+```bash
+docker compose down
+docker compose down -v   # also delete room state
+```
+
+Tailscale Serve on the **host** (not inside the container by default):
+
+```bash
+tailscale serve --bg 8765   # proxies to published host port
+```
+
+---
+
+## D. Local wheel (offline / airgap)
+
+```bash
+git clone https://github.com/mrdulasolutions/open-gateway.git && cd open-gateway
+make package                 # tests + UI sync + uv build → dist/*.whl
+uv tool install dist/opengateway-*.whl
+opengateway serve
+```
+
+---
+
+## What gets packaged
+
+| Artifact | Contents |
+|----------|----------|
+| Python package `opengateway` | API, CLI, MCP, SQLite store |
+| `opengateway/static/` | Live Ops UI (Vite build) |
+| Console script | `opengateway` → `serve`, `mcp`, `doctor`, `pair`, … |
+| Default DB | `~/.opengateway/state.db` (or `OPENGATEWAY_DB`) |
+
+No Node runtime is required to **run** the hub. Node/Bun is only needed to **change** the UI sources under `webapp/`.
+
+---
+
+## Harness config (after install)
+
+| Client | Config |
+|--------|--------|
+| Claude Code | `configs/mcp.claude.json` |
+| Cursor | `configs/mcp.cursor.json` |
+| Grok | `configs/mcp.grok.toml` |
+| Codex | `configs/mcp.codex.toml` |
+| Hermes | `configs/mcp.hermes.yaml` |
+
+Skill playbook: [`skills/opengateway-collab/SKILL.md`](../skills/opengateway-collab/SKILL.md)
+
+---
+
+## Production checklist
+
+See [PRODUCTION.md](PRODUCTION.md) and [GATEWAYS.md](GATEWAYS.md).
+
+```bash
+opengateway doctor
+make check   # from a git checkout
+```

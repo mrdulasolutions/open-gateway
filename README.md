@@ -19,6 +19,7 @@
 
 <p align="center">
   <a href="#quick-start">Quick start</a> ·
+  <a href="docs/INSTALL.md">Install</a> ·
   <a href="#why-opengateway">Why</a> ·
   <a href="#live-ops-ui">UI</a> ·
   <a href="#security--gateways">Security</a> ·
@@ -76,53 +77,73 @@ Built on the [**Agent Communication Protocol (ACP)**](https://agentcommunication
 
 ## Quick start
 
-### 1. Install
+Full install matrix (tool install · Docker · wheel): **[docs/INSTALL.md](docs/INSTALL.md)**.
+
+### 1. Install (pick one)
+
+**A — CLI tool (neatest)**
+
+```bash
+uv tool install "git+https://github.com/mrdulasolutions/open-gateway.git@v0.0.3"
+opengateway serve
+# → http://127.0.0.1:8765/ui/
+```
+
+**B — Docker**
+
+```bash
+export OPENGATEWAY_AUTH_TOKEN="$(openssl rand -hex 24)"
+git clone https://github.com/mrdulasolutions/open-gateway.git && cd open-gateway
+docker compose up -d --build
+# → http://localhost:8765/ui/  (paste token in Settings)
+```
+
+**C — Dev checkout**
 
 ```bash
 git clone https://github.com/mrdulasolutions/open-gateway.git
 cd open-gateway
 uv sync --all-extras
-```
-
-### 2. Run (internal — one machine, many agents)
-
-```bash
 uv run opengateway serve
-# → http://127.0.0.1:8765
-# → Live Ops UI: http://127.0.0.1:8765/ui/
-# → API docs:    http://127.0.0.1:8765/docs
 ```
 
-### 3. Smoke test
+### 2. Smoke test
 
 ```bash
-uv run opengateway demo      # two agents collaborate in-process
-uv run opengateway status
-uv run opengateway ui        # open the console
+opengateway demo      # or: uv run opengateway demo
+opengateway status
+opengateway doctor
+opengateway ui
 ```
 
-### 4. Multi-machine
+### 3. Multi-machine
 
 **Same LAN**
 
 ```bash
 export OPENGATEWAY_AUTH_TOKEN="$(openssl rand -hex 24)"
-uv run opengateway serve --mode public --via open --network lan \
+opengateway serve --mode public --via open --network lan \
   --token "$OPENGATEWAY_AUTH_TOKEN" \
   --public-url "http://$(ipconfig getifaddr en0 2>/dev/null || hostname -I | awk '{print $1}'):8765"
-# remote: set OPENGATEWAY_URL + OPENGATEWAY_AUTH_TOKEN, restart MCP, or:
-#   opengateway agent-loop <room> --name grok-remote
 ```
 
-**Tailscale Serve (recommended mesh)**
+**LAN + cellular (dual path)** — keep LAN, add Tailscale Serve:
+
+```bash
+# same public LAN serve as above, then:
+tailscale serve --bg 8765
+# Phone: Tailscale ON → pair via the Tailnet gateway card (not LAN)
+```
+
+**Serve-only mesh**
 
 ```bash
 export OPENGATEWAY_AUTH_TOKEN="$(openssl rand -hex 24)"
-uv run opengateway serve --mode serve --token "$OPENGATEWAY_AUTH_TOKEN"
-# binds 127.0.0.1, prints:  tailscale serve --bg 8765
+opengateway serve --mode serve --token "$OPENGATEWAY_AUTH_TOKEN"
+# prints: tailscale serve --bg 8765
 ```
 
-Full guide: [docs/GATEWAYS.md](docs/GATEWAYS.md) · Production: [docs/PRODUCTION.md](docs/PRODUCTION.md)
+Full guide: [docs/GATEWAYS.md](docs/GATEWAYS.md) · Production: [docs/PRODUCTION.md](docs/PRODUCTION.md) · Install: [docs/INSTALL.md](docs/INSTALL.md)
 
 ### 5. Wire a harness (MCP)
 

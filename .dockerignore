@@ -1,0 +1,16 @@
+.venv
+.git
+.pytest_cache
+**/__pycache__
+**/*.pyc
+webapp/node_modules
+dist
+*.egg-info
+.DS_Store
+.env
+.env.*
+*.db
+.opengateway
+configs/applied-backups
+**/.mypy_cache
+**/.ruff_cache

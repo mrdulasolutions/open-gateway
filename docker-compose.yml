@@ -1,0 +1,37 @@
+# OpenGateway hub — one command for LAN + optional Tailscale (on host).
+#
+#   export OPENGATEWAY_AUTH_TOKEN="$(openssl rand -hex 24)"
+#   docker compose up -d
+#   open http://localhost:8765/ui/
+#
+# Phone on cellular: on the host run `tailscale serve --bg 8765` (Serve to container publish).
+
+services:
+  opengateway:
+    build: .
+    image: opengateway:0.0.3
+    container_name: opengateway
+    restart: unless-stopped
+    ports:
+      - "${OPENGATEWAY_PORT:-8765}:8765"
+    environment:
+      OPENGATEWAY_AUTH_TOKEN: "${OPENGATEWAY_AUTH_TOKEN:?Set OPENGATEWAY_AUTH_TOKEN}"
+      OPENGATEWAY_MODE: "${OPENGATEWAY_MODE:-public}"
+      OPENGATEWAY_VIA: "${OPENGATEWAY_VIA:-open}"
+      OPENGATEWAY_NETWORK: "${OPENGATEWAY_NETWORK:-lan}"
+      OPENGATEWAY_HOST: "0.0.0.0"
+      OPENGATEWAY_PORT: "8765"
+      OPENGATEWAY_PUBLIC_URL: "${OPENGATEWAY_PUBLIC_URL:-}"
+      OPENGATEWAY_DB: "/data/state.db"
+      OPENGATEWAY_NAME: "${OPENGATEWAY_NAME:-lan}"
+    volumes:
+      - og-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8765/ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  og-data:
