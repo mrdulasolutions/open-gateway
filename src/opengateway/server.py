@@ -196,7 +196,13 @@ def create_app(
             "service": "opengateway",
             "version": __version__,
             "persistent": st.persistent,
-            "db_path": str(st.db_path) if st.db_path else None,
+            # Never expose credentials on public health
+            "db_path": (
+                "postgres"
+                if getattr(st, "backend_kind", "") == "postgres"
+                else ("sqlite" if st.persistent else None)
+            ),
+            "backend": getattr(st, "backend_kind", "memory"),
             "rooms": len(st.rooms),
             "mode": cfg.mode.value,
             "network": cfg.network,
@@ -204,7 +210,6 @@ def create_app(
             "base_url": cfg.base_url,
             "audit": st._audit_enabled,
             "redis": bool(getattr(app.state, "redis_bus", None)),
-            "backend": getattr(st, "backend_kind", "memory"),
             "push": __import__("opengateway.push", fromlist=["vapid_configured"]).vapid_configured(),
         }
 
@@ -332,8 +337,8 @@ def create_app(
             "gateway": cfg.to_public_dict(),
             "persistence": {
                 "enabled": st.persistent,
-                "db_path": str(st.db_path) if st.db_path else None,
-                "hint": "Set OPENGATEWAY_DB path, or OPENGATEWAY_DB=none for memory-only",
+                "backend": getattr(st, "backend_kind", "memory"),
+                "hint": "OPENGATEWAY_DATABASE_URL (Postgres) or OPENGATEWAY_DB (SQLite path)",
             },
             "acp": {
                 "agents": "/agents",

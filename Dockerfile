@@ -30,14 +30,15 @@ COPY src ./src
 COPY webapp/dist ./webapp/dist
 COPY docker-entrypoint.sh /docker-entrypoint.sh
 
+# Install core + deploy extras (Postgres + Redis + Web Push) so one-click works
 RUN mkdir -p src/opengateway/static \
     && cp -R webapp/dist/* src/opengateway/static/ \
-    && uv pip install --system --no-cache . \
+    && uv pip install --system --no-cache ".[deploy]" \
     && mkdir -p /data \
     && chmod 777 /data \
     && chmod +x /docker-entrypoint.sh
 
-# Do NOT add Docker VOLUME — Railway rejects it. Mount a Railway Volume at /data.
+# No Docker VOLUME (Railway rejects it). Prefer Postgres plugin for persistence.
 EXPOSE 8765
 
 # Healthcheck uses PORT if set (Railway injects it at runtime; build default 8765)

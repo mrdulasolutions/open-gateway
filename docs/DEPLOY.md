@@ -5,7 +5,7 @@
 | Platform | Config | Steps |
 |----------|--------|--------|
 | **Fly.io** | [`fly.toml`](../fly.toml) | `fly launch` → secrets → `fly deploy` |
-| **Railway (1-click)** | [![Deploy](https://railway.com/button.svg)](https://railway.com/new/template?template=https://github.com/mrdulasolutions/open-gateway) | Full guide [RAILWAY.md](RAILWAY.md) |
+| **Railway (1-click)** | [![Deploy](https://railway.com/button.svg)](https://railway.com/deploy/open-gateway) | App + Postgres + Redis · [RAILWAY.md](RAILWAY.md) |
 | **Docker** | [`docker-compose.yml`](../docker-compose.yml) | `docker compose up -d` |
 | **GHCR image** | CI on `v*` tags | `docker pull ghcr.io/mrdulasolutions/open-gateway:0.0.4` |
 
@@ -47,16 +47,16 @@ fly secrets set OPENGATEWAY_REDIS_URL="redis://default:…@….upstash.io:6379"
 
 ## Railway
 
-**One-click:** [Deploy on Railway](https://railway.com/new/template?template=https://github.com/mrdulasolutions/open-gateway) · full walkthrough **[RAILWAY.md](RAILWAY.md)**
+**One-click (app + Postgres + Redis):** [Deploy on Railway](https://railway.com/deploy/open-gateway) · **[RAILWAY.md](RAILWAY.md)**
 
 Quick post-deploy:
 
-1. Copy generated token from first-boot logs **or** set `OPENGATEWAY_AUTH_TOKEN`
-2. **Volumes** → mount **`/data`**
+1. Set `OPENGATEWAY_AUTH_TOKEN` (or copy generated token from first-boot logs)
+2. Confirm `OPENGATEWAY_DATABASE_URL=${{Postgres.DATABASE_URL}}` and Redis refs
 3. Generate domain + set `OPENGATEWAY_PUBLIC_URL`
-4. Open `/ui/` → paste token
+4. Open `/ui/` → paste token · `GET /ping` should show `"backend":"postgres"`, `"redis":true`
 
-Config files: `Dockerfile` + `docker-entrypoint.sh` (honors `$PORT`) + `railway.json` / `railway.toml`.
+Config: `Dockerfile` installs `.[deploy]` (psycopg + redis + pywebpush); entrypoint waits for Postgres.
 
 ---
 

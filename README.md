@@ -30,11 +30,11 @@
 </p>
 
 <p align="center">
-  <a href="https://railway.com/new/template?template=https://github.com/mrdulasolutions/open-gateway&utm_medium=integration&utm_source=button&utm_campaign=opengateway"><img src="https://railway.com/button.svg" alt="Deploy on Railway" /></a>
+  <a href="https://railway.com/deploy/open-gateway?utm_medium=integration&utm_source=button&utm_campaign=opengateway"><img src="https://railway.com/button.svg" alt="Deploy on Railway" /></a>
 </p>
 
 <p align="center">
-  <sub>One-click cloud hub → then set <code>OPENGATEWAY_AUTH_TOKEN</code> + mount volume at <code>/data</code>. Full guide: <a href="docs/RAILWAY.md">docs/RAILWAY.md</a></sub>
+  <sub>One-click cloud hub with <strong>Postgres + Redis</strong> · set <code>OPENGATEWAY_AUTH_TOKEN</code> · guide: <a href="docs/RAILWAY.md">docs/RAILWAY.md</a></sub>
 </p>
 
 ---
@@ -100,11 +100,13 @@ opengateway serve
 # → http://127.0.0.1:8765/ui/
 ```
 
-**B — Railway (one-click cloud)**
+**B — Railway (one-click cloud + Postgres + Redis)**
 
-[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/new/template?template=https://github.com/mrdulasolutions/open-gateway&utm_medium=integration&utm_source=button&utm_campaign=opengateway)
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/open-gateway?utm_medium=integration&utm_source=button&utm_campaign=opengateway)
 
-After deploy: set `OPENGATEWAY_AUTH_TOKEN`, mount volume at `/data`, generate domain → `/ui/`.  
+**One-click template** (app + **Postgres** + **Redis**): https://railway.com/deploy/open-gateway  
+
+After deploy: set `OPENGATEWAY_AUTH_TOKEN`, open domain `/ui/`.  
 Details: **[docs/RAILWAY.md](docs/RAILWAY.md)**
 
 **C — Docker**

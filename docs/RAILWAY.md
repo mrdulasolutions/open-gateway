@@ -1,108 +1,130 @@
-# OpenGateway on Railway — full journey
+# OpenGateway on Railway — full stack (app + Postgres + Redis)
 
 ## One-click deploy
 
-[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/new/template?template=https://github.com/mrdulasolutions/open-gateway&referralCode=opengateway&utm_medium=integration&utm_source=button&utm_campaign=opengateway)
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/open-gateway?utm_medium=integration&utm_source=button&utm_campaign=opengateway)
 
-Or open:
+**Published template:** https://railway.com/deploy/open-gateway  
 
-```text
-https://railway.com/new/template?template=https://github.com/mrdulasolutions/open-gateway
-```
+One click provisions **all three services**:
 
-That creates a project from this public repo, builds the Dockerfile, and starts the hub.
-
----
-
-## End-to-end checklist (first time)
-
-| Step | Action | Why |
-|------|--------|-----|
-| 1 | Click **Deploy on Railway** | Provisions project + service from GitHub |
-| 2 | Wait for build | Dockerfile installs Python package + UI |
-| 3 | Open **Deploy logs** | First boot prints a generated `OPENGATEWAY_AUTH_TOKEN` if unset |
-| 4 | **Variables** → set `OPENGATEWAY_AUTH_TOKEN` to a stable secret | Survives redeploys |
-| 5 | **Settings → Volumes** → mount path **`/data`** | SQLite persistence (Docker `VOLUME` is forbidden on Railway) |
-| 6 | **Settings → Networking** → Generate domain | Public HTTPS URL |
-| 7 | Set `OPENGATEWAY_PUBLIC_URL=https://<your-app>.up.railway.app` | Correct gateway cards / pair QR |
-| 8 | Open `https://…/ui/` → paste token in **Settings** | Live Ops loads rooms |
-
-Optional:
-
-| Variable | Purpose |
-|----------|---------|
-| `OPENGATEWAY_AUDIT=true` | Audit log (default on in image) |
-| `OPENGATEWAY_DATABASE_URL` | Postgres instead of SQLite |
-| `OPENGATEWAY_REDIS_URL` | Multi-worker event fan-out |
-| `OPENGATEWAY_VAPID_PUBLIC` / `_PRIVATE` | Mobile Web Push |
+| Service | Role |
+|---------|------|
+| **open-gateway** | API + Live Ops UI |
+| **Postgres** | Multi-writer system of record (`OPENGATEWAY_DATABASE_URL`) |
+| **Redis** | Event fan-out + shared pair codes (`OPENGATEWAY_REDIS_URL`) |
 
 ---
 
-## What the image does
+## What “100% ready” includes
 
-```text
-docker-entrypoint.sh
-  ├─ PORT / OPENGATEWAY_PORT   ← Railway injects PORT
-  ├─ host 0.0.0.0              ← accept public traffic
-  ├─ mode public + auth token
-  ├─ DB /data/state.db         ← mount volume here
-  └─ opengateway serve …
-```
+| Piece | How it is provided |
+|-------|--------------------|
+| App container | `Dockerfile` + `docker-entrypoint.sh` |
+| Listen port | Railway `$PORT` |
+| Auth | `OPENGATEWAY_AUTH_TOKEN` (or auto-generated once, then set as Variable) |
+| **Database** | **Postgres** plugin → `${{Postgres.DATABASE_URL}}` |
+| **Redis** | **Redis** plugin → `${{Redis.REDIS_URL}}` |
+| Public HTTPS | Railway domain |
+| Healthcheck | `GET /ping` |
+| UI | `/ui/` baked into image |
 
-Health check: `GET /ping` (must return 200).
+SQLite `/data` is only a **fallback** when Postgres is not linked. Prefer Postgres on Railway.
 
 ---
 
-## Agent / CLI deploy (from this laptop)
+## CLI deploy (this project already linked)
 
 ```bash
-# Once
-railway login                 # or: railway setup agent -y
-
 cd ~/Code/OpenGateway
-railway link                  # pick project, or:
-railway up -y -m "deploy OpenGateway"
+railway login
+railway link --project open-gateway   # if needed
 
-# Variables
-railway variable set OPENGATEWAY_AUTH_TOKEN="$(openssl rand -hex 24)"
-railway domain                # attach public domain
-railway logs --lines 100
+# Full stack (idempotent if already present — check service list first)
+railway service list --json
+railway add --database postgres --json   # only if missing
+railway add --database redis --json      # only if missing
+
+# Wire references onto the app service
+railway variable set \
+  'OPENGATEWAY_DATABASE_URL=${{Postgres.DATABASE_URL}}' \
+  'OPENGATEWAY_REDIS_URL=${{Redis.REDIS_URL}}' \
+  'DATABASE_URL=${{Postgres.DATABASE_URL}}' \
+  'REDIS_URL=${{Redis.REDIS_URL}}' \
+  --service open-gateway
+
+railway variable set \
+  OPENGATEWAY_AUTH_TOKEN="$(openssl rand -hex 24)" \
+  OPENGATEWAY_MODE=public \
+  OPENGATEWAY_NETWORK=public \
+  OPENGATEWAY_AUDIT=true \
+  OPENGATEWAY_PUBLIC_URL="https://$(railway domain list --json | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d["domains"][0]["domain"] if d.get("domains") else "")')" \
+  --service open-gateway
+
+railway up -y -m "full stack: app + postgres + redis"
 ```
 
-Troubleshoot live:
+---
+
+## Variable reference map (template / dashboard)
+
+On the **open-gateway** service:
+
+| Variable | Value |
+|----------|--------|
+| `OPENGATEWAY_DATABASE_URL` | `${{Postgres.DATABASE_URL}}` |
+| `OPENGATEWAY_REDIS_URL` | `${{Redis.REDIS_URL}}` |
+| `OPENGATEWAY_AUTH_TOKEN` | strong secret |
+| `OPENGATEWAY_MODE` | `public` |
+| `OPENGATEWAY_NETWORK` | `public` |
+| `OPENGATEWAY_AUDIT` | `true` |
+| `OPENGATEWAY_PUBLIC_URL` | `https://<your-domain>` |
+
+Entrypoint also accepts plain `DATABASE_URL` / `REDIS_URL` from Railway plugins.
+
+---
+
+## Publish as a one-click marketplace template
+
+So **Deploy on Railway** provisions app + DB + Redis:
 
 ```bash
-railway status --json
-railway deployment list --json
-railway logs --build --lines 200
-railway logs --lines 200
+# From a project that already has open-gateway + Postgres + Redis wired
+railway templates create --project open-gateway --environment production --json
+# Note template id/code from output, then:
+railway templates publish <template-id> \
+  --category Other \
+  --description "OpenGateway multi-agent hub with Postgres + Redis" \
+  --readme-file docs/RAILWAY.md \
+  --json
+```
+
+Then update the README button to:
+
+```md
+https://railway.com/new/template/<TEMPLATE_CODE>
 ```
 
 ---
 
-## Common failures
+## Verify
 
-| Error / symptom | Fix |
-|-----------------|-----|
-| `dockerfile invalid: docker VOLUME … not supported` | Fixed in main — no `VOLUME` in Dockerfile; use Railway Volume at `/data` |
-| Build OK, healthcheck fails | App must listen on `$PORT` — entrypoint maps Railway `PORT` |
-| 401 on UI | Paste `OPENGATEWAY_AUTH_TOKEN` in Live Ops Settings |
-| Data lost on redeploy | Add Volume mounted at `/data` |
-| Wrong pair / gateway URL | Set `OPENGATEWAY_PUBLIC_URL` to the Railway HTTPS domain |
+```bash
+curl -sS https://<domain>/ping | jq
+# expect: backend=postgres, redis=true (after app restart with deps)
+
+curl -sS -H "Authorization: Bearer $TOKEN" https://<domain>/v1/rooms
+open https://<domain>/ui/
+```
 
 ---
 
-## Architecture on Railway
+## Troubleshooting
 
-```text
-Internet
-   │ HTTPS
-   ▼
-Railway edge ──► container :$PORT
-                    │
-                    ├─ /ui/  Live Ops
-                    ├─ /v1/* API (Bearer)
-                    └─ /data/state.db  (Volume)
-```
-
-Prefer **Postgres** (`OPENGATEWAY_DATABASE_URL`) for multi-replica later; SQLite + single replica is fine for personal hubs.
+| Symptom | Fix |
+|---------|-----|
+| `backend: sqlite` on Railway | Wire `OPENGATEWAY_DATABASE_URL=${{Postgres.DATABASE_URL}}` and **redeploy** app (image must include `psycopg` — use latest Dockerfile with `.[deploy]`) |
+| App starts before Postgres | Entrypoint waits up to ~80s for `SELECT 1` |
+| `redis: false` | Wire `OPENGATEWAY_REDIS_URL=${{Redis.REDIS_URL}}`; image needs `redis` package |
+| Healthcheck fail | App must bind `$PORT` (entrypoint does) |
+| VOLUME error | Fixed — no Docker VOLUME; Postgres owns persistence |
