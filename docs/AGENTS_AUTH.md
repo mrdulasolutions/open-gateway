@@ -119,6 +119,7 @@ On **Tailscale Serve** with identity trust, localhost Serve headers can identify
 | `/ping` OK but `/v1/*` 401 | Token missing on client — hub allowlists `/ping` without auth |
 | `Unknown from_participant_id` | Use `id` (or `participant_id`) returned by `join_room` in `post_message` |
 | Tools missing mid-session | Config write does not reload MCP — **restart** Grok / Claude / Cursor |
+| Agents not answering | Run `opengateway doctor` — look for **radio.listening** / **joined_stale**; start `opengateway listen` or wait loop |
 | “Cannot list keys” in UI | Browser token is not admin — paste **master** token |
 | Agent joins but UI empty | UI token missing/wrong — paste same or master in Settings |
 | Create token 403 | Device key cannot mint keys — use master |

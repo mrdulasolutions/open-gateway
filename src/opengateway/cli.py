@@ -725,52 +725,190 @@ def chat(
     asyncio.run(run())
 
 
+def _doctor_mark(ok: bool, severity: str = "info") -> str:
+    if ok:
+        return "[green]ok[/]"
+    if severity == "error":
+        return "[red]FAIL[/]"
+    if severity == "warn":
+        return "[yellow]warn[/]"
+    return "[dim]—[/]"
+
+
 @app.command()
 def doctor(
-    url: str = typer.Option(None, help="Gateway base URL"),
-    port: int = typer.Option(8765, help="Port to probe locally"),
+    url: str = typer.Option(None, help="Gateway base URL (default OPENGATEWAY_URL)"),
+    port: int = typer.Option(8765, help="Local port to probe (Tailscale / loopback)"),
+    json_out: bool = typer.Option(
+        False,
+        "--json",
+        help="Print machine-readable report JSON",
+    ),
+    skip_network: bool = typer.Option(
+        False,
+        "--skip-network",
+        help="Skip Tailscale / TCP multi-machine section",
+    ),
+    room: Optional[str] = typer.Option(
+        None,
+        "--room",
+        help="Highlight a room id/name in presence summary",
+    ),
 ) -> None:
-    """Diagnose network path — Tailscale Serve vs raw 100.x / LAN."""
-    from opengateway.tailscale import network_diagnostics, tailscale_status
+    """Diagnose hub reachability, auth, MCP SDK, and agent radio/presence.
+
+    Checks:
+      • OPENGATEWAY_URL / AUTH_TOKEN / harness env
+      • mcp package + FastMCP import (mcp 2.x break)
+      • Hub /ping and authenticated GET /v1/rooms
+      • Presence: listening vs joined-but-stale (suggests opengateway listen)
+      • Tailscale Serve vs raw 100.x (unless --skip-network)
+
+    Exit codes: 0 = clean, 1 = errors, 2 = warnings only.
+    """
+    import logging
+
+    from opengateway.doctor import run_doctor
+
+    # httpx logs every request at INFO — quiet for human doctor output
+    logging.getLogger("httpx").setLevel(logging.WARNING)
 
     base = _base_url(url)
+    report = run_doctor(base, port=port, include_network=not skip_network)
+
+    if json_out:
+        payload = {
+            "base_url": report.base_url,
+            "ok": report.ok,
+            "exit_code": report.exit_code(),
+            "checks": [c.as_dict() for c in report.checks],
+            "ping": report.ping,
+            "rooms_summary": report.rooms_summary,
+            "recommendations": report.recommendations,
+            "tailscale": report.tailscale,
+            "network": report.network,
+        }
+        console.print_json(data=payload)
+        raise typer.Exit(report.exit_code())
+
     console.print(f"[bold]OpenGateway doctor[/] · {base}\n")
 
-    # Local tailscale
-    ts = tailscale_status()
-    console.print(f"[bold]Tailscale installed:[/] {ts['installed']}")
-    if ts["installed"]:
-        console.print(f"  running: {ts.get('running')}  state: {ts.get('backend_state')}")
-        console.print(f"  MagicDNS: {ts.get('dns_name') or '—'}")
-        console.print(f"  Tailscale IPs: {', '.join(ts.get('tailscale_ips') or []) or '—'}")
-        console.print(f"  Serve configured: {ts.get('serve_configured')}")
-    for h in ts.get("hints") or []:
-        console.print(f"  [yellow]•[/] {h}")
+    # ── Env + MCP ────────────────────────────────────────────────────────
+    console.print("[bold]Environment & MCP[/]")
+    for c in report.checks:
+        if c.name.startswith("env.") or c.name.startswith("mcp.") or c.name.startswith("url."):
+            console.print(
+                f"  {_doctor_mark(c.ok, c.severity)}  [cyan]{c.name}[/]  {c.detail}"
+            )
+            if not c.ok and c.fix:
+                console.print(f"       [dim]fix: {c.fix.split(chr(10))[0]}[/]")
 
-    diag = network_diagnostics(port)
-    console.print("\n[bold]TCP probes[/]")
-    for p in diag.get("probes") or []:
-        mark = "[green]ok[/]" if p.get("ok") else f"[red]fail[/] ({p.get('error')})"
-        console.print(f"  {p.get('host')}:{p.get('port')} → {mark}")
+    # ── Hub ──────────────────────────────────────────────────────────────
+    console.print("\n[bold]Hub[/]")
+    hub_checks = [
+        c
+        for c in report.checks
+        if c.name.startswith("hub.") or c.name.startswith("local.")
+    ]
+    if not hub_checks:
+        console.print("  [dim](no hub checks)[/]")
+    for c in hub_checks:
+        console.print(
+            f"  {_doctor_mark(c.ok, c.severity)}  [cyan]{c.name}[/]  {c.detail}"
+        )
+        if not c.ok and c.fix:
+            for line in c.fix.split("\n"):
+                console.print(f"       [dim]{line}[/]")
 
-    rec = diag.get("recommended") or {}
-    console.print(f"\n[bold]Recommended multi-machine path:[/] {rec.get('mode')}")
-    console.print(f"  [dim]{rec.get('why')}[/]")
-    for cmd in rec.get("commands") or []:
-        console.print(f"  [cyan]$[/] {cmd}")
+    # ── Radio / presence ─────────────────────────────────────────────────
+    console.print("\n[bold]Radio / presence[/]")
+    radio_checks = [c for c in report.checks if c.name.startswith("radio.")]
+    for c in radio_checks:
+        console.print(
+            f"  {_doctor_mark(c.ok, c.severity)}  [cyan]{c.name}[/]  {c.detail}"
+        )
+        if not c.ok and c.fix:
+            for line in c.fix.split("\n"):
+                console.print(f"       [dim]{line}[/]")
+    summary = report.rooms_summary
+    if summary and summary.get("rooms"):
+        table = Table(show_header=True, header_style="bold", box=None, pad_edge=False)
+        table.add_column("Room")
+        table.add_column("Listening", style="green")
+        table.add_column("Joined", style="yellow")
+        table.add_column("Offline", style="dim")
+        for row in summary["rooms"]:
+            name = str(row.get("name") or "")
+            if room and room not in (name, str(row.get("id") or "")):
+                if not str(row.get("id") or "").startswith(room):
+                    continue
+            table.add_row(
+                name[:28],
+                ", ".join(row.get("listening") or []) or "—",
+                ", ".join(row.get("joined") or []) or "—",
+                ", ".join(row.get("offline") or []) or "—",
+            )
+        console.print(table)
+    elif not radio_checks:
+        console.print("  [dim](rooms not listed — fix auth first)[/]")
 
-    # Live gateway if reachable
-    try:
-        with _http(5.0, base) as c:
-            ping = c.get("/ping").json()
-            net = c.get("/v1/network").json()
-        console.print(f"\n[green]Gateway reachable[/] mode={ping.get('mode')} network={ping.get('network')}")
-        console.print(f"  base_url={ping.get('base_url')}")
-        if net.get("tailscale", {}).get("dns_name"):
-            console.print(f"  tailnet DNS={net['tailscale']['dns_name']}")
-    except Exception as e:
-        console.print(f"\n[yellow]Gateway not reachable at {base}:[/] {e}")
-        console.print("  Start with: opengateway serve --mode serve --token $TOKEN")
+    # ── Network / Tailscale ──────────────────────────────────────────────
+    if report.tailscale is not None or report.network is not None:
+        console.print("\n[bold]Network / Tailscale[/]")
+        ts = report.tailscale or {}
+        console.print(f"  Tailscale installed: {ts.get('installed')}")
+        if ts.get("installed"):
+            console.print(
+                f"  running: {ts.get('running')}  state: {ts.get('backend_state')}"
+            )
+            console.print(f"  MagicDNS: {ts.get('dns_name') or '—'}")
+            console.print(
+                f"  Tailscale IPs: {', '.join(ts.get('tailscale_ips') or []) or '—'}"
+            )
+            console.print(f"  Serve configured: {ts.get('serve_configured')}")
+        for h in ts.get("hints") or []:
+            console.print(f"  [yellow]•[/] {h}")
+
+        diag = report.network or {}
+        if diag.get("probes"):
+            console.print("  [bold]TCP probes[/]")
+            for p in diag["probes"]:
+                mark = (
+                    "[green]ok[/]"
+                    if p.get("ok")
+                    else f"[red]fail[/] ({p.get('error')})"
+                )
+                console.print(f"    {p.get('host')}:{p.get('port')} → {mark}")
+        rec = diag.get("recommended") or {}
+        if rec:
+            console.print(
+                f"  [bold]Recommended multi-machine path:[/] {rec.get('mode')}"
+            )
+            console.print(f"    [dim]{rec.get('why')}[/]")
+            for cmd in rec.get("commands") or []:
+                console.print(f"    [cyan]$[/] {cmd}")
+
+    # ── Summary ──────────────────────────────────────────────────────────
+    n_err = len(report.errors)
+    n_warn = len(report.warnings)
+    console.print()
+    if n_err:
+        console.print(f"[red bold]Result:[/] {n_err} error(s), {n_warn} warning(s)")
+    elif n_warn:
+        console.print(f"[yellow bold]Result:[/] ok with {n_warn} warning(s)")
+    else:
+        console.print("[green bold]Result:[/] all clear")
+
+    if report.recommendations:
+        console.print("\n[bold]Recommended fixes[/]")
+        for i, rec in enumerate(report.recommendations, 1):
+            for j, line in enumerate(rec.split("\n")):
+                prefix = f"  {i}. " if j == 0 else "     "
+                console.print(f"{prefix}{line}")
+
+    code = report.exit_code()
+    if code:
+        raise typer.Exit(code=code)
 
 
 @app.command()

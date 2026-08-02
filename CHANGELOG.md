@@ -4,6 +4,11 @@ Versioning starts at **0.0.1**. Git tags use the form `v0.0.1`, `v0.0.2`, …
 
 ## 0.0.6 — 2026-08-02
 
+### Doctor (extended)
+- `opengateway doctor` now checks env, MCP FastMCP pin, hub auth (`/v1/rooms`), and **listening vs joined** presence
+- `--json`, `--skip-network`, exit codes 0/1/2
+- Module: `opengateway.doctor`
+
 ### Agent radio / listen
 - **`opengateway listen`** daemon — long-poll forever; optional `--file` JSONL, `--webhook`, `--hook`
 - `agent-loop` aliases `listen`
