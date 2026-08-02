@@ -105,10 +105,11 @@ opengateway serve
 
 [![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/open-gateway?utm_medium=integration&utm_source=button&utm_campaign=opengateway)
 
-**One-click template** (app + **Postgres** + **Redis**): https://railway.com/deploy/open-gateway  
+**One-click template** (app + **Postgres** + **Redis** + **login**):  
+https://railway.com/deploy/open-gateway  
 
-After deploy: set `OPENGATEWAY_AUTH_TOKEN`, open domain `/ui/`.  
-Details: **[docs/RAILWAY.md](docs/RAILWAY.md)**
+After deploy: open domain `/ui/` → **Create admin account** (first user) → **Mint agent token** for MCP.  
+Details: **[docs/RAILWAY.md](docs/RAILWAY.md)** · Auth: **[docs/AGENTS_AUTH.md](docs/AGENTS_AUTH.md)**
 
 **C — Docker**
 

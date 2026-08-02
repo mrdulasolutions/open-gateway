@@ -6,13 +6,17 @@
 
 **Published template:** https://railway.com/deploy/open-gateway  
 
-One click provisions **all three services**:
+Marketplace copy is kept in sync via `docs/RAILWAY_TEMPLATE.md` (`railway templates update` / `publish`).
+
+One click provisions:
 
 | Service | Role |
 |---------|------|
-| **open-gateway** | API + Live Ops UI |
+| **open-gateway** | API + Live Ops UI (login + agent tokens) |
 | **Postgres** | Multi-writer system of record (`OPENGATEWAY_DATABASE_URL`) |
 | **Redis** | Event fan-out + shared pair codes (`OPENGATEWAY_REDIS_URL`) |
+
+Post-deploy: create **admin** on the login page → mint **agent tokens** for MCP.
 
 ---
 
