@@ -203,7 +203,11 @@ export function OpsSidebar({
   const [openDms, setOpenDms] = useState(false);
   const [openForks, setOpenForks] = useState(false);
   const [openGateways, setOpenGateways] = useState(false);
-  const [openSettings, setOpenSettings] = useState(false);
+  // Public hubs: open Settings by default so auth + token minting is visible
+  const [openSettings, setOpenSettings] = useState(
+    () => Boolean(authToken) || Boolean(ping?.require_auth)
+  );
+  const [openTokens, setOpenTokens] = useState(true);
   const [pairGateway, setPairGateway] = useState<GatewayCard | null>(null);
 
   const internalGws = gateways.filter(
@@ -337,7 +341,39 @@ export function OpsSidebar({
         </button>
       </div>
 
+      {/* Always-visible entry: mint agent tokens (was easy to miss under collapsed Settings) */}
+      <button
+        type="button"
+        onClick={() => {
+          setOpenTokens(true);
+          setOpenSettings(true);
+          onSection("settings");
+          document.getElementById("og-agent-tokens")?.scrollIntoView({
+            behavior: "smooth",
+            block: "nearest",
+          });
+        }}
+        className="flex w-full items-center justify-center gap-2 rounded-xl border border-orange-500/40 bg-orange-500/10 px-3 py-2.5 text-sm font-semibold text-orange-950 dark:text-orange-100"
+      >
+        <Shield className="h-4 w-4" />
+        Mint agent token
+      </button>
+
       <div className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-0.5">
+        <Accordion
+          title="Agent tokens"
+          icon={<Shield className="h-4 w-4" />}
+          open={openTokens}
+          onToggle={() => setOpenTokens((v) => !v)}
+        >
+          <div id="og-agent-tokens" className="px-1 pb-1">
+            <AgentTokensPanel
+              gatewayBase={ping?.base_url || window.location.origin}
+              hasAuthToken={Boolean(authToken?.trim())}
+            />
+          </div>
+        </Accordion>
+
         <Accordion
           title="Rooms"
           icon={<Hash className="h-4 w-4" />}
@@ -616,11 +652,10 @@ export function OpsSidebar({
                 className="field-input mt-1 font-mono text-xs"
               />
               <span className="mt-1 block text-[10px] font-normal text-zinc-400">
-                Paste the Railway master token or a device key to use this UI
+                Paste Railway master token first (Variables → OPENGATEWAY_AUTH_TOKEN).
+                Then use <strong>Agent tokens</strong> above to mint keys for agents.
               </span>
             </label>
-
-            <AgentTokensPanel gatewayBase={ping?.base_url || window.location.origin} />
 
             <PushEnableButton participantId={participantId} />
             <p className="text-[11px] leading-relaxed text-zinc-500">
@@ -935,7 +970,13 @@ function PairQrModal({
  * Create / list / revoke agent & device API keys (production auth).
  * Master token in Settings can mint keys; scoped keys cannot.
  */
-function AgentTokensPanel({ gatewayBase }: { gatewayBase: string }) {
+function AgentTokensPanel({
+  gatewayBase,
+  hasAuthToken,
+}: {
+  gatewayBase: string;
+  hasAuthToken: boolean;
+}) {
   const [keys, setKeys] = useState<
     {
       id: string;
@@ -955,6 +996,11 @@ function AgentTokensPanel({ gatewayBase }: { gatewayBase: string }) {
   const [snippetCopied, setSnippetCopied] = useState(false);
 
   const load = async () => {
+    if (!hasAuthToken) {
+      setErr("");
+      setKeys([]);
+      return;
+    }
     try {
       const res = await api.listKeys();
       setKeys(res.keys || []);
@@ -963,14 +1009,14 @@ function AgentTokensPanel({ gatewayBase }: { gatewayBase: string }) {
       setErr(
         e instanceof Error
           ? e.message
-          : "Cannot list keys — paste master token above (admin)"
+          : "Cannot list keys — paste master token in Settings (admin)"
       );
     }
   };
 
   useEffect(() => {
     void load();
-  }, []);
+  }, [hasAuthToken]);
 
   const create = async () => {
     setBusy(true);
@@ -1012,6 +1058,22 @@ OPENGATEWAY_URL="${gatewayBase.replace(/\/$/, "")}"
 OPENGATEWAY_AUTH_TOKEN="${token}"
 OPENGATEWAY_HARNESS="grok"
 OPENGATEWAY_AGENT_NAME="grok"`;
+
+  if (!hasAuthToken) {
+    return (
+      <div className="space-y-2 rounded-xl border border-amber-500/35 bg-amber-50 p-3 dark:border-amber-500/30 dark:bg-amber-500/10">
+        <p className="text-[11px] font-semibold text-amber-950 dark:text-amber-100">
+          Paste master token first
+        </p>
+        <p className="text-[10px] leading-relaxed text-amber-900/90 dark:text-amber-100/85">
+          Open <strong>Settings</strong> below →{" "}
+          <strong>This browser&apos;s auth token</strong> → paste Railway{" "}
+          <code className="text-[9px]">OPENGATEWAY_AUTH_TOKEN</code> from
+          Variables. Then return here to mint agent keys.
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-2 rounded-xl border border-zinc-200 p-3 dark:border-white/10">
