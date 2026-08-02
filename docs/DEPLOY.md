@@ -54,13 +54,17 @@ fly secrets set OPENGATEWAY_REDIS_URL="redis://default:…@….upstash.io:6379"
    |------|--------|
    | `OPENGATEWAY_AUTH_TOKEN` | `openssl rand -hex 24` |
    | `OPENGATEWAY_MODE` | `public` |
+   | `OPENGATEWAY_VIA` | `open` |
    | `OPENGATEWAY_NETWORK` | `public` |
    | `OPENGATEWAY_AUDIT` | `true` |
    | `OPENGATEWAY_DB` | `/data/state.db` |
+   | `OPENGATEWAY_PUBLIC_URL` | `https://<your-app>.up.railway.app` (after domain) |
 
-3. Attach a **volume** at `/data` (or use ephemeral DB for demos).
+3. **Volume (required for persistence)** — Railway does **not** support Docker `VOLUME` in the Dockerfile.  
+   In the service → **Settings → Volumes** → Add volume → mount path **`/data`**.  
+   Without a volume, `/data/state.db` is ephemeral (lost on redeploy).
 4. Optional: add **Redis** plugin → `OPENGATEWAY_REDIS_URL=${{Redis.REDIS_URL}}`
-5. Generate domain → `https://…up.railway.app/ui/`
+5. Generate domain → `https://…up.railway.app/ui/` → paste auth token in Settings
 
 `railway.toml` points the builder at the repo `Dockerfile`.
 

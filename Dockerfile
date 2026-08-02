@@ -33,8 +33,9 @@ RUN mkdir -p src/opengateway/static \
     && cp -R webapp/dist/* src/opengateway/static/ \
     && uv pip install --system --no-cache .
 
-# Persist rooms/messages outside the container
-VOLUME ["/data"]
+# Data dir for SQLite. Do NOT use Docker VOLUME — Railway rejects it.
+# Attach a Railway Volume (or Fly mount) at /data for persistence.
+RUN mkdir -p /data && chmod 777 /data
 ENV OPENGATEWAY_DB=/data/state.db
 
 EXPOSE 8765

@@ -7,9 +7,10 @@
 #        OPENGATEWAY_VIA=open
 #        OPENGATEWAY_NETWORK=public
 #        OPENGATEWAY_AUDIT=true
-#        OPENGATEWAY_DB=/data/state.db   # or Railway volume path
-#   3. Optional Redis plugin → set OPENGATEWAY_REDIS_URL=${{Redis.REDIS_URL}}
-#   4. Generate domain → open https://<app>.up.railway.app/ui/
+#        OPENGATEWAY_DB=/data/state.db
+#   3. Add a Railway Volume mounted at /data (Dockerfile VOLUME is not allowed)
+#   4. Optional Redis plugin → OPENGATEWAY_REDIS_URL=${{Redis.REDIS_URL}}
+#   5. Generate domain → https://<app>.up.railway.app/ui/
 
 [build]
 builder = "DOCKERFILE"
