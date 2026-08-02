@@ -46,6 +46,7 @@ from opengateway.models import (
     JoinRoomRequest,
     Message,
     Participant,
+    ParticipantStatus,
     PostMessageRequest,
     RegisterAgentRequest,
     RegisterGatewayRequest,
@@ -604,7 +605,8 @@ def create_app(
             )
         else:
             message = text_message(body.role or f"agent/{participant.name}", body.content, body.content_type)
-        # Auto-DM when exactly one @mention and no explicit target
+        # Private DM only when caller explicitly sets to_participant_id.
+        # @mentions stay visible in the room (Slack-style) and still trigger nudges below.
         to_id = body.to_participant_id
         all_peers = [
             p
@@ -612,14 +614,12 @@ def create_app(
             if p.id != body.from_participant_id
         ]
         mentioned = _mentioned_peers(body.content or "", all_peers)
-        if not to_id and len(mentioned) == 1 and not _is_all_call(body.content or ""):
-            to_id = mentioned[0].id
 
         msg = RoomMessage(
             room_id=room_id,
             from_participant_id=body.from_participant_id,
             from_name=participant.name,
-            to_participant_id=to_id,
+            to_participant_id=to_id,  # None = public room thread
             message=message,
             metadata=body.metadata,
         )
@@ -628,21 +628,29 @@ def create_app(
         nudged: list[dict[str, Any]] = []
         # @all / everyone → nudge all agents. Single @name → nudge that agent.
         # Explicit nudge_all still supported for API clients.
+        # Private DMs (explicit to_id) do not auto-nudge everyone.
         want_nudge_all = bool(body.nudge_all) or (
             not to_id and _is_all_call(body.content or "")
         )
-        want_nudge_mentioned = bool(mentioned) and not want_nudge_all
+        want_nudge_mentioned = (
+            bool(mentioned) and not want_nudge_all and not to_id
+        )
         if want_nudge_all or want_nudge_mentioned:
             if want_nudge_all:
                 peers = [
                     p
                     for p in all_peers
                     if p.harness.value not in {"human"}
+                    and p.status == ParticipantStatus.ONLINE
                 ]
             else:
-                peers = [p for p in mentioned if p.harness.value not in {"human"}]
-            # Still nudge other humans if they aren't the sender? skip human harness only
-            # Still nudge other humans if they aren't the sender? skip human harness only
+                peers = [
+                    p
+                    for p in mentioned
+                    if p.harness.value not in {"human"}
+                    and p.status == ParticipantStatus.ONLINE
+                ]
+            # Only online non-human agents — offline ghosts must not get tasks/DMs
             for peer in peers:
                 # Personal DM so wait_for_messages(for_participant=peer) always fires
                 dm = RoomMessage(
@@ -742,10 +750,15 @@ def create_app(
             timeout=timeout,
             limit=limit,
         )
+        # next_since = last message id for the client's wait cursor (top-level, not nested)
+        last_id = items[-1].id if items else since
         return {
             "messages": [m.model_dump(mode="json") for m in items],
             "timed_out": len(items) == 0,
             "since": since,
+            "last_id": last_id,
+            "next_since": last_id,
+            "count": len(items),
         }
 
     # ── Tasks ──────────────────────────────────────────────────────────────

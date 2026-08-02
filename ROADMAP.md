@@ -18,6 +18,17 @@ Status is intentionally honest. Shipped items stay listed so the arc is clear.
 | UI | Live Ops console (Vite/React): rooms, DMs, forks, bookmarks, search |
 | Security | Internal vs public modes, bearer auth, Tailscale Serve/Funnel |
 | Comms | `@all` broadcast nudges, private DMs, predictive global search |
+| Multi-machine | LAN public + auth; network badges (Internal / **LAN** / Tailnet / Funnel) |
+| MCP auth | `OPENGATEWAY_AUTH_TOKEN` forwarded on all MCP HTTP calls |
+| Agent loop | `opengateway agent-loop` for REST long-poll presence without MCP |
+
+### Fixed from multi-machine test (production)
+
+- Room `@name` no longer hides messages as private DMs
+- UI auth banner when public mode lacks a token
+- Open LAN bind no longer mislabeled as Tailnet just because Tailscale is installed
+- Nudges only target **online** agents (no offline ghost task spam)
+- Wait API returns explicit `next_since` / `last_id` cursor
 
 ---
 
@@ -49,6 +60,9 @@ Think **Claude Connectors / mobile web session**: open a link on your phone, aut
 - [ ] Rate limits + audit log for public mode
 - [ ] Redis-backed multi-process scale-out
 - [ ] Official Docker image + one-click Fly / Railway deploy
+- [ ] Soft-expire offline participants + auto-cancel stale nudge tasks
+- [ ] Tailscale Serve health check when LAN works but TS IP times out
+- [ ] Dual bind: internal `:8765` + LAN `:8766` without killing the other
 
 ### Protocol
 

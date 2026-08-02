@@ -146,6 +146,23 @@ function networkLabel(network: string): string {
   }
 }
 
+function networkBadgeClass(network: string): string {
+  switch (network) {
+    case "loopback":
+      return "border-emerald-500/30 text-emerald-800 dark:text-emerald-200";
+    case "lan":
+      return "border-sky-500/40 bg-sky-500/10 text-sky-800 dark:text-sky-200";
+    case "tailscale":
+      return "border-violet-500/40 bg-violet-500/10 text-violet-800 dark:text-violet-200";
+    case "funnel":
+      return "border-rose-500/40 bg-rose-500/10 text-rose-800 dark:text-rose-200";
+    case "public":
+      return "border-amber-500/40 bg-amber-500/10 text-amber-900 dark:text-amber-200";
+    default:
+      return "border-zinc-200 dark:border-white/10";
+  }
+}
+
 export function OpsSidebar({
   rooms,
   activeRoomId,
@@ -182,10 +199,12 @@ export function OpsSidebar({
   const internalGws = gateways.filter(
     (g) => g.mode === "internal" || g.network === "loopback"
   );
+  const lanGws = gateways.filter((g) => g.network === "lan");
   const publicGws = gateways.filter(
     (g) =>
-      g.mode === "public" ||
-      (g.network !== "loopback" && g.mode !== "internal")
+      g.network !== "loopback" &&
+      g.network !== "lan" &&
+      (g.mode === "public" || g.network === "tailscale" || g.network === "funnel" || g.network === "public")
   );
 
   /** All peers as DM rows: existing threads + online participants without a thread. */
@@ -446,10 +465,26 @@ export function OpsSidebar({
           <div className="mb-2 px-1 text-[10px] font-semibold uppercase tracking-wide text-zinc-400">
             Internal
           </div>
-          {(internalGws.length
-            ? internalGws
-            : gateways.filter((g) => g.is_self)
-          ).map((g) => (
+          {internalGws.length === 0 && (
+            <div className="px-2 py-1 text-xs text-zinc-500">
+              No loopback gateway in this process.
+            </div>
+          )}
+          {internalGws.map((g) => (
+            <GatewayCardView key={g.id} g={g} />
+          ))}
+          <div className="mb-2 mt-3 px-1 text-[10px] font-semibold uppercase tracking-wide text-zinc-400">
+            LAN
+          </div>
+          {lanGws.length === 0 && (
+            <div className="px-2 py-1 text-xs text-zinc-500">
+              Open bind on LAN:{" "}
+              <code className="text-[11px]">
+                serve --mode public --via open
+              </code>
+            </div>
+          )}
+          {lanGws.map((g) => (
             <GatewayCardView key={g.id} g={g} />
           ))}
           <div className="mb-2 mt-3 px-1 text-[10px] font-semibold uppercase tracking-wide text-zinc-400">
@@ -459,7 +494,7 @@ export function OpsSidebar({
             <div className="px-2 py-2 text-xs text-zinc-500">
               <code className="text-[11px]">opengateway serve --mode serve</code>
               {" · "}
-              Tailnet (Serve) or Funnel for multi-machine.
+              Tailnet (Serve) or Funnel.
             </div>
           )}
           {publicGws.map((g) => (
@@ -555,11 +590,8 @@ export function OpsSidebar({
 function GatewayCardView({ g }: { g: GatewayCard }) {
   const isTailnet = g.network === "tailscale";
   const isFunnel = g.network === "funnel";
-  const isPublic =
-    g.mode === "public" ||
-    g.network === "public" ||
-    isTailnet ||
-    isFunnel;
+  const isLan = g.network === "lan";
+  const isLoopback = g.network === "loopback" || g.mode === "internal";
   const label = networkLabel(g.network);
   return (
     <div
@@ -575,10 +607,12 @@ function GatewayCardView({ g }: { g: GatewayCard }) {
           <Globe2 className="h-3.5 w-3.5 text-rose-500" />
         ) : isTailnet ? (
           <Shield className="h-3.5 w-3.5 text-violet-500" />
-        ) : isPublic ? (
-          <Globe2 className="h-3.5 w-3.5 text-sky-500" />
+        ) : isLan ? (
+          <Network className="h-3.5 w-3.5 text-sky-500" />
+        ) : isLoopback ? (
+          <Network className="h-3.5 w-3.5 text-emerald-500" />
         ) : (
-          <Network className="h-3.5 w-3.5 text-orange-500" />
+          <Globe2 className="h-3.5 w-3.5 text-amber-500" />
         )}
         {g.name}
         {g.is_self && (
@@ -591,7 +625,12 @@ function GatewayCardView({ g }: { g: GatewayCard }) {
         {g.base_url}
       </div>
       <div className="mt-1 flex flex-wrap gap-1 text-[10px] text-zinc-500">
-        <span className="rounded border border-zinc-200 px-1 dark:border-white/10">
+        <span
+          className={cn(
+            "rounded border px-1.5 py-px font-semibold",
+            networkBadgeClass(g.network)
+          )}
+        >
           {label}
         </span>
         {g.require_auth && (

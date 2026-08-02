@@ -169,14 +169,37 @@ def load_gateway_config() -> GatewayConfig:
 
     ts = detect_tailscale_hostname()
 
+    # Network label is about *how we expose*, not "is Tailscale installed".
+    # Bug we fixed: mere presence of `tailscale` CLI was mislabeling open LAN binds
+    # as "Tailnet (Serve)".
     if mode == GatewayMode.INTERNAL:
         network = "loopback"
+    elif via_raw in {"serve", "tailscale", "ts"} or network_raw == "tailscale":
+        network = "tailscale"
+    elif via_raw == "funnel" or network_raw == "funnel":
+        network = "funnel"
     elif network_raw in NETWORK_LABELS:
         network = network_raw
-    elif ts:
+    elif via_raw in {"open", "lan"} or host in {"0.0.0.0", "::"}:
+        # Open bind for multi-machine on local network (or raw internet).
+        # Prefer LAN when public_url / host looks private; else "public".
+        network = "lan"
+        if public_url and any(
+            x in public_url
+            for x in (".ts.net", "tailscale", "funnel")
+        ):
+            network = "public"
+        # 0.0.0.0 + RFC1918 advertised URL → LAN badge
+        if public_url and any(
+            public_url.startswith(p)
+            for p in ("http://10.", "http://192.168.", "http://172.")
+        ):
+            network = "lan"
+        elif public_url and "://127." in public_url:
+            network = "loopback"
+    elif ts and host in {"127.0.0.1", "localhost", "::1"}:
+        # Localhost bind with Tailscale present → likely Serve path
         network = "tailscale"
-    elif host in {"0.0.0.0", "::"}:
-        network = "public"
     else:
         network = "lan"
 
@@ -190,15 +213,19 @@ def load_gateway_config() -> GatewayConfig:
             if not public_url or public_url.startswith("https://")
             else f"tailscale serve --bg --http=80 {port}"
         )
-        if not name or name == "public":
+        if not name or name in {"public", "local"}:
             name = "tailnet"
     elif network == "funnel":
         if not public_url and ts:
             public_url = f"https://{ts}"
         serve_hint = f"tailscale funnel --bg {port}"
-        if not name or name == "public":
+        if not name or name in {"public", "local"}:
             name = "funnel"
-    elif mode == GatewayMode.PUBLIC and not public_url and ts:
+    elif network == "lan":
+        if not name or name in {"public", "local"}:
+            name = "lan"
+        # Do not invent a Tailscale public_url for open LAN binds
+    elif mode == GatewayMode.PUBLIC and not public_url and ts and network == "public":
         public_url = f"http://{ts}:{port}"
 
     # Identity headers only safe when app is only reachable via local reverse-proxy

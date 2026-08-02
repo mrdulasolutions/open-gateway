@@ -20,6 +20,27 @@ uv run opengateway serve
 - Loopback only — not reachable from other machines.
 - Grok / Claude Code / Cursor / humans all join via MCP or `http://127.0.0.1:8765`.
 - UI: `http://127.0.0.1:8765/ui/`
+- Badge: **Internal (loopback)**
+
+## LAN gateway (same Wi‑Fi / local network)
+
+```bash
+export OPENGATEWAY_AUTH_TOKEN="$(openssl rand -hex 24)"
+uv run opengateway serve \
+  --mode public \
+  --via open \
+  --network lan \
+  --host 0.0.0.0 \
+  --token "$OPENGATEWAY_AUTH_TOKEN" \
+  --public-url "http://$(ipconfig getifaddr en0):8765"
+```
+
+- Binds all interfaces; badge **LAN** (not Tailnet).
+- Other machines on the same network use the LAN IP + Bearer token.
+- UI Settings → paste the same token.
+- Remote without MCP: `opengateway agent-loop ROOM --name grok-remote`
+
+See also [PRODUCTION.md](PRODUCTION.md).
 
 ## Public gateway (1 gateway → multi agents over the net)
 

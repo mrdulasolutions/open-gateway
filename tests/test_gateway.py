@@ -300,6 +300,83 @@ async def test_at_all_nudges_like_everyone(client: AsyncClient):
 
 
 @pytest.mark.asyncio
+async def test_nudge_skips_offline_agents(client: AsyncClient):
+    room = (await client.post("/v1/rooms", json={"name": "nudge-off", "goal": "x"})).json()
+    room_id = room["id"]
+    human = (
+        await client.post(
+            f"/v1/rooms/{room_id}/join",
+            json={"name": "ops", "harness": "human"},
+        )
+    ).json()
+    online = (
+        await client.post(
+            f"/v1/rooms/{room_id}/join",
+            json={"name": "online-bot", "harness": "grok"},
+        )
+    ).json()
+    ghost = (
+        await client.post(
+            f"/v1/rooms/{room_id}/join",
+            json={"name": "ghost-bot", "harness": "claude-code"},
+        )
+    ).json()
+    # Mark ghost offline
+    await client.patch(
+        f"/v1/rooms/{room_id}/participants/{ghost['id']}",
+        json={"status": "offline"},
+    )
+    res = (
+        await client.post(
+            f"/v1/rooms/{room_id}/messages",
+            json={
+                "from_participant_id": human["id"],
+                "content": "@all hello only online",
+            },
+        )
+    ).json()
+    names = {n["name"] for n in res["nudged"]}
+    assert names == {"online-bot"}
+    assert res["nudge_count"] == 1
+    assert online["name"] == "online-bot"
+
+
+@pytest.mark.asyncio
+async def test_wait_returns_next_since_cursor(client: AsyncClient):
+    room = (await client.post("/v1/rooms", json={"name": "wait-cur", "goal": "c"})).json()
+    room_id = room["id"]
+    a = (
+        await client.post(
+            f"/v1/rooms/{room_id}/join",
+            json={"name": "a", "harness": "grok"},
+        )
+    ).json()
+    b = (
+        await client.post(
+            f"/v1/rooms/{room_id}/join",
+            json={"name": "b", "harness": "grok"},
+        )
+    ).json()
+    posted = (
+        await client.post(
+            f"/v1/rooms/{room_id}/messages",
+            json={"from_participant_id": b["id"], "content": "cursor check"},
+        )
+    ).json()
+    mid = posted.get("id") or posted.get("message", {}).get("id")
+    r = await client.get(
+        f"/v1/rooms/{room_id}/messages/wait",
+        params={"timeout": 1, "for_participant": a["id"]},
+    )
+    body = r.json()
+    assert "next_since" in body
+    assert "last_id" in body
+    assert body["next_since"] == mid or any(
+        m["id"] == body["next_since"] for m in body.get("messages") or []
+    )
+
+
+@pytest.mark.asyncio
 async def test_global_search_rooms_and_type_filter(client: AsyncClient):
     room = (
         await client.post(
@@ -474,3 +551,24 @@ def test_serve_mode_binds_localhost():
     assert cfg.network == "tailscale"
     assert cfg.serve_hint and "tailscale serve" in cfg.serve_hint
     assert cfg.require_auth is True
+
+
+def test_open_lan_bind_not_mislabeled_tailscale():
+    """Having Tailscale installed must not brand an open LAN bind as Serve."""
+    import os
+    from opengateway.config import load_gateway_config
+
+    for k in list(os.environ):
+        if k.startswith("OPENGATEWAY_"):
+            del os.environ[k]
+    os.environ["OPENGATEWAY_MODE"] = "public"
+    os.environ["OPENGATEWAY_VIA"] = "open"
+    os.environ["OPENGATEWAY_HOST"] = "0.0.0.0"
+    os.environ["OPENGATEWAY_AUTH_TOKEN"] = "tok"
+    os.environ["OPENGATEWAY_PUBLIC_URL"] = "http://192.168.1.233:8765"
+    os.environ["OPENGATEWAY_PORT"] = "8765"
+    cfg = load_gateway_config()
+    assert cfg.host == "0.0.0.0"
+    assert cfg.network == "lan"
+    assert cfg.require_auth is True
+    assert cfg.serve_hint is None

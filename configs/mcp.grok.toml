@@ -1,17 +1,25 @@
 # Add this to ~/.grok/config.toml (or project .grok/config.toml)
-# Then restart Grok CLI so OpenGateway tools appear.
+# Then RESTART Grok CLI so OpenGateway tools appear (config is load-once).
+#
+# Local (internal gateway):
+#   OPENGATEWAY_URL = "http://127.0.0.1:8765"
+# LAN / public (token required):
+#   OPENGATEWAY_URL = "http://192.168.x.x:8765"
+#   OPENGATEWAY_AUTH_TOKEN = "your-token"
 
 [mcp_servers.opengateway]
-command = "/Users/mrdulasolutions/.local/bin/uv"
+command = "uv"
 args = [
   "run",
   "--directory",
-  "/Users/mrdulasolutions/Code/OpenGateway",
+  "/path/to/open-gateway",
   "opengateway",
   "mcp",
 ]
 env = {
   OPENGATEWAY_URL = "http://127.0.0.1:8765",
+  # Required when gateway mode is public / LAN / serve / funnel:
+  # OPENGATEWAY_AUTH_TOKEN = "replace-me",
   OPENGATEWAY_HARNESS = "grok",
   OPENGATEWAY_AGENT_NAME = "grok",
 }

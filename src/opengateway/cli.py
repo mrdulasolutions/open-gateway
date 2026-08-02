@@ -26,6 +26,22 @@ def _base_url(url: Optional[str] = None) -> str:
     return (url or os.environ.get("OPENGATEWAY_URL", "http://127.0.0.1:8765")).rstrip("/")
 
 
+def _auth_headers() -> dict[str, str]:
+    token = (os.environ.get("OPENGATEWAY_AUTH_TOKEN") or "").strip()
+    if not token:
+        return {}
+    return {"Authorization": f"Bearer {token}"}
+
+
+def _http(timeout: float = 15.0, url: Optional[str] = None) -> httpx.Client:
+    """Shared HTTP client with optional Bearer auth for public/LAN gateways."""
+    return httpx.Client(
+        base_url=_base_url(url),
+        timeout=timeout,
+        headers=_auth_headers(),
+    )
+
+
 @app.command()
 def serve(
     host: Optional[str] = typer.Option(
@@ -175,7 +191,7 @@ def ui(
     target = f"{base}/ui/"
     console.print(f"[bold green]OpenGateway UI[/] {target}")
     try:
-        with httpx.Client(base_url=base, timeout=3.0) as c:
+        with _http(3.0, base) as c:
             c.get("/ping").raise_for_status()
     except Exception as e:
         console.print(f"[yellow]Gateway may be down[/] ({e})")
@@ -189,7 +205,8 @@ def mcp() -> None:
     """Run the MCP stdio server (for Claude Code / Cursor / Grok CLI).
 
     Set OPENGATEWAY_URL (default http://127.0.0.1:8765) to point at the HTTP hub.
-    Optional: OPENGATEWAY_HARNESS, OPENGATEWAY_AGENT_NAME.
+    Optional: OPENGATEWAY_HARNESS, OPENGATEWAY_AGENT_NAME, OPENGATEWAY_AUTH_TOKEN
+    (required for public/LAN/serve gateways).
     """
     from opengateway.mcp_server import main as mcp_main
 
@@ -203,14 +220,18 @@ def status(
         help="Gateway base URL",
     ),
 ) -> None:
-    """Ping the gateway and list rooms / agents."""
+    """Ping the gateway and list rooms / agents.
+
+    For public/LAN gateways set OPENGATEWAY_AUTH_TOKEN (or clients get 401).
+    """
     try:
-        with httpx.Client(base_url=url.rstrip("/"), timeout=5.0) as c:
+        with _http(5.0, url) as c:
             ping = c.get("/ping").json()
             rooms = c.get("/v1/rooms").json().get("rooms", [])
             agents = c.get("/agents").json().get("agents", [])
     except Exception as e:
         console.print(f"[red]Cannot reach OpenGateway at {url}: {e}[/]")
+        console.print("[dim]If mode is public/LAN, export OPENGATEWAY_AUTH_TOKEN[/]")
         raise typer.Exit(1)
 
     console.print(f"[green]OK[/] {ping}")
@@ -242,7 +263,7 @@ def create_room(
     body = {"name": name, "goal": goal, "created_by": "cli"}
     if project_path:
         body["project_path"] = project_path
-    with httpx.Client(base_url=url.rstrip("/"), timeout=10.0) as c:
+    with _http(10.0, url) as c:
         r = c.post("/v1/rooms", json=body)
         r.raise_for_status()
         data = r.json()
@@ -258,7 +279,7 @@ def demo(
     url: str = typer.Option(os.environ.get("OPENGATEWAY_URL", "http://127.0.0.1:8765")),
 ) -> None:
     """Run an in-process two-agent simulation against a live gateway."""
-    with httpx.Client(base_url=url.rstrip("/"), timeout=15.0) as c:
+    with _http(15.0, url) as c:
         try:
             c.get("/ping").raise_for_status()
         except Exception as e:
@@ -421,7 +442,7 @@ def list_rooms_cmd(
 ) -> None:
     """List collaboration rooms (ids for monitor/watch)."""
     base = _base_url(url)
-    with httpx.Client(base_url=base, timeout=10.0) as c:
+    with _http(10.0, base) as c:
         r = c.get("/v1/rooms")
         r.raise_for_status()
         rooms = r.json().get("rooms") or []
@@ -469,7 +490,7 @@ def monitor(
         return
 
     # Resolve short / name match
-    with httpx.Client(base_url=base, timeout=10.0) as c:
+    with _http(10.0, base) as c:
         rooms = c.get("/v1/rooms").json().get("rooms") or []
         if room_id != "all":
             match = next((r for r in rooms if r["id"] == room_id or r["id"].startswith(room_id)), None)
@@ -527,8 +548,14 @@ def _run_sse_monitor(sse_url: str, *, messages_only: bool = False) -> None:
         _run_longpoll_monitor(sse_url)
         return
 
+    # EventSource cannot set Authorization headers — append ?token= for public mode
+    token = (os.environ.get("OPENGATEWAY_AUTH_TOKEN") or "").strip()
+    if token and "token=" not in sse_url:
+        sep = "&" if "?" in sse_url else "?"
+        sse_url = f"{sse_url}{sep}token={token}"
+
     try:
-        with httpx.Client(timeout=None) as client:
+        with httpx.Client(timeout=None, headers=_auth_headers()) as client:
             with connect_sse(client, "GET", sse_url) as source:
                 for sse in source.iter_sse():
                     if sse.event in {"ping", ""} and not sse.data:
@@ -575,13 +602,15 @@ def _run_longpoll_monitor(sse_url: str) -> None:
             params: dict = {"timeout": 45, "limit": 50}
             if cursor:
                 params["since"] = cursor
-            with httpx.Client(base_url=base, timeout=60) as c:
+            with _http(60.0, base) as c:
                 r = c.get(f"/v1/rooms/{room_id}/messages/wait", params=params)
                 r.raise_for_status()
                 data = r.json()
             for m in data.get("messages") or []:
                 cursor = m["id"]
                 _print_message_line(m)
+            if data.get("next_since"):
+                cursor = data["next_since"]
     except KeyboardInterrupt:
         console.print("\n[dim]monitor stopped[/]")
 
@@ -607,7 +636,7 @@ def chat(
 
     base = _base_url(url)
     # HTTP join first
-    with httpx.Client(base_url=base, timeout=15) as c:
+    with _http(15.0, base) as c:
         c.get("/ping").raise_for_status()
         p = c.post(
             f"/v1/rooms/{room_id}/join",
@@ -675,6 +704,84 @@ def chat(
                 reader_task.cancel()
 
     asyncio.run(run())
+
+
+@app.command("agent-loop")
+def agent_loop(
+    room: str = typer.Argument(..., help="Room UUID or name"),
+    name: str = typer.Option(
+        os.environ.get("OPENGATEWAY_AGENT_NAME") or "agent-loop",
+        help="Join as this name",
+    ),
+    harness: str = typer.Option(
+        os.environ.get("OPENGATEWAY_HARNESS") or "grok",
+        help="Harness tag",
+    ),
+    role: str = typer.Option("contributor", help="Role"),
+    url: str = typer.Option(None, help="Gateway base URL"),
+    timeout: float = typer.Option(45.0, help="Long-poll timeout seconds"),
+) -> None:
+    """Stay present in a room: join + long-poll forever (production remote agents).
+
+    Use when MCP is not loaded (fresh Grok session) or you want a dumb listen loop.
+    Set OPENGATEWAY_URL + OPENGATEWAY_AUTH_TOKEN for public/LAN hubs.
+
+    Cursor: always use the top-level ``next_since`` / ``last_id`` from the wait
+    response as the next ``since`` value (never dig nested fields).
+    """
+    base = _base_url(url)
+    with _http(15.0, base) as c:
+        try:
+            c.get("/ping").raise_for_status()
+        except Exception as e:
+            console.print(f"[red]Cannot reach {base}: {e}[/]")
+            raise typer.Exit(1)
+        rooms = c.get("/v1/rooms").json().get("rooms") or []
+        room_id = room
+        if not any(r.get("id") == room for r in rooms):
+            match = next(
+                (r for r in rooms if r.get("name") == room or r.get("id", "").startswith(room)),
+                None,
+            )
+            if not match:
+                console.print(f"[red]Room not found:[/] {room}")
+                raise typer.Exit(1)
+            room_id = match["id"]
+        p = c.post(
+            f"/v1/rooms/{room_id}/join",
+            json={"name": name, "harness": harness, "role": role},
+        )
+        p.raise_for_status()
+        participant = p.json()
+    pid = participant["id"]
+    console.print(f"[green]agent-loop[/] joined {name} ({pid[:8]}…) room {room_id[:8]}…")
+    console.print(f"[dim]{base} · long-poll {timeout}s · Ctrl-C to stop[/]\n")
+
+    since: Optional[str] = None
+    try:
+        while True:
+            params: dict = {
+                "timeout": timeout,
+                "limit": 50,
+                "for_participant": pid,
+            }
+            if since:
+                params["since"] = since
+            with _http(timeout + 15.0, base) as c:
+                r = c.get(f"/v1/rooms/{room_id}/messages/wait", params=params)
+                r.raise_for_status()
+                data = r.json()
+            msgs = data.get("messages") or []
+            # Prefer top-level cursor (production-ready contract)
+            since = data.get("next_since") or data.get("last_id") or since
+            if msgs:
+                for m in msgs:
+                    since = m.get("id") or since
+                    _print_message_line(m)
+            elif data.get("timed_out"):
+                console.print("[dim]…listening[/]", end="\r")
+    except KeyboardInterrupt:
+        console.print("\n[dim]agent-loop stopped[/]")
 
 
 @app.callback()

@@ -13,11 +13,21 @@ DEFAULT_BASE_URL = os.environ.get("OPENGATEWAY_URL", "http://127.0.0.1:8765")
 DEFAULT_HARNESS = os.environ.get("OPENGATEWAY_HARNESS", "mcp")
 DEFAULT_AGENT_NAME = os.environ.get("OPENGATEWAY_AGENT_NAME", "")
 
+
+def _auth_headers() -> dict[str, str]:
+    """Bearer token for public / Tailscale gateways (OPENGATEWAY_AUTH_TOKEN)."""
+    token = (os.environ.get("OPENGATEWAY_AUTH_TOKEN") or "").strip()
+    if not token:
+        return {}
+    return {"Authorization": f"Bearer {token}"}
+
+
 mcp = FastMCP(
     "OpenGateway",
     instructions=(
         "OpenGateway multi-agent collaboration tools. Use these to work with other agents "
         "(Claude Code, Grok, Cursor, ACP agents) on the same project.\n\n"
+        "For public gateways set OPENGATEWAY_URL + OPENGATEWAY_AUTH_TOKEN in the MCP env.\n\n"
         "Typical flow:\n"
         "1. create_room (or list_rooms + join existing)\n"
         "2. join_room with your agent name and harness\n"
@@ -34,7 +44,11 @@ def _base() -> str:
 
 
 def _client() -> httpx.Client:
-    return httpx.Client(base_url=_base(), timeout=30.0)
+    return httpx.Client(
+        base_url=_base(),
+        timeout=30.0,
+        headers=_auth_headers(),
+    )
 
 
 def _json(resp: httpx.Response) -> Any:
@@ -231,8 +245,25 @@ def wait_for_messages(
         params["for_participant"] = for_participant
     # Long-poll needs a higher client timeout than the server wait
     client_timeout = max(35.0, float(timeout_seconds) + 10.0)
-    with httpx.Client(base_url=_base(), timeout=client_timeout) as c:
-        return _dumps(_json(c.get(f"/v1/rooms/{room_id}/messages/wait", params=params)))
+    with httpx.Client(
+        base_url=_base(),
+        timeout=client_timeout,
+        headers=_auth_headers(),
+    ) as c:
+        data = _json(c.get(f"/v1/rooms/{room_id}/messages/wait", params=params))
+        # Normalize cursor so agents don't dig into nested message.id incorrectly
+        if isinstance(data, dict) and "messages" in data:
+            msgs = data.get("messages") or []
+            if msgs and not data.get("next_since"):
+                last = msgs[-1]
+                mid = last.get("id") if isinstance(last, dict) else None
+                data["last_id"] = mid
+                data["next_since"] = mid
+            data["hint"] = (
+                "Pass next_since (or last_id) as the next wait_for_messages(since=…). "
+                "Do not use nested message fields. timed_out=true means loop again."
+            )
+        return _dumps(data)
 
 
 @mcp.tool()

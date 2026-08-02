@@ -95,16 +95,28 @@ uv run opengateway status
 uv run opengateway ui        # open the console
 ```
 
-### 4. Multi-machine (recommended: Tailscale Serve)
+### 4. Multi-machine
+
+**Same LAN**
+
+```bash
+export OPENGATEWAY_AUTH_TOKEN="$(openssl rand -hex 24)"
+uv run opengateway serve --mode public --via open --network lan \
+  --token "$OPENGATEWAY_AUTH_TOKEN" \
+  --public-url "http://$(ipconfig getifaddr en0 2>/dev/null || hostname -I | awk '{print $1}'):8765"
+# remote: set OPENGATEWAY_URL + OPENGATEWAY_AUTH_TOKEN, restart MCP, or:
+#   opengateway agent-loop <room> --name grok-remote
+```
+
+**Tailscale Serve (recommended mesh)**
 
 ```bash
 export OPENGATEWAY_AUTH_TOKEN="$(openssl rand -hex 24)"
 uv run opengateway serve --mode serve --token "$OPENGATEWAY_AUTH_TOKEN"
 # binds 127.0.0.1, prints:  tailscale serve --bg 8765
-# advertises https://<magicdns>
 ```
 
-Full security guide: [docs/GATEWAYS.md](docs/GATEWAYS.md)
+Full guide: [docs/GATEWAYS.md](docs/GATEWAYS.md) · Production: [docs/PRODUCTION.md](docs/PRODUCTION.md)
 
 ### 5. Wire a harness (MCP)
 

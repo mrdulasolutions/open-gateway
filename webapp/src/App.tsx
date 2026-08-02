@@ -118,6 +118,7 @@ export default function App() {
     }[]
   >([]);
   const [authToken, setAuthTokenState] = useState(getAuthToken());
+  const [authNeeded, setAuthNeeded] = useState(false);
 
   const log = useCallback((line: string) => {
     const t = new Date().toLocaleTimeString();
@@ -190,9 +191,20 @@ export default function App() {
   }, [log, refreshGateways]);
 
   const refreshRooms = useCallback(async () => {
-    const { rooms: list } = await api.listRooms();
-    setRooms(list);
-    return list;
+    try {
+      const { rooms: list } = await api.listRooms();
+      setRooms(list);
+      setAuthNeeded(false);
+      return list;
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (/unauthoriz/i.test(msg) || /401/.test(msg)) {
+        setAuthNeeded(true);
+        setRooms([]);
+        return [];
+      }
+      throw e;
+    }
   }, []);
 
   const refreshDms = useCallback(
@@ -368,15 +380,13 @@ export default function App() {
         });
       }
 
-      // @all (mention or text) → broadcast nudge; single @peer → DM
+      // Room posts stay public (@mentions still visible). Only DM mode is private.
       const allCall =
         isAllCall(content) ||
         mentionIds.includes("__all__") ||
         mentionIds.some((id) => id === "__all__");
-      const peerMentions = mentionIds.filter((id) => id !== "__all__");
-      let to =
-        activeDmPeerId ||
-        (peerMentions.length === 1 && !allCall ? peerMentions[0] : undefined);
+      // Explicit DM only when user opened a DM thread (or future private mode)
+      let to = activeDmPeerId || undefined;
 
       const res = await api.postMessage(roomId, {
         from_participant_id: participantId,
@@ -534,11 +544,53 @@ export default function App() {
         onAuthTokenChange={(token) => {
           setAuthToken(token);
           setAuthTokenState(token);
-          refreshPing();
+          setAuthNeeded(false);
+          void (async () => {
+            await refreshPing();
+            try {
+              const list = await refreshRooms();
+              if (list[0] && !roomId) await selectRoom(list[0].id);
+              else if (roomId) {
+                await refreshSnapshot(roomId);
+                if (participantId) await refreshDms(roomId, participantId);
+              }
+            } catch (e) {
+              setError({
+                message: e instanceof Error ? e.message : String(e),
+              });
+            }
+          })();
         }}
       />
 
       <main className="relative flex min-w-0 flex-1 flex-col">
+        {(authNeeded ||
+          (ping?.require_auth && !authToken) ||
+          (error?.message && /unauthoriz/i.test(error.message))) && (
+          <div className="border-b border-amber-500/40 bg-amber-50 px-4 py-3 text-sm text-amber-950 dark:bg-amber-500/10 dark:text-amber-100">
+            <strong>Auth required.</strong> This gateway is in public mode.
+            Open <strong>Settings</strong> (left) and paste the bearer token,
+            then wait a second — rooms and chat will load.
+            {!authToken && (
+              <span className="mt-1 block font-mono text-xs opacity-80">
+                Token is not set in this browser yet.
+              </span>
+            )}
+          </div>
+        )}
+        {activeDmPeerId && (
+          <div className="border-b border-violet-500/30 bg-violet-50 px-4 py-2 text-xs text-violet-900 dark:bg-violet-500/10 dark:text-violet-100">
+            Viewing <strong>private DM</strong> with{" "}
+            {dmPeer?.name || "agent"} — not the room thread.{" "}
+            <button
+              type="button"
+              className="font-semibold underline"
+              onClick={() => setActiveDmPeerId(null)}
+            >
+              Back to room chat
+            </button>
+          </div>
+        )}
         <header className="flex items-center gap-3 border-b border-zinc-200 bg-white/80 px-4 py-3 backdrop-blur-md dark:border-white/[0.06] dark:bg-zinc-950/70 sm:px-5">
           <div className="min-w-0 shrink-0 sm:max-w-[28%]">
             <h1 className="truncate text-lg font-semibold tracking-tight">
