@@ -27,7 +27,7 @@ function AccordionSection({
   title,
   icon,
   count,
-  defaultOpen = true,
+  defaultOpen = false,
   children,
 }: {
   title: string;
@@ -143,7 +143,7 @@ export function SideRail({
         title="Participants"
         icon={<Users className="h-4 w-4" />}
         count={participants.length}
-        defaultOpen
+        defaultOpen={false}
       >
         {sorted.length === 0 && <Empty>None</Empty>}
         {sorted.length > 0 && (
@@ -225,7 +225,7 @@ export function SideRail({
         title="Tasks"
         icon={<ListTodo className="h-4 w-4" />}
         count={tasks.length}
-        defaultOpen
+        defaultOpen={false}
       >
         {tasks.length === 0 && <Empty>None</Empty>}
         {tasks.map((t) => {

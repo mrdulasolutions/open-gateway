@@ -190,11 +190,11 @@ export function OpsSidebar({
   onAuthTokenChange,
 }: Props) {
   const online = ping?.status === "ok";
-  const [openRooms, setOpenRooms] = useState(true);
-  const [openDms, setOpenDms] = useState(true);
-  const [openForks, setOpenForks] = useState(true);
-  const [openGateways, setOpenGateways] = useState(true);
-  const [openSettings, setOpenSettings] = useState(true);
+  const [openRooms, setOpenRooms] = useState(false);
+  const [openDms, setOpenDms] = useState(false);
+  const [openForks, setOpenForks] = useState(false);
+  const [openGateways, setOpenGateways] = useState(false);
+  const [openSettings, setOpenSettings] = useState(false);
 
   const internalGws = gateways.filter(
     (g) => g.mode === "internal" || g.network === "loopback"

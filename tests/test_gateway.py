@@ -391,9 +391,23 @@ async def test_global_search_rooms_and_type_filter(client: AsyncClient):
             json={"name": "finder", "harness": "grok"},
         )
     ).json()
+    q = (
+        await client.post(
+            f"/v1/rooms/{room_id}/join",
+            json={"name": "peer", "harness": "claude-code"},
+        )
+    ).json()
     await client.post(
         f"/v1/rooms/{room_id}/messages",
         json={"from_participant_id": p["id"], "content": "needle in haystack phrase"},
+    )
+    await client.post(
+        f"/v1/rooms/{room_id}/messages",
+        json={
+            "from_participant_id": p["id"],
+            "to_participant_id": q["id"],
+            "content": "secret dm needle phrase",
+        },
     )
     await client.post(
         f"/v1/rooms/{room_id}/tasks",
@@ -406,12 +420,20 @@ async def test_global_search_rooms_and_type_filter(client: AsyncClient):
     assert any(h["type"] == "room" and h["title"] == "search-lab" for h in hits)
 
     r2 = await client.get("/v1/search", params={"q": "needle"})
-    assert any(h["type"] == "message" for h in r2.json()["hits"])
+    types = {h["type"] for h in r2.json()["hits"]}
+    assert "message" in types
+    assert "dm" in types
+    dm_hit = next(h for h in r2.json()["hits"] if h["type"] == "dm")
+    assert dm_hit.get("type_label") == "DM"
+    assert "DM ·" in dm_hit["subtitle"]
 
     r3 = await client.get("/v1/search", params={"q": "type:task ship"})
     body = r3.json()
     assert body.get("parsed", {}).get("type") == "task"
     assert any(h["type"] == "task" for h in body["hits"])
+
+    r4 = await client.get("/v1/search", params={"q": "type:dm"})
+    assert all(h["type"] == "dm" for h in r4.json()["hits"])
 
 
 @pytest.mark.asyncio

@@ -2,6 +2,10 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Moon, Sun, PanelRightOpen, PanelRightClose } from "lucide-react";
 import { AgentChat, type AgentMessage } from "@/components/agent-chat/AgentChat";
 import { GlobalSearch, type SearchHit } from "@/components/GlobalSearch";
+import {
+  NotificationBell,
+  type AppNotification,
+} from "@/components/NotificationBell";
 import { OpsSidebar, type LeftSection } from "@/components/layout/OpsSidebar";
 import { SideRail } from "@/components/layout/SideRail";
 import { api, getAuthToken, isAllCall, setAuthToken } from "@/lib/api";
@@ -119,6 +123,14 @@ export default function App() {
   >([]);
   const [authToken, setAuthTokenState] = useState(getAuthToken());
   const [authNeeded, setAuthNeeded] = useState(false);
+  const [notifications, setNotifications] = useState<AppNotification[]>([]);
+
+  const pushNotif = useCallback((n: Omit<AppNotification, "read"> & { read?: boolean }) => {
+    setNotifications((prev) => {
+      if (prev.some((x) => x.id === n.id)) return prev;
+      return [{ ...n, read: n.read ?? false }, ...prev].slice(0, 60);
+    });
+  }, []);
 
   const log = useCallback((line: string) => {
     const t = new Date().toLocaleTimeString();
@@ -294,6 +306,66 @@ export default function App() {
           prev.some((m) => m.id === msg.id) ? prev : [...prev, msg]
         );
         if (participantId) refreshDms(roomId, participantId);
+
+        // Notifications: incoming DMs / room chatter while in a DM / @mentions
+        const fromId = msg.from_participant_id as string | undefined;
+        const toId = msg.to_participant_id as string | null | undefined;
+        const fromName = (msg.from_name as string) || "agent";
+        const text =
+          msg.message?.parts?.[0]?.content ||
+          (msg.message?.parts || [])
+            .map((p: { content?: string }) => p.content)
+            .filter(Boolean)
+            .join(" ") ||
+          "";
+        const mine = participantId && fromId === participantId;
+        if (mine) return;
+
+        if (toId && participantId && toId === participantId) {
+          // Direct message to me
+          if (activeDmPeerId !== fromId) {
+            pushNotif({
+              id: `dm-${msg.id}`,
+              kind: "dm",
+              title: fromName,
+              body: text.slice(0, 140) || "New direct message",
+              createdAt: msg.created_at || new Date().toISOString(),
+              roomId,
+              peerId: fromId,
+              messageId: msg.id,
+            });
+          }
+        } else if (!toId) {
+          const lower = text.toLowerCase();
+          const myName = (displayName || "").toLowerCase();
+          if (
+            myName &&
+            (lower.includes(`@${myName}`) ||
+              lower.includes("@all") ||
+              lower.includes("everyone"))
+          ) {
+            pushNotif({
+              id: `mention-${msg.id}`,
+              kind: "mention",
+              title: fromName,
+              body: text.slice(0, 140) || "Mentioned you",
+              createdAt: msg.created_at || new Date().toISOString(),
+              roomId,
+              messageId: msg.id,
+            });
+          } else if (activeDmPeerId) {
+            // Room activity while viewing a DM
+            pushNotif({
+              id: `room-${msg.id}`,
+              kind: "room",
+              title: fromName,
+              body: text.slice(0, 140) || "Room message",
+              createdAt: msg.created_at || new Date().toISOString(),
+              roomId,
+              messageId: msg.id,
+            });
+          }
+        }
       } catch {
         /* ignore */
       }
@@ -303,6 +375,19 @@ export default function App() {
         const data = JSON.parse(raw);
         log(`${type}: ${data.payload?.action || ""}`);
         refreshSnapshot(roomId).catch(() => {});
+        if (type === "task" && data.payload?.action === "created") {
+          const t = data.payload?.task;
+          if (t?.claimed_by === participantId || t?.metadata?.assignee_id === participantId) {
+            pushNotif({
+              id: `task-${t.id}`,
+              kind: "task",
+              title: t.title || "Task assigned",
+              body: (t.description || "You were assigned a task").slice(0, 140),
+              createdAt: t.created_at || new Date().toISOString(),
+              roomId,
+            });
+          }
+        }
       } catch {
         /* ignore */
       }
@@ -322,7 +407,28 @@ export default function App() {
       es.close();
       setLive(false);
     };
-  }, [roomId, log, refreshSnapshot, refreshDms, participantId]);
+  }, [
+    roomId,
+    log,
+    refreshSnapshot,
+    refreshDms,
+    participantId,
+    activeDmPeerId,
+    displayName,
+    pushNotif,
+  ]);
+
+  // Mark DM notifications read when opening that thread
+  useEffect(() => {
+    if (!activeDmPeerId) return;
+    setNotifications((prev) =>
+      prev.map((n) =>
+        n.kind === "dm" && n.peerId === activeDmPeerId
+          ? { ...n, read: true }
+          : n
+      )
+    );
+  }, [activeDmPeerId]);
 
   useEffect(() => {
     (async () => {
@@ -608,6 +714,26 @@ export default function App() {
                   if (hit.type === "participant" && hit.id) {
                     setActiveDmPeerId(hit.id);
                     setLeftSection("dms");
+                  } else if (hit.type === "dm") {
+                    const from =
+                      hit.path?.match(/dm_from=([^&]+)/)?.[1] ||
+                      (hit.meta?.from_participant_id as string | undefined);
+                    const to =
+                      hit.path?.match(/dm_to=([^&]+)/)?.[1] ||
+                      (hit.meta?.to_participant_id as string | undefined);
+                    const peer =
+                      from && participantId && from === participantId
+                        ? to
+                        : from || to;
+                    if (peer) {
+                      setActiveDmPeerId(peer);
+                      setLeftSection("dms");
+                    }
+                    const msgMatch = hit.path?.match(/msg=([^&]+)/);
+                    if (msgMatch?.[1] || hit.id) {
+                      setHighlightMessageId(msgMatch?.[1] || hit.id);
+                      setTimeout(() => setHighlightMessageId(null), 2800);
+                    }
                   } else if (
                     hit.type === "message" ||
                     hit.type === "bookmark" ||
@@ -615,7 +741,6 @@ export default function App() {
                   ) {
                     setActiveDmPeerId(null);
                     setHighlightMessageId(hit.id);
-                    // path may carry msg= for bookmarks/forks
                     const msgMatch = hit.path?.match(/msg=([^&]+)/);
                     if (msgMatch?.[1]) setHighlightMessageId(msgMatch[1]);
                     setTimeout(() => setHighlightMessageId(null), 2800);
@@ -631,6 +756,31 @@ export default function App() {
             />
           </div>
           <div className="flex shrink-0 flex-wrap items-center gap-2">
+            <NotificationBell
+              items={notifications}
+              onMarkAllRead={() =>
+                setNotifications((prev) =>
+                  prev.map((n) => ({ ...n, read: true }))
+                )
+              }
+              onMarkRead={(id) =>
+                setNotifications((prev) =>
+                  prev.map((n) => (n.id === id ? { ...n, read: true } : n))
+                )
+              }
+              onSelect={(n) => {
+                if (n.kind === "dm" && n.peerId) {
+                  setActiveDmPeerId(n.peerId);
+                  setLeftSection("dms");
+                } else {
+                  setActiveDmPeerId(null);
+                  if (n.messageId) {
+                    setHighlightMessageId(n.messageId);
+                    setTimeout(() => setHighlightMessageId(null), 2800);
+                  }
+                }
+              }}
+            />
             {!leftOpen && (
               <button
                 type="button"

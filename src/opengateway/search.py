@@ -54,6 +54,12 @@ _TYPE_ALIASES = {
     "message": "message",
     "messages": "message",
     "msg": "message",
+    "chat": "message",
+    "room-message": "message",
+    "dm": "dm",
+    "dms": "dm",
+    "direct": "dm",
+    "private": "dm",
     "task": "task",
     "tasks": "task",
     "artifact": "artifact",
@@ -64,6 +70,18 @@ _TYPE_ALIASES = {
     "bookmarks": "bookmark",
     "fork": "fork",
     "forks": "fork",
+}
+
+# Human-readable labels for UI
+TYPE_LABELS = {
+    "room": "Room",
+    "participant": "Agent",
+    "message": "Room msg",
+    "dm": "DM",
+    "task": "Task",
+    "artifact": "File",
+    "bookmark": "Bookmark",
+    "fork": "Fork",
 }
 
 
@@ -117,6 +135,7 @@ async def global_search(
                 hits.append(
                     {
                         "type": "room",
+                        "type_label": TYPE_LABELS["room"],
                         "score": sc,
                         "id": room.id,
                         "title": room.name,
@@ -135,29 +154,58 @@ async def global_search(
                     hits.append(
                         {
                             "type": "participant",
+                            "type_label": TYPE_LABELS["participant"],
                             "score": sc,
                             "id": p.id,
                             "title": p.name,
-                            "subtitle": f"{p.harness.value} · {p.status.value} · {room.name}",
+                            "subtitle": f"Agent · {p.harness.value} · {p.status.value} · {room.name}",
                             "room_id": room.id,
                             "path": f"/ui/#room={room.id}&dm={p.id}",
                         }
                     )
 
-        if _want("message"):
+        # Room messages vs private DMs — distinct types for search filters
+        if _want("message") or _want("dm"):
             for m in await store.list_messages(room.id, limit=300):
                 text = m.message.text() if hasattr(m.message, "text") else ""
-                sc = _score(search_q, text, m.from_name)
-                if sc >= 30:
+                is_dm = bool(m.to_participant_id)
+                kind = "dm" if is_dm else "message"
+                if not _want(kind):
+                    continue
+                sc = _score(search_q, text, m.from_name, "dm" if is_dm else "room")
+                # type-only listing
+                if not q and type_filter == kind:
+                    sc = max(sc, 50.0)
+                if sc >= 30 or (not q and type_filter == kind and sc >= 25):
+                    peer_name = ""
+                    if is_dm and m.to_participant_id:
+                        peer = await store.get_participant(m.to_participant_id)
+                        peer_name = peer.name if peer else m.to_participant_id[:8]
                     hits.append(
                         {
-                            "type": "message",
+                            "type": kind,
+                            "type_label": TYPE_LABELS.get(kind, kind),
                             "score": sc,
                             "id": m.id,
                             "title": (text[:80] + "…") if len(text) > 80 else text or "(empty)",
-                            "subtitle": f"{m.from_name} · {room.name}",
+                            "subtitle": (
+                                f"DM · {m.from_name} → {peer_name} · {room.name}"
+                                if is_dm
+                                else f"Room · {m.from_name} · {room.name}"
+                            ),
                             "room_id": room.id,
-                            "path": f"/ui/#room={room.id}&msg={m.id}",
+                            "path": (
+                                f"/ui/#room={room.id}&dm_from={m.from_participant_id}"
+                                f"&dm_to={m.to_participant_id}&msg={m.id}"
+                                if is_dm
+                                else f"/ui/#room={room.id}&msg={m.id}"
+                            ),
+                            "meta": {
+                                "is_dm": is_dm,
+                                "from_name": m.from_name,
+                                "from_participant_id": m.from_participant_id,
+                                "to_participant_id": m.to_participant_id,
+                            },
                         }
                     )
 
@@ -170,10 +218,11 @@ async def global_search(
                     hits.append(
                         {
                             "type": "task",
+                            "type_label": TYPE_LABELS["task"],
                             "score": sc,
                             "id": t.id,
                             "title": t.title,
-                            "subtitle": f"{t.status.value} · {room.name}",
+                            "subtitle": f"Task · {t.status.value} · {room.name}",
                             "room_id": room.id,
                             "path": f"/ui/#room={room.id}&task={t.id}",
                         }
@@ -188,10 +237,11 @@ async def global_search(
                     hits.append(
                         {
                             "type": "artifact",
+                            "type_label": TYPE_LABELS["artifact"],
                             "score": sc,
                             "id": a.id,
                             "title": a.name,
-                            "subtitle": f"{a.content_type} · {room.name}",
+                            "subtitle": f"File · {a.content_type} · {room.name}",
                             "room_id": room.id,
                             "path": f"/ui/#room={room.id}",
                         }
@@ -206,6 +256,7 @@ async def global_search(
                     hits.append(
                         {
                             "type": "bookmark",
+                            "type_label": TYPE_LABELS["bookmark"],
                             "score": sc,
                             "id": b.id,
                             "title": b.title,
@@ -224,6 +275,7 @@ async def global_search(
                     hits.append(
                         {
                             "type": "fork",
+                            "type_label": TYPE_LABELS["fork"],
                             "score": sc,
                             "id": f.id,
                             "title": f.title,
@@ -249,9 +301,11 @@ async def global_search(
 async def _empty_suggestions(store: Store) -> list[dict[str, str]]:
     rooms = await store.list_rooms()
     out: list[dict[str, str]] = [
-        {"label": "rooms", "query": "room "},
-        {"label": "tasks", "query": "task "},
-        {"label": "bookmarks", "query": "bookmark "},
+        {"label": "type:dm", "query": "type:dm ", "type": "dm"},
+        {"label": "type:message", "query": "type:message ", "type": "message"},
+        {"label": "type:room", "query": "type:room ", "type": "room"},
+        {"label": "type:task", "query": "type:task ", "type": "task"},
+        {"label": "type:agent", "query": "type:agent ", "type": "participant"},
     ]
     for r in rooms[:5]:
         out.append({"label": r.name, "query": r.name})
@@ -263,11 +317,21 @@ def _suggestions(q: str, hits: list[dict[str, Any]]) -> list[dict[str, str]]:
     out: list[dict[str, str]] = []
     ql = q.lower()
     # Type completions first when predictive
-    for t in ("room", "participant", "message", "task", "artifact", "bookmark", "fork"):
+    for t, label in (
+        ("dm", "DM"),
+        ("message", "Room msg"),
+        ("room", "Room"),
+        ("participant", "Agent"),
+        ("task", "Task"),
+        ("artifact", "File"),
+        ("bookmark", "Bookmark"),
+        ("fork", "Fork"),
+    ):
         if (
             "type:" in ql
             or t.startswith(ql)
             or ql.startswith("t:")
+            or label.lower().startswith(ql)
             or (len(ql) >= 1 and t.startswith(ql.replace("type:", "").replace("t:", "")))
         ):
             out.append({"label": f"type:{t}", "query": f"type:{t} ", "type": t})
@@ -276,5 +340,11 @@ def _suggestions(q: str, hits: list[dict[str, Any]]) -> list[dict[str, str]]:
         if label.lower() in seen:
             continue
         seen.add(label.lower())
-        out.append({"label": label, "query": label, "type": h["type"]})
+        out.append(
+            {
+                "label": f"[{h.get('type_label') or h['type']}] {label}"[:50],
+                "query": label,
+                "type": h["type"],
+            }
+        )
     return out[:15]

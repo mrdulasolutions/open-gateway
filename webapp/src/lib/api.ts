@@ -179,12 +179,14 @@ export const api = {
       query: string;
       hits: {
         type: string;
+        type_label?: string;
         score: number;
         id: string;
         title: string;
         subtitle: string;
         room_id?: string;
         path?: string;
+        meta?: Record<string, unknown>;
       }[];
       suggestions: { label: string; query: string; type?: string }[];
     }>(`/v1/search?q=${encodeURIComponent(q)}&limit=${limit}`),
