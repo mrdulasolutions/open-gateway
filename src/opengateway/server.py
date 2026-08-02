@@ -67,6 +67,7 @@ from opengateway.models import (
 )
 from opengateway.search import global_search
 from opengateway.store import Store
+from opengateway.tailscale import network_diagnostics
 
 
 def _find_web_dir() -> Path | None:
@@ -207,6 +208,92 @@ def create_app(
                     "hint": "Prefer Tailscale Serve/MagicDNS for multi-machine without public internet",
                 },
             },
+            "network_diagnostics": network_diagnostics(cfg.port),
+            "mobile": {
+                "pair": "POST /v1/pair  →  phone opens redeem URL",
+                "ui": "/ui/",
+                "pwa": True,
+            },
+        }
+
+    @app.get("/v1/network")
+    async def network_status() -> dict[str, Any]:
+        """Tailscale / bind diagnostics for multi-machine hardening."""
+        return {
+            "gateway": cfg.to_public_dict(),
+            "lan_ips": local_ips(),
+            **network_diagnostics(cfg.port),
+        }
+
+    @app.post("/v1/pair")
+    async def create_pair(request: Request) -> dict[str, Any]:
+        """Create a short-lived phone pair code (requires gateway auth when public)."""
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if not isinstance(body, dict):
+            body = {}
+        room_id = body.get("room_id") or None
+        label = str(body.get("label") or "mobile")
+        ttl_seconds = int(body.get("ttl_seconds") or 900)
+        ttl_seconds = max(60, min(ttl_seconds, 3600))
+        if room_id and not await st.get_room(str(room_id)):
+            raise HTTPException(status_code=404, detail="Room not found")
+        rec = await st.create_pair_code(
+            room_id=str(room_id) if room_id else None,
+            label=label,
+            ttl_seconds=ttl_seconds,
+        )
+        base = cfg.base_url.rstrip("/")
+        # Include token in hash only as optional bootstrap for trusted pair sessions
+        # (short-lived URL; prefer Settings paste on untrusted networks)
+        pair_url = f"{base}/ui/#pair={rec['code']}"
+        if room_id:
+            pair_url += f"&room={room_id}"
+        if cfg.require_auth and cfg.auth_token:
+            pair_url += f"&token={cfg.auth_token}"
+        return {
+            **rec,
+            "url": pair_url,
+            "qr_payload": pair_url,
+            "instructions": [
+                "Open the URL (or scan QR) on your phone — same LAN or Tailscale.",
+                "Pair deep-links room + auth for this gateway session.",
+                f"Code expires in {rec['ttl_seconds']}s · max {rec['max_uses']} uses.",
+            ],
+        }
+
+    @app.post("/v1/pair/redeem")
+    async def redeem_pair(request: Request) -> dict[str, Any]:
+        """Redeem a pair code — returns room target + join hints."""
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if not isinstance(body, dict):
+            body = {}
+        code = str(body.get("code") or "").strip().upper()
+        name = str(body.get("name") or body.get("label") or "mobile").strip() or "mobile"
+        rec = await st.redeem_pair_code(code)
+        if not rec:
+            raise HTTPException(status_code=404, detail="Invalid or expired pair code")
+        return {
+            "ok": True,
+            "code": rec["code"],
+            "room_id": rec.get("room_id"),
+            "label": rec.get("label") or name,
+            "suggested_name": name,
+            "harness": "mobile",
+            "base_url": cfg.base_url,
+            "require_auth": cfg.require_auth,
+            # Trusted pair: return token so phone can call API without manual paste
+            "auth_token": cfg.auth_token if cfg.require_auth else None,
+            "auth_hint": (
+                "Use returned auth_token as Authorization: Bearer …"
+                if cfg.require_auth
+                else None
+            ),
         }
 
     @app.get("/v1/gateways")

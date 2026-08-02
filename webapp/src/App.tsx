@@ -100,8 +100,17 @@ export default function App() {
   const [displayRole, setDisplayRole] = useState(getStoredRole());
   const [participantId, setParticipantId] = useState<string | null>(null);
   const [live, setLive] = useState(false);
-  const [leftOpen, setLeftOpen] = useState(true);
-  const [railOpen, setRailOpen] = useState(true);
+  // Mobile-first: drawers closed by default on narrow viewports
+  const [leftOpen, setLeftOpen] = useState(
+    () => typeof window !== "undefined" && window.innerWidth >= 768
+  );
+  const [railOpen, setRailOpen] = useState(
+    () => typeof window !== "undefined" && window.innerWidth >= 1024
+  );
+  const [isMobile, setIsMobile] = useState(
+    () => typeof window !== "undefined" && window.innerWidth < 768
+  );
+  const [mobileSearchOpen, setMobileSearchOpen] = useState(false);
   const [leftSection, setLeftSection] = useState<LeftSection>("rooms");
   const [activeDmPeerId, setActiveDmPeerId] = useState<string | null>(null);
   const [highlightMessageId, setHighlightMessageId] = useState<string | null>(
@@ -431,13 +440,71 @@ export default function App() {
   }, [activeDmPeerId]);
 
   useEffect(() => {
+    const onResize = () => {
+      const mobile = window.innerWidth < 768;
+      setIsMobile(mobile);
+    };
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  useEffect(() => {
     (async () => {
+      // Deep link: #pair=CODE&room=ID&token=…
+      const hash = window.location.hash.replace(/^#/, "");
+      const params = new URLSearchParams(
+        hash.includes("=") ? hash.replace(/&/g, "&") : ""
+      );
+      // Support both #pair=x&room=y and #room=id
+      const hashParts = Object.fromEntries(
+        hash.split("&").map((p) => {
+          const [k, ...rest] = p.split("=");
+          return [k, rest.join("=")];
+        })
+      );
+      const pairCode = hashParts.pair || params.get("pair");
+      const hashRoom = hashParts.room || params.get("room");
+      const hashToken = hashParts.token || params.get("token");
+      if (hashToken) {
+        setAuthToken(hashToken);
+        setAuthTokenState(hashToken);
+      }
+      if (pairCode) {
+        try {
+          const redeemed = await api.redeemPair(
+            pairCode,
+            getStoredName() || "mobile"
+          );
+          if (redeemed.auth_token) {
+            setAuthToken(redeemed.auth_token);
+            setAuthTokenState(redeemed.auth_token);
+          }
+          if (redeemed.suggested_name) {
+            setDisplayName(redeemed.suggested_name);
+            setStoredName(redeemed.suggested_name);
+          }
+          log(`paired as ${redeemed.suggested_name || "mobile"}`);
+        } catch (e) {
+          log(`pair failed: ${e instanceof Error ? e.message : e}`);
+        }
+      }
+
       await refreshPing();
       const list = await refreshRooms();
-      const hash = window.location.hash.replace(/^#/, "");
       const pick =
-        list.find((r) => r.id === hash || r.name === hash) || list[0];
+        list.find(
+          (r) =>
+            r.id === hashRoom ||
+            r.name === hashRoom ||
+            r.id === hash ||
+            r.name === hash
+        ) || list[0];
       if (pick) await selectRoom(pick.id);
+      // Clean sensitive token from URL after bootstrap
+      if (hashToken || pairCode) {
+        const clean = hashRoom ? `room=${hashRoom}` : pick ? pick.id : "";
+        window.location.hash = clean;
+      }
     })().catch((e) =>
       setError({ message: e instanceof Error ? e.message : String(e) })
     );
@@ -596,78 +663,106 @@ export default function App() {
     : room?.goal || "Agent communication over ACP + MCP";
 
   return (
-    <div className="flex h-screen overflow-hidden bg-zinc-50 text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100">
+    <div className="og-shell flex overflow-hidden bg-zinc-50 text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100">
       <div
         aria-hidden
-        className="pointer-events-none fixed inset-0 bg-[radial-gradient(900px_500px_at_15%_-5%,rgba(110,231,183,0.08),transparent_55%)] opacity-70 dark:opacity-100"
+        className="pointer-events-none fixed inset-0 bg-[radial-gradient(900px_500px_at_15%_-5%,rgba(249,115,22,0.08),transparent_55%)] opacity-70 dark:opacity-100"
       />
 
-      <OpsSidebar
-        rooms={rooms}
-        activeRoomId={roomId}
-        ping={ping}
-        displayName={displayName}
-        displayRole={displayRole}
-        participantId={participantId}
-        participants={participants}
-        dmThreads={dmThreads}
-        forks={forks}
-        gateways={gateways}
-        activeDmPeerId={activeDmPeerId}
-        section={leftSection}
-        collapsed={!leftOpen}
-        authToken={authToken}
-        onToggleCollapsed={() => setLeftOpen((v) => !v)}
-        onSection={setLeftSection}
-        onSelectRoom={(id) => {
-          selectRoom(id).catch((e) =>
-            setError({ message: e instanceof Error ? e.message : String(e) })
-          );
-        }}
-        onSelectDm={(peerId) => {
-          setActiveDmPeerId(peerId);
-          if (peerId) setLeftSection("dms");
-        }}
-        onSelectFork={(forkId) => {
-          const f = forks.find((x) => x.id === forkId);
-          if (f) {
-            setActiveDmPeerId(null);
-            setHighlightMessageId(f.root_message_id);
-            setTimeout(() => setHighlightMessageId(null), 2500);
-          }
-        }}
-        onRefresh={() => {
-          refreshPing();
-          refreshRooms();
-          if (roomId) {
-            refreshSnapshot(roomId);
-            if (participantId) refreshDms(roomId, participantId);
-          }
-        }}
-        onNewRoom={() => setShowNewRoom(true)}
-        onNameChange={onNameChange}
-        onRoleChange={onRoleChange}
-        onAuthTokenChange={(token) => {
-          setAuthToken(token);
-          setAuthTokenState(token);
-          setAuthNeeded(false);
-          void (async () => {
-            await refreshPing();
-            try {
-              const list = await refreshRooms();
-              if (list[0] && !roomId) await selectRoom(list[0].id);
-              else if (roomId) {
-                await refreshSnapshot(roomId);
-                if (participantId) await refreshDms(roomId, participantId);
-              }
-            } catch (e) {
-              setError({
-                message: e instanceof Error ? e.message : String(e),
-              });
+      {/* Mobile drawer backdrop */}
+      {isMobile && (leftOpen || railOpen) && (
+        <button
+          type="button"
+          aria-label="Close panels"
+          className="og-drawer-backdrop"
+          onClick={() => {
+            setLeftOpen(false);
+            setRailOpen(false);
+          }}
+        />
+      )}
+
+      <div
+        className={
+          isMobile
+            ? leftOpen
+              ? "og-drawer-left"
+              : "hidden"
+            : undefined
+        }
+      >
+        <OpsSidebar
+          rooms={rooms}
+          activeRoomId={roomId}
+          ping={ping}
+          displayName={displayName}
+          displayRole={displayRole}
+          participantId={participantId}
+          participants={participants}
+          dmThreads={dmThreads}
+          forks={forks}
+          gateways={gateways}
+          activeDmPeerId={activeDmPeerId}
+          section={leftSection}
+          collapsed={!isMobile && !leftOpen}
+          authToken={authToken}
+          onToggleCollapsed={() => setLeftOpen((v) => !v)}
+          onSection={(s) => {
+            setLeftSection(s);
+          }}
+          onSelectRoom={(id) => {
+            selectRoom(id).catch((e) =>
+              setError({ message: e instanceof Error ? e.message : String(e) })
+            );
+            if (isMobile) setLeftOpen(false);
+          }}
+          onSelectDm={(peerId) => {
+            setActiveDmPeerId(peerId);
+            if (peerId) setLeftSection("dms");
+            if (isMobile) setLeftOpen(false);
+          }}
+          onSelectFork={(forkId) => {
+            const f = forks.find((x) => x.id === forkId);
+            if (f) {
+              setActiveDmPeerId(null);
+              setHighlightMessageId(f.root_message_id);
+              setTimeout(() => setHighlightMessageId(null), 2500);
             }
-          })();
-        }}
-      />
+            if (isMobile) setLeftOpen(false);
+          }}
+          onRefresh={() => {
+            refreshPing();
+            refreshRooms();
+            if (roomId) {
+              refreshSnapshot(roomId);
+              if (participantId) refreshDms(roomId, participantId);
+            }
+          }}
+          onNewRoom={() => setShowNewRoom(true)}
+          onNameChange={onNameChange}
+          onRoleChange={onRoleChange}
+          onAuthTokenChange={(token) => {
+            setAuthToken(token);
+            setAuthTokenState(token);
+            setAuthNeeded(false);
+            void (async () => {
+              await refreshPing();
+              try {
+                const list = await refreshRooms();
+                if (list[0] && !roomId) await selectRoom(list[0].id);
+                else if (roomId) {
+                  await refreshSnapshot(roomId);
+                  if (participantId) await refreshDms(roomId, participantId);
+                }
+              } catch (e) {
+                setError({
+                  message: e instanceof Error ? e.message : String(e),
+                });
+              }
+            })();
+          }}
+        />
+      </div>
 
       <main className="relative flex min-w-0 flex-1 flex-col">
         {(authNeeded ||
@@ -697,14 +792,29 @@ export default function App() {
             </button>
           </div>
         )}
-        <header className="flex items-center gap-3 border-b border-zinc-200 bg-white/80 px-4 py-3 backdrop-blur-md dark:border-white/[0.06] dark:bg-zinc-950/70 sm:px-5">
-          <div className="min-w-0 shrink-0 sm:max-w-[28%]">
-            <h1 className="truncate text-lg font-semibold tracking-tight">
+        <header className="flex items-center gap-2 border-b border-zinc-200 bg-white/80 px-3 py-2.5 backdrop-blur-md dark:border-white/[0.06] dark:bg-zinc-950/70 sm:gap-3 sm:px-5 sm:py-3">
+          {isMobile && (
+            <button
+              type="button"
+              onClick={() => {
+                setRailOpen(false);
+                setLeftOpen(true);
+              }}
+              className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-zinc-200 bg-white text-zinc-600 dark:border-white/10 dark:bg-zinc-900 dark:text-zinc-300"
+              title="Menu"
+            >
+              <span className="text-lg leading-none">☰</span>
+            </button>
+          )}
+          <div className="og-header-title min-w-0 shrink sm:max-w-[28%]">
+            <h1 className="truncate text-base font-semibold tracking-tight sm:text-lg">
               {chatTitle}
             </h1>
-            <p className="mt-0.5 truncate text-sm text-zinc-500">{chatGoal}</p>
+            <p className="mt-0.5 hidden truncate text-sm text-zinc-500 sm:block">
+              {chatGoal}
+            </p>
           </div>
-          <div className="min-w-0 flex-1">
+          <div className="og-search-wrap min-w-0 flex-1">
             <GlobalSearch
               onNavigate={(hit: SearchHit) => {
                 void (async () => {
@@ -756,6 +866,16 @@ export default function App() {
             />
           </div>
           <div className="flex shrink-0 flex-wrap items-center gap-2">
+            {isMobile && (
+              <button
+                type="button"
+                onClick={() => setMobileSearchOpen((v) => !v)}
+                className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-zinc-200 bg-white text-zinc-600 dark:border-white/10 dark:bg-zinc-900 dark:text-zinc-300"
+                title="Search"
+              >
+                <span className="text-sm">⌕</span>
+              </button>
+            )}
             <NotificationBell
               items={notifications}
               onMarkAllRead={() =>
@@ -781,7 +901,7 @@ export default function App() {
                 }
               }}
             />
-            {!leftOpen && (
+            {!isMobile && !leftOpen && (
               <button
                 type="button"
                 onClick={() => setLeftOpen(true)}
@@ -804,7 +924,10 @@ export default function App() {
             </button>
             <button
               type="button"
-              onClick={() => setRailOpen((v) => !v)}
+              onClick={() => {
+                if (isMobile) setLeftOpen(false);
+                setRailOpen((v) => !v);
+              }}
               className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-zinc-200 bg-white text-zinc-600 dark:border-white/10 dark:bg-zinc-900 dark:text-zinc-300"
               title={railOpen ? "Hide right panel" : "Show right panel"}
             >
@@ -830,7 +953,7 @@ export default function App() {
               />
               {live ? "Live" : "Offline"}
             </span>
-            <span className="hidden rounded-full border border-zinc-200 bg-white px-2.5 py-1 text-xs text-zinc-500 sm:inline dark:border-white/10 dark:bg-zinc-900">
+            <span className="hidden rounded-full border border-zinc-200 bg-white px-2.5 py-1 text-xs text-zinc-500 md:inline dark:border-white/10 dark:bg-zinc-900">
               {visibleMessages.length} messages
             </span>
             {activeDmPeerId && (
@@ -844,6 +967,38 @@ export default function App() {
             )}
           </div>
         </header>
+
+        {isMobile && mobileSearchOpen && (
+          <div className="og-search-wrap-mobile border-b border-zinc-200 px-3 py-2 dark:border-white/10">
+            <GlobalSearch
+              onNavigate={(hit: SearchHit) => {
+                setMobileSearchOpen(false);
+                void (async () => {
+                  if (hit.room_id && hit.room_id !== roomId) {
+                    await selectRoom(hit.room_id);
+                  }
+                  if (hit.type === "participant" && hit.id) {
+                    setActiveDmPeerId(hit.id);
+                  } else if (hit.type === "dm") {
+                    const from = hit.path?.match(/dm_from=([^&]+)/)?.[1];
+                    const to = hit.path?.match(/dm_to=([^&]+)/)?.[1];
+                    const peer =
+                      from && participantId && from === participantId
+                        ? to
+                        : from || to;
+                    if (peer) setActiveDmPeerId(peer);
+                  } else {
+                    setActiveDmPeerId(null);
+                    if (hit.id) {
+                      setHighlightMessageId(hit.id);
+                      setTimeout(() => setHighlightMessageId(null), 2800);
+                    }
+                  }
+                })();
+              }}
+            />
+          </div>
+        )}
 
         <div className="flex min-h-0 flex-1">
           <div className="flex min-h-0 min-w-0 flex-1 flex-col">
@@ -910,24 +1065,32 @@ export default function App() {
             />
           </div>
           {railOpen && (
-            <SideRail
-              participants={participants}
-              tasks={tasks}
-              artifacts={artifacts}
-              bookmarks={bookmarks}
-              events={events}
-              meId={participantId}
-              activeDmPeerId={activeDmPeerId}
-              onOpenDm={(peerId) => {
-                setActiveDmPeerId(peerId);
-                setLeftSection("dms");
-              }}
-              onJumpMessage={(id) => {
-                setActiveDmPeerId(null);
-                setHighlightMessageId(id);
-                setTimeout(() => setHighlightMessageId(null), 2500);
-              }}
-            />
+            <div
+              className={
+                isMobile ? "og-drawer-right h-full bg-zinc-50 dark:bg-zinc-950" : "contents"
+              }
+            >
+              <SideRail
+                participants={participants}
+                tasks={tasks}
+                artifacts={artifacts}
+                bookmarks={bookmarks}
+                events={events}
+                meId={participantId}
+                activeDmPeerId={activeDmPeerId}
+                onOpenDm={(peerId) => {
+                  setActiveDmPeerId(peerId);
+                  setLeftSection("dms");
+                  if (isMobile) setRailOpen(false);
+                }}
+                onJumpMessage={(id) => {
+                  setActiveDmPeerId(null);
+                  setHighlightMessageId(id);
+                  setTimeout(() => setHighlightMessageId(null), 2500);
+                  if (isMobile) setRailOpen(false);
+                }}
+              />
+            </div>
           )}
         </div>
       </main>

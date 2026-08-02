@@ -29,6 +29,18 @@ bun run dev
 
 Vite proxies `/v1`, `/ping`, etc. to `:8765`.
 
+## Mobile / PWA
+
+- Viewport `viewport-fit=cover` + safe-area padding (notched phones)
+- Sidebars become **drawers** under 768px; search moves to a toggle
+- `manifest.webmanifest` — Add to Home Screen (standalone)
+- Pair link: `opengateway pair --room NAME` → open URL on phone  
+  Hash: `#pair=CODE&room=ID&token=…` (token stripped after bootstrap)
+
+## Tailscale path
+
+Prefer Serve over raw 100.x — see [GATEWAYS.md](GATEWAYS.md) and `opengateway doctor`.
+
 ## Production
 
 ```bash

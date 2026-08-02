@@ -285,7 +285,7 @@ export function OpsSidebar({
   }
 
   return (
-    <aside className="flex h-full min-h-0 w-[300px] shrink-0 flex-col gap-3 border-r border-zinc-200 bg-gradient-to-b from-white to-zinc-50 px-3 py-3 dark:border-white/[0.06] dark:from-zinc-950 dark:to-zinc-950/95">
+    <aside className="flex h-full min-h-0 w-full shrink-0 flex-col gap-3 border-r border-zinc-200 bg-gradient-to-b from-white to-zinc-50 px-3 py-3 dark:border-white/[0.06] dark:from-zinc-950 dark:to-zinc-950/95 md:w-[300px]">
       <div className="flex items-center gap-2.5 px-1">
         <img
           src={`${import.meta.env.BASE_URL}og-logo.png`}

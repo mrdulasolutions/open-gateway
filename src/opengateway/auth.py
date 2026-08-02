@@ -76,6 +76,9 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
         # Allow unauthenticated static UI + health (health reveals little)
         if path == "/" or any(path == p or path.startswith(p + "/") for p in PUBLIC_PREFIXES):
             return await call_next(request)
+        # Phone pair redeem is public (code is the secret); create still requires auth
+        if path.rstrip("/") == "/v1/pair/redeem" and request.method in {"POST", "OPTIONS"}:
+            return await call_next(request)
 
         ip = _client_ip(request)
         if _auth_failures_blocked(ip):

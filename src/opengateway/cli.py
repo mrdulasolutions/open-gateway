@@ -158,10 +158,19 @@ def serve(
             console.print(
                 "  [dim]Tailnet (Serve): edge TLS + ACLs; app stays on 127.0.0.1[/]"
             )
+            console.print(
+                "  [dim]Do not rely on raw 100.x:PORT — host firewalls often block it. "
+                "Use Serve + MagicDNS. Diagnose: opengateway doctor[/]"
+            )
         elif cfg.network == "funnel":
             console.print(
                 "  [yellow]Internet (Funnel): world-reachable — keep a strong token[/]"
             )
+    if cfg.network == "lan":
+        console.print(
+            "  [dim]LAN open bind. For Tailscale mesh prefer --mode serve + "
+            "`tailscale serve` (see opengateway doctor).[/]"
+        )
     if db_path:
         console.print(f"  [bold]Persistence:[/] {db_path}")
     else:
@@ -704,6 +713,108 @@ def chat(
                 reader_task.cancel()
 
     asyncio.run(run())
+
+
+@app.command()
+def doctor(
+    url: str = typer.Option(None, help="Gateway base URL"),
+    port: int = typer.Option(8765, help="Port to probe locally"),
+) -> None:
+    """Diagnose network path — Tailscale Serve vs raw 100.x / LAN."""
+    from opengateway.tailscale import network_diagnostics, tailscale_status
+
+    base = _base_url(url)
+    console.print(f"[bold]OpenGateway doctor[/] · {base}\n")
+
+    # Local tailscale
+    ts = tailscale_status()
+    console.print(f"[bold]Tailscale installed:[/] {ts['installed']}")
+    if ts["installed"]:
+        console.print(f"  running: {ts.get('running')}  state: {ts.get('backend_state')}")
+        console.print(f"  MagicDNS: {ts.get('dns_name') or '—'}")
+        console.print(f"  Tailscale IPs: {', '.join(ts.get('tailscale_ips') or []) or '—'}")
+        console.print(f"  Serve configured: {ts.get('serve_configured')}")
+    for h in ts.get("hints") or []:
+        console.print(f"  [yellow]•[/] {h}")
+
+    diag = network_diagnostics(port)
+    console.print("\n[bold]TCP probes[/]")
+    for p in diag.get("probes") or []:
+        mark = "[green]ok[/]" if p.get("ok") else f"[red]fail[/] ({p.get('error')})"
+        console.print(f"  {p.get('host')}:{p.get('port')} → {mark}")
+
+    rec = diag.get("recommended") or {}
+    console.print(f"\n[bold]Recommended multi-machine path:[/] {rec.get('mode')}")
+    console.print(f"  [dim]{rec.get('why')}[/]")
+    for cmd in rec.get("commands") or []:
+        console.print(f"  [cyan]$[/] {cmd}")
+
+    # Live gateway if reachable
+    try:
+        with _http(5.0, base) as c:
+            ping = c.get("/ping").json()
+            net = c.get("/v1/network").json()
+        console.print(f"\n[green]Gateway reachable[/] mode={ping.get('mode')} network={ping.get('network')}")
+        console.print(f"  base_url={ping.get('base_url')}")
+        if net.get("tailscale", {}).get("dns_name"):
+            console.print(f"  tailnet DNS={net['tailscale']['dns_name']}")
+    except Exception as e:
+        console.print(f"\n[yellow]Gateway not reachable at {base}:[/] {e}")
+        console.print("  Start with: opengateway serve --mode serve --token $TOKEN")
+
+
+@app.command()
+def pair(
+    room: Optional[str] = typer.Option(None, help="Room UUID or name to deep-link"),
+    label: str = typer.Option("mobile", help="Device label"),
+    url: str = typer.Option(None, help="Gateway base URL"),
+    ttl: int = typer.Option(900, help="Code lifetime seconds"),
+) -> None:
+    """Create a phone pair link (open on mobile for Live Ops).
+
+    Prints a URL + short code. Phone opens the UI, joins the room as harness=mobile.
+    Requires OPENGATEWAY_AUTH_TOKEN when the gateway is public/LAN.
+    """
+    base = _base_url(url)
+    room_id = None
+    with _http(10.0, base) as c:
+        try:
+            c.get("/ping").raise_for_status()
+        except Exception as e:
+            console.print(f"[red]Cannot reach {base}: {e}[/]")
+            raise typer.Exit(1)
+        if room:
+            rooms = c.get("/v1/rooms").json().get("rooms") or []
+            match = next(
+                (
+                    r
+                    for r in rooms
+                    if r.get("id") == room
+                    or r.get("name") == room
+                    or str(r.get("id", "")).startswith(room)
+                ),
+                None,
+            )
+            if not match:
+                console.print(f"[red]Room not found:[/] {room}")
+                raise typer.Exit(1)
+            room_id = match["id"]
+            console.print(f"[dim]Room[/] {match.get('name')} ({room_id[:8]}…)")
+        body: dict = {"label": label, "ttl_seconds": ttl}
+        if room_id:
+            body["room_id"] = room_id
+        r = c.post("/v1/pair", json=body)
+        r.raise_for_status()
+        data = r.json()
+    console.print(f"\n[bold green]Pair code[/]  {data.get('code')}")
+    console.print(f"[bold]URL[/]       {data.get('url')}")
+    console.print(f"[dim]Expires in {data.get('ttl_seconds')}s · max {data.get('max_uses')} uses[/]")
+    for line in data.get("instructions") or []:
+        console.print(f"  • {line}")
+    console.print(
+        "\n[dim]Tip: multi-machine over Tailscale → "
+        "`opengateway serve --mode serve` then `tailscale serve --bg 8765`[/]"
+    )
 
 
 @app.command("agent-loop")

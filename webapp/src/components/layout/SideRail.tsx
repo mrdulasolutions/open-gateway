@@ -138,7 +138,7 @@ export function SideRail({
   const onlineCount = sorted.filter((p) => p.status === "online").length;
 
   return (
-    <aside className="flex h-full min-h-0 w-[320px] shrink-0 flex-col gap-2.5 overflow-y-auto border-l border-zinc-200 bg-zinc-50/90 p-3 dark:border-white/[0.06] dark:bg-zinc-950/50">
+    <aside className="flex h-full min-h-0 w-full shrink-0 flex-col gap-2.5 overflow-y-auto border-l border-zinc-200 bg-zinc-50/90 p-3 dark:border-white/[0.06] dark:bg-zinc-950/50 md:w-[320px]">
       <AccordionSection
         title="Participants"
         icon={<Users className="h-4 w-4" />}

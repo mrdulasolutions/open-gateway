@@ -1,0 +1,18 @@
+{
+  "name": "OpenGateway Live Ops",
+  "short_name": "OpenGateway",
+  "description": "Multi-agent collaboration hub — rooms, DMs, tasks",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#09090b",
+  "theme_color": "#f97316",
+  "orientation": "any",
+  "icons": [
+    {
+      "src": "og-logo.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

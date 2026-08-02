@@ -2,6 +2,18 @@
 
 Versioning starts at **0.0.1**. Git tags use the form `v0.0.1`, `v0.0.2`, …
 
+## 0.0.2 — 2026-08-02
+
+### Tailscale path hardening
+- `opengateway doctor` + `GET /v1/network` diagnostics (Serve vs raw 100.x)
+- Serve-first messaging; document LAN vs tailnet firewall asymmetry
+- Why 100.x:PORT times out when LAN works — prefer `tailscale serve`
+
+### Mobile Live Ops
+- Responsive drawers, safe-area, PWA manifest (`manifest.webmanifest`)
+- `opengateway pair` + `POST /v1/pair` / redeem deep links (`#pair=`)
+- Phone bootstrap: token + room from pair URL, then strip secrets from hash
+
 ## 0.0.1 — 2026-08-02
 
 First tagged baseline of OpenGateway.

@@ -225,6 +225,36 @@ export const api = {
   },
   fileUrl: (roomId: string, fileId: string) =>
     `${API}/v1/rooms/${roomId}/files/${fileId}/download`,
+  createPair: (body?: { room_id?: string; label?: string; ttl_seconds?: number }) =>
+    req<{
+      code: string;
+      url: string;
+      qr_payload: string;
+      ttl_seconds: number;
+      max_uses: number;
+      instructions: string[];
+      room_id?: string | null;
+    }>("/v1/pair", { method: "POST", body: JSON.stringify(body || {}) }),
+  redeemPair: (code: string, name?: string) =>
+    req<{
+      ok: boolean;
+      room_id?: string | null;
+      suggested_name: string;
+      harness: string;
+      auth_token?: string | null;
+      require_auth: boolean;
+    }>("/v1/pair/redeem", {
+      method: "POST",
+      body: JSON.stringify({ code, name }),
+    }),
+  networkStatus: () =>
+    req<{
+      gateway: Record<string, unknown>;
+      lan_ips: string[];
+      tailscale: Record<string, unknown>;
+      probes: { host: string; port: number; ok: boolean; error?: string }[];
+      recommended: { mode: string; commands: string[]; why: string };
+    }>("/v1/network"),
 };
 
 export function isAllCall(text: string): boolean {

@@ -300,6 +300,45 @@ async def test_at_all_nudges_like_everyone(client: AsyncClient):
 
 
 @pytest.mark.asyncio
+async def test_pair_code_create_and_redeem(client: AsyncClient):
+    room = (await client.post("/v1/rooms", json={"name": "pair-room", "goal": "phone"})).json()
+    created = (
+        await client.post(
+            "/v1/pair",
+            json={"room_id": room["id"], "label": "iphone", "ttl_seconds": 600},
+        )
+    ).json()
+    assert created.get("code")
+    assert "pair=" in created.get("url", "")
+    assert room["id"] in created.get("url", "")
+
+    redeemed = (
+        await client.post(
+            "/v1/pair/redeem",
+            json={"code": created["code"], "name": "phone-mark"},
+        )
+    ).json()
+    assert redeemed["ok"] is True
+    assert redeemed["room_id"] == room["id"]
+    assert redeemed["harness"] == "mobile"
+    assert redeemed["suggested_name"] == "phone-mark"
+
+    bad = await client.post("/v1/pair/redeem", json={"code": "ZZZZZZ"})
+    assert bad.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_network_diagnostics(client: AsyncClient):
+    r = await client.get("/v1/network")
+    assert r.status_code == 200
+    body = r.json()
+    assert "tailscale" in body
+    assert "probes" in body
+    assert "recommended" in body
+    assert body["recommended"]["mode"] == "serve"
+
+
+@pytest.mark.asyncio
 async def test_stale_online_marked_offline_and_nudge_cancelled(store: Store):
     from datetime import timedelta
 

@@ -14,7 +14,7 @@
   <a href="https://agentcommunicationprotocol.dev/"><img src="https://img.shields.io/badge/protocol-ACP%20compatible-orange.svg" alt="ACP" /></a>
   <a href="https://modelcontextprotocol.io/"><img src="https://img.shields.io/badge/MCP-stdio%20bridge-violet.svg" alt="MCP" /></a>
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.11%2B-green.svg" alt="Python" /></a>
-  <img src="https://img.shields.io/badge/version-v0.0.1-brightgreen.svg" alt="Version" />
+  <img src="https://img.shields.io/badge/version-v0.0.2-brightgreen.svg" alt="Version" />
 </p>
 
 <p align="center">

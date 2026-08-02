@@ -46,6 +46,8 @@ class Store:
         self.gateways: dict[str, GatewayRecord] = {}
         self.agents: dict[str, RegisteredAgent] = {}
         self.runs: dict[str, Run] = {}
+        # Short-lived phone/mobile pair codes (in-memory only)
+        self.pair_codes: dict[str, dict[str, Any]] = {}
         self._events: deque[GatewayEvent] = deque(maxlen=event_history)
         self._subscribers: list[asyncio.Queue[GatewayEvent]] = []
         self._seq = 0
@@ -645,6 +647,68 @@ class Store:
 
     async def get_run(self, run_id: str) -> Optional[Run]:
         return self.runs.get(run_id)
+
+    # ── Mobile pair codes ──────────────────────────────────────────────────
+
+    async def create_pair_code(
+        self,
+        *,
+        room_id: Optional[str] = None,
+        label: str = "",
+        ttl_seconds: int = 900,
+    ) -> dict[str, Any]:
+        """Create a short-lived pair code for phone/web join (in-memory)."""
+        import secrets
+        from datetime import timedelta
+
+        code = secrets.token_hex(3).upper()  # 6 hex chars
+        while code in self.pair_codes:
+            code = secrets.token_hex(3).upper()
+        rec = {
+            "code": code,
+            "room_id": room_id,
+            "label": label or "mobile",
+            "created_at": utcnow().isoformat(),
+            "expires_at": (utcnow() + timedelta(seconds=ttl_seconds)).isoformat(),
+            "ttl_seconds": ttl_seconds,
+            "uses": 0,
+            "max_uses": 5,
+        }
+        async with self._lock:
+            self._purge_expired_pairs()
+            self.pair_codes[code] = rec
+        return dict(rec)
+
+    def _purge_expired_pairs(self) -> None:
+        now = utcnow()
+        dead = []
+        for code, rec in self.pair_codes.items():
+            try:
+                from datetime import datetime
+
+                exp = datetime.fromisoformat(rec["expires_at"])
+                if exp.tzinfo is None:
+                    from datetime import timezone
+
+                    exp = exp.replace(tzinfo=timezone.utc)
+                if exp < now or rec.get("uses", 0) >= rec.get("max_uses", 5):
+                    dead.append(code)
+            except Exception:
+                dead.append(code)
+        for c in dead:
+            self.pair_codes.pop(c, None)
+
+    async def redeem_pair_code(self, code: str) -> Optional[dict[str, Any]]:
+        async with self._lock:
+            self._purge_expired_pairs()
+            rec = self.pair_codes.get((code or "").strip().upper())
+            if not rec:
+                return None
+            rec["uses"] = int(rec.get("uses") or 0) + 1
+            if rec["uses"] >= rec.get("max_uses", 5):
+                # keep until purge for race; still return once more
+                pass
+            return dict(rec)
 
 
 def create_store(db_path: Union[str, Path, None] = ...) -> Store:  # type: ignore[assignment]

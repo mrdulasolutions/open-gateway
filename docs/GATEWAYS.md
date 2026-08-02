@@ -129,45 +129,65 @@ If you start public mode without a token, OpenGateway generates an ephemeral `og
 
 Prefer a private mesh over exposing the gateway to the open internet.
 
-### Option A — MagicDNS + bind on all interfaces
+### Why raw 100.x:PORT often fails
 
-1. Install Tailscale and join the same tailnet on every machine.
-2. Start OpenGateway in public mode (auth on):
+Many hosts allow LAN (`192.168.x`) but **firewall the Tailscale utun interface**.  
+Result: `http://100.x.x.x:8765` times out from other tailnet nodes even when LAN works.
+
+**Fix:** use **Tailscale Serve** → proxies `https://<magicdns>` → `http://127.0.0.1:8765`.
+
+Diagnose anytime:
 
 ```bash
-uv run opengateway serve --mode public --token "$OPENGATEWAY_AUTH_TOKEN"
+uv run opengateway doctor
+# or with a running hub:
+uv run opengateway doctor --url http://127.0.0.1:8765
+curl -s http://127.0.0.1:8765/v1/network | jq
 ```
 
-3. If `tailscale` CLI is available, OpenGateway auto-detects MagicDNS and may set:
+### Recommended — Tailscale Serve
+
+```bash
+export OPENGATEWAY_AUTH_TOKEN="$(openssl rand -hex 24)"
+
+# Binds 127.0.0.1 only (correct for Serve)
+uv run opengateway serve --mode serve --token "$OPENGATEWAY_AUTH_TOKEN"
+
+# Other terminal / once:
+tailscale serve --bg 8765
+```
+
+Remote clients use:
 
 ```text
-http://<hostname>.tailnet-xxxx.ts.net:8765
+https://<hostname>.tailnet-xxxx.ts.net
+Authorization: Bearer $OPENGATEWAY_AUTH_TOKEN
 ```
 
-4. Point remote agents / browsers at that URL + bearer token.
-
-### Option B — Tailscale Serve (HTTPS on the tailnet)
+Phone pair:
 
 ```bash
-# Gateway still listens locally
-uv run opengateway serve --mode internal --host 127.0.0.1 --port 8765
-
-# Expose only to the tailnet with TLS
-tailscale serve --bg 8765
-# or HTTPS path routing — see `tailscale serve --help`
+uv run opengateway pair --room durable-demo
+# open printed URL on phone (same tailnet)
 ```
 
-Then set:
+### Option B — LAN open bind (same Wi‑Fi only)
 
 ```bash
-export OPENGATEWAY_PUBLIC_URL="https://$(tailscale status --json | jq -r .Self.DNSName | sed 's/\.$//')"
+uv run opengateway serve --mode public --via open --network lan \
+  --token "$TOKEN" --public-url "http://192.168.x.x:8765"
 ```
 
-Serve still benefits from OpenGateway bearer auth as defense in depth (Tailscale authenticates devices; the token authenticates API clients).
+Works on LAN; **do not** expect raw Tailscale IP to work without firewall/serve changes.
 
 ### Option C — Funnel (public internet)
 
-Only if you intentionally want the open internet. Use a strong token, prefer HTTPS, and consider binding only via Funnel/Serve rather than raw `0.0.0.0` on a public IP.
+```bash
+uv run opengateway serve --mode funnel --token "$TOKEN"
+tailscale funnel --bg 8765
+```
+
+Only if you intentionally want the open internet. Strong token required.
 
 ## Registry API + UI cards
 
