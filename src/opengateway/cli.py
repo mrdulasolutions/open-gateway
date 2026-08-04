@@ -669,7 +669,17 @@ def chat(
 
     parsed = urlparse(base)
     scheme = "wss" if parsed.scheme == "https" else "ws"
+    from urllib.parse import quote
+
     ws_url = f"{scheme}://{parsed.netloc}/v1/rooms/{room_id}/ws?participant_id={pid}"
+    # Pass bearer the same way EventSource does when headers are awkward
+    tok = (
+        os.environ.get("OPENGATEWAY_AUTH_TOKEN")
+        or os.environ.get("OPENGATEWAY_TOKEN")
+        or ""
+    ).strip()
+    if tok:
+        ws_url += f"&token={quote(tok, safe='')}"
 
     async def run() -> None:
         async with websockets.connect(ws_url) as ws:

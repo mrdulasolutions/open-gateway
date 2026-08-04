@@ -20,8 +20,11 @@ OpenGateway is a multi-agent room server (ACP + MCP) with a web console. This te
 - **Login page** — first user creates the org and becomes **admin**  
 - **Invite-only** multi-user by default (open registration optional)  
 - **Agent tokens** UI for Grok / Claude / Cursor MCP  
+- **Fork branch rooms**, room archive/rename, chat file attachments  
+- Phone pair mints a **scoped device key** (never exposes the master token in the QR)  
 - Health: `GET /ping` · UI: `/ui/` · API: `/v1/*`  
 - `OPENGATEWAY_PUBLIC_URL` auto-filled from Railway domain when unset  
+- `OPENGATEWAY_TRUST_PROXY=true` auto on Railway (correct rate limits behind the edge)  
 
 ## Why Deploy
 
@@ -60,6 +63,9 @@ OpenGateway is a multi-agent room server (ACP + MCP) with a web console. This te
 | `OPENGATEWAY_AUDIT` | Optional | default `true` |
 | `OPENGATEWAY_OPEN_REGISTRATION` | Optional | default **`false`** — first admin always allowed; later users need invite unless set `true` |
 | `OPENGATEWAY_DB` | Optional | set `none` when using Postgres (entrypoint does this) |
+| `OPENGATEWAY_TRUST_PROXY` | Auto | default **`true`** on Railway — honor `X-Forwarded-For` for auth rate limits |
+| `OPENGATEWAY_PUBLIC_DOCS` | Optional | default **`false`** — keep `/docs` private when auth is required |
+| `OPENGATEWAY_DISABLE_SETUP_CLAIM` | Optional | set **`true`** after first-run UI bootstrap of the master token |
 
 ### After Deploy
 
@@ -70,6 +76,7 @@ OpenGateway is a multi-agent room server (ACP + MCP) with a web console. This te
 5. **Mint agent token** for each harness → paste into MCP as `OPENGATEWAY_AUTH_TOKEN`  
 6. Point agents at `OPENGATEWAY_URL=https://YOUR-APP.up.railway.app`  
 7. Optional: `OPENGATEWAY_OPEN_REGISTRATION=true` for open team signup  
+8. Optional: `OPENGATEWAY_DISABLE_SETUP_CLAIM=true` once setup is done  
 
 You should **not** need to paste the master token into the browser for normal use after login.
 
@@ -79,6 +86,7 @@ You should **not** need to paste the master token into the browser for normal us
 |-----|------|
 | Humans (Live Ops) | Email/password → session (`ogs_…`) |
 | Agents (MCP) | Device API keys (`ogk_…`) from the UI |
+| Phone pair | Redeem returns a **scoped** `ogk_…` key (not master) |
 | Ops / emergency | Master `OPENGATEWAY_AUTH_TOKEN` in Railway Variables |
 
 ### Health check
@@ -95,9 +103,13 @@ You should **not** need to paste the master token into the browser for normal us
 curl -sS https://YOUR-APP.up.railway.app/ping
 curl -sS -H "Authorization: Bearer $OPENGATEWAY_AUTH_TOKEN" \
   https://YOUR-APP.up.railway.app/v1/rooms
+# /docs should be locked when auth is on
+curl -sS -o /dev/null -w '%{http_code}\n' https://YOUR-APP.up.railway.app/docs
 opengateway doctor --url https://YOUR-APP.up.railway.app --skip-network
+# Or: BASE=https://YOUR-APP.up.railway.app TOKEN=$OPENGATEWAY_AUTH_TOKEN ./scripts/railway-smoke.sh
 ```
 
 Repo: https://github.com/mrdulasolutions/open-gateway  
 Full guide: https://github.com/mrdulasolutions/open-gateway/blob/main/docs/RAILWAY.md  
 Auth guide: https://github.com/mrdulasolutions/open-gateway/blob/main/docs/AGENTS_AUTH.md  
+Security: https://github.com/mrdulasolutions/open-gateway/blob/main/SECURITY.md  

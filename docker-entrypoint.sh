@@ -14,6 +14,16 @@ export OPENGATEWAY_AUDIT="${OPENGATEWAY_AUDIT:-true}"
 # Set OPENGATEWAY_OPEN_REGISTRATION=true for open team signup demos.
 export OPENGATEWAY_OPEN_REGISTRATION="${OPENGATEWAY_OPEN_REGISTRATION:-false}"
 
+# Railway (and most PaaS) terminate TLS and set X-Forwarded-For — honor it for
+# auth rate limits. Opt out with OPENGATEWAY_TRUST_PROXY=false if needed.
+if [ -z "${OPENGATEWAY_TRUST_PROXY+x}" ] || [ -z "$OPENGATEWAY_TRUST_PROXY" ]; then
+  if [ -n "$RAILWAY_ENVIRONMENT" ] || [ -n "$RAILWAY_PUBLIC_DOMAIN" ] || [ -n "$RAILWAY_PROJECT_ID" ]; then
+    export OPENGATEWAY_TRUST_PROXY=true
+  fi
+fi
+# OpenAPI/docs stay closed under auth unless explicitly enabled
+export OPENGATEWAY_PUBLIC_DOCS="${OPENGATEWAY_PUBLIC_DOCS:-false}"
+
 # Prefer managed Postgres (Railway template / plugin)
 # Railway refs: OPENGATEWAY_DATABASE_URL=${{Postgres.DATABASE_URL}} or DATABASE_URL
 if [ -n "$OPENGATEWAY_DATABASE_URL" ]; then
@@ -84,6 +94,8 @@ if [ "$_AUTH_FROM_ENV" = "1" ]; then
 fi
 
 echo "OpenGateway registration: OPENGATEWAY_OPEN_REGISTRATION=$OPENGATEWAY_OPEN_REGISTRATION"
+echo "OpenGateway trust_proxy: ${OPENGATEWAY_TRUST_PROXY:-false}"
+echo "OpenGateway public_docs: ${OPENGATEWAY_PUBLIC_DOCS:-false}"
 if [ -n "$OPENGATEWAY_PUBLIC_URL" ]; then
   echo "OpenGateway public_url: $OPENGATEWAY_PUBLIC_URL"
 else

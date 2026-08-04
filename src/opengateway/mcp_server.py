@@ -191,10 +191,88 @@ def create_room(
 
 
 @mcp.tool()
-def list_rooms() -> str:
-    """List all collaboration rooms on the gateway."""
+def list_rooms(include_archived: bool = False) -> str:
+    """List collaboration rooms on the gateway.
+
+    Args:
+        include_archived: When true, include archived rooms (default: active only).
+    """
+    params = {"include_archived": "true"} if include_archived else None
     with _client() as c:
-        return _dumps(_json(c.get("/v1/rooms")))
+        return _dumps(_json(c.get("/v1/rooms", params=params)))
+
+
+@mcp.tool()
+def update_room(
+    room_id: str,
+    name: str = "",
+    goal: str = "",
+    status: str = "",
+    actor: str = "",
+    announce: bool = True,
+) -> str:
+    """Rename, edit goal, or archive a room (id is stable across renames).
+
+    Args:
+        room_id: Room UUID (stable across renames).
+        name: New display name (leave empty to keep).
+        goal: New goal text (leave empty to keep).
+        status: open | active | paused | closed | archived (leave empty to keep).
+        actor: Who made the change (shown in system announce).
+        announce: Post a system message so long-poll agents see the change.
+    """
+    body: dict[str, Any] = {"announce": announce}
+    if name.strip():
+        body["name"] = name.strip()
+    if goal.strip():
+        body["goal"] = goal
+    if status.strip():
+        body["status"] = status.strip()
+    if actor.strip():
+        body["actor"] = actor.strip()
+    with _client() as c:
+        return _dumps(_json(c.patch(f"/v1/rooms/{room_id}", json=body)))
+
+
+@mcp.tool()
+def archive_room(room_id: str, actor: str = "") -> str:
+    """Archive a room (hidden from default list_rooms; id preserved)."""
+    params = {"actor": actor} if actor.strip() else None
+    with _client() as c:
+        return _dumps(
+            _json(c.post(f"/v1/rooms/{room_id}/archive", params=params or None))
+        )
+
+
+@mcp.tool()
+def unarchive_room(room_id: str, actor: str = "") -> str:
+    """Restore an archived room so it appears in list_rooms again."""
+    params = {"actor": actor} if actor.strip() else None
+    with _client() as c:
+        return _dumps(
+            _json(c.post(f"/v1/rooms/{room_id}/unarchive", params=params or None))
+        )
+
+
+def _start_radio_for(data: dict[str, Any], room_id: str) -> dict[str, Any]:
+    """Always-on radio after a successful join."""
+    from opengateway.radio import radio
+
+    pid = (data or {}).get("id") or (data or {}).get("participant_id")
+    name = (data or {}).get("name") or ""
+    if not pid:
+        return {"radio": "off", "reason": "join failed or missing participant id"}
+    return radio.start(
+        room_id=room_id,
+        participant_id=str(pid),
+        name=str(name),
+        base_url=os.environ.get("OPENGATEWAY_URL")
+        or os.environ.get("OPENGATEWAY_BASE_URL")
+        or "http://127.0.0.1:8765",
+        auth_token=os.environ.get("OPENGATEWAY_AUTH_TOKEN")
+        or os.environ.get("OPENGATEWAY_TOKEN")
+        or "",
+    )
 
 
 @mcp.tool()
@@ -205,8 +283,11 @@ def join_room(
     role: str = "contributor",
     capabilities: str = "",
     participant_id: str = "",
+    auto_listen: bool = True,
 ) -> str:
-    """Join a room. Save field `id` (aliased as `participant_id`) for post_message and other tools.
+    """Join a room and (by default) start always-on radio so you stay listening.
+
+    Save field `id` (aliased as `participant_id`) for post_message and other tools.
 
     Args:
         room_id: Room UUID from create_room or list_rooms.
@@ -215,8 +296,11 @@ def join_room(
         role: coordinator | contributor | reviewer | observer.
         capabilities: Comma-separated skills (e.g. 'python,testing,frontend').
         participant_id: Optional — rejoin with an existing id.
+        auto_listen: Default True — start background radio immediately.
     """
     caps = [c.strip() for c in capabilities.split(",") if c.strip()] if capabilities else []
+    if auto_listen and "listen" not in {c.lower() for c in caps}:
+        caps = [*caps, "listen", "radio"]
     body: dict[str, Any] = {
         "name": name or DEFAULT_AGENT_NAME or harness,
         "harness": harness,
@@ -230,14 +314,116 @@ def join_room(
         # Hub returns participant under `id`; alias for agents that expect participant_id.
         if isinstance(data, dict) and data.get("id") and "participant_id" not in data:
             data = {**data, "participant_id": data["id"]}
+        if auto_listen and isinstance(data, dict):
+            try:
+                data["radio"] = _start_radio_for(data, room_id)
+                data["hint"] = (
+                    "Use drain_inbox to read messages; post_message to reply. "
+                    "Or wait_for_messages loop."
+                )
+            except Exception as e:
+                data["radio"] = {"radio": "error", "detail": str(e)}
         return _dumps(data)
 
 
 @mcp.tool()
 def leave_room(room_id: str, participant_id: str) -> str:
-    """Leave a collaboration room."""
+    """Leave a collaboration room and stop always-on radio for this participant."""
+    try:
+        from opengateway.radio import radio
+
+        radio.stop(room_id=room_id, participant_id=participant_id)
+    except Exception:
+        pass
     with _client() as c:
-        return _dumps(_json(c.post(f"/v1/rooms/{room_id}/leave", params={"participant_id": participant_id})))
+        data = _json(
+            c.post(
+                f"/v1/rooms/{room_id}/leave",
+                params={"participant_id": participant_id},
+            )
+        )
+        if isinstance(data, dict):
+            data["radio"] = "stopped"
+        return _dumps(data)
+
+
+@mcp.tool()
+def drain_inbox(
+    room_id: str = "",
+    participant_id: str = "",
+    limit: int = 50,
+) -> str:
+    """Read messages buffered by always-on radio (non-blocking).
+
+    Prefer this after join_room(auto_listen=true) while you code.
+    Check message.attachments[] for file ids.
+
+    Args:
+        room_id: Optional filter to one room.
+        participant_id: Optional filter to one seat.
+        limit: Max messages to return.
+    """
+    from opengateway.radio import radio
+
+    return _dumps(
+        radio.drain_inbox(
+            room_id=room_id or "",
+            participant_id=participant_id or "",
+            max_items=limit,
+        )
+    )
+
+
+@mcp.tool()
+def create_fork(
+    room_id: str,
+    root_message_id: str,
+    created_by: str,
+    title: str = "",
+    note: str = "",
+    created_by_name: str = "",
+    context_messages: int = 15,
+    join_creator: bool = True,
+) -> str:
+    """Fork a message into a new branch room. Returns fork with forked_room_id.
+
+    Args:
+        room_id: Parent room UUID.
+        root_message_id: Message to fork from.
+        created_by: Your participant id.
+        title: Branch room title.
+        note: Optional note shown in the branch banner.
+        created_by_name: Display name for the creator seat.
+        context_messages: Prior messages to copy into the branch (0–100).
+        join_creator: Auto-join creator into the forked room.
+    """
+    body: dict[str, Any] = {
+        "root_message_id": root_message_id,
+        "created_by": created_by,
+        "context_messages": max(0, min(int(context_messages), 100)),
+        "join_creator": join_creator,
+    }
+    if title.strip():
+        body["title"] = title.strip()
+    if note.strip():
+        body["note"] = note.strip()
+    if created_by_name.strip():
+        body["created_by_name"] = created_by_name.strip()
+    with _client() as c:
+        data = _json(c.post(f"/v1/rooms/{room_id}/forks", json=body))
+        if isinstance(data, dict) and data.get("forked_room_id"):
+            data["hint"] = (
+                f"Open forked chat: join_room(room_id={data['forked_room_id']!r}) "
+                "then continue the discussion there."
+            )
+        return _dumps(data)
+
+
+@mcp.tool()
+def list_forks(room_id: str) -> str:
+    """List conversation forks from a room. Open each via forked_room_id."""
+    with _client() as c:
+        return _dumps(_json(c.get(f"/v1/rooms/{room_id}/forks")))
 
 
 @mcp.tool()

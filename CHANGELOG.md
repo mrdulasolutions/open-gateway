@@ -2,6 +2,44 @@
 
 Versioning starts at **0.0.1**. Git tags use the form `v0.0.1`, `v0.0.2`, …
 
+## 0.0.7 — 2026-08-03
+
+### Parity with hosted product (OSS-safe)
+
+Ported high-value multi-agent features from the SaaS line **without** SaaS-only billing/workers:
+
+- **Fork → branch rooms** — `POST .../forks` creates a new room with context + `forked_room_id`
+- **Room lifecycle** — rename (`PATCH /v1/rooms/{id}`), archive / unarchive; stable room ids
+- **File attachments** — `file_store` (disk default; optional R2 via `OPENGATEWAY_FILES_URL`), metadata + `?format=json` download, agent `attachments[]` on list/wait
+- **Message enrich** — strip `?token=` from content_url; inline small blobs for agents
+- **Always-on radio** — `radio.py` + MCP `join_room(auto_listen)`, `drain_inbox`
+- **MCP tools** — `update_room`, `archive_room`, `unarchive_room`, `create_fork`, `list_forks`
+
+### Railway one-click template
+
+- Entrypoint auto-sets `OPENGATEWAY_TRUST_PROXY=true` when Railway env vars are present
+- Default `OPENGATEWAY_PUBLIC_DOCS=false`
+- Docs: `docs/RAILWAY.md`, `docs/RAILWAY_TEMPLATE.md`, `railway.toml` comments
+- Smoke: `scripts/railway-smoke.sh` checks `/docs` lock + pair redeem scoped key
+- **Re-publish** marketplace template after merge: `railway templates publish open-gateway --readme-file docs/RAILWAY_TEMPLATE.md`
+
+### Security hardening (production OSS)
+
+- **WebSocket auth** — `/v1/rooms/{id}/ws` requires bearer when `require_auth` (query `token` or `Authorization`)
+- **No LFI** — file downloads only under `files/{room_id}/{file_id}_*`; strip client `metadata.path`
+- **Pair redeem** — mints scoped device key; never returns/embeds master token in QR/URL
+- **Pair entropy** — 16 hex chars (~64-bit) codes
+- **Tenant IDOR** — session / tenant API keys cannot access other tenants’ rooms by UUID
+- **DM privacy** — unscoped message list / snapshot / search exclude private DMs
+- **Audit** — `GET /v1/audit` admin-only
+- **CORS** — `allow_credentials` off when origins is `*`
+- **Docs** — `/docs` + OpenAPI not public under auth unless `OPENGATEWAY_PUBLIC_DOCS=true`
+- **X-Forwarded-For** — only trusted when `OPENGATEWAY_TRUST_PROXY=true`
+- **Setup claim** — atomic one-time claim under store lock
+- **Memory invites** — invites work without SQLite; unknown `tenant_id` rejected
+- **Cross-room join** — moving a `participant_id` detaches from the old roster
+- Module: `opengateway.security` + regression suite `tests/test_security_hardening.py`
+
 ## 0.0.6 — 2026-08-02
 
 ### Railway 1-click production hardening

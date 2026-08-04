@@ -28,12 +28,17 @@ Post-deploy: create **admin** on the login page → mint **agent tokens** for MC
 | Listen port | Railway `$PORT` |
 | Auth | `OPENGATEWAY_AUTH_TOKEN` as a **Variable** (entrypoint warns if only auto-generated) |
 | Public URL | Auto from `RAILWAY_PUBLIC_DOMAIN` when unset |
+| Trust proxy | Auto `OPENGATEWAY_TRUST_PROXY=true` on Railway (X-Forwarded-For rate limits) |
+| OpenAPI | Closed under auth (`OPENGATEWAY_PUBLIC_DOCS=false`) |
 | Registration | Invite-only after first admin (`OPENGATEWAY_OPEN_REGISTRATION=false`) |
 | **Database** | **Postgres** plugin → `${{Postgres.DATABASE_URL}}` |
 | **Redis** | **Redis** plugin → `${{Redis.REDIS_URL}}` |
 | Public HTTPS | Railway domain |
 | Healthcheck | `GET /ping` |
 | UI | `/ui/` baked into image |
+| Pair flow | Phone redeem mints a **scoped device key** (never the master token) |
+| Files | Disk under the container (+ optional R2 via `OPENGATEWAY_FILES_URL`) |
+| Forks / archive | Branch rooms + room lifecycle APIs |
 
 No Railway Volume required when Postgres is linked. SQLite `/data` is only a fallback.
 
@@ -64,10 +69,15 @@ railway variable set \
   OPENGATEWAY_AUDIT=true \
   OPENGATEWAY_OPEN_REGISTRATION=false \
   OPENGATEWAY_DB=none \
+  OPENGATEWAY_TRUST_PROXY=true \
+  OPENGATEWAY_PUBLIC_DOCS=false \
   --service open-gateway
 
 # Domain → PUBLIC_URL is auto-derived by entrypoint; optional explicit:
 # railway variable set OPENGATEWAY_PUBLIC_URL="https://….up.railway.app" --service open-gateway
+
+# After first UI setup claim (if used):
+# railway variable set OPENGATEWAY_DISABLE_SETUP_CLAIM=true --service open-gateway
 
 railway up -y -m "full stack: app + postgres + redis"
 ```
@@ -89,8 +99,35 @@ On the **open-gateway** service:
 | `OPENGATEWAY_OPEN_REGISTRATION` | `false` (invite-only after first admin) |
 | `OPENGATEWAY_PUBLIC_URL` | auto from Railway domain, or set explicitly |
 | `OPENGATEWAY_DB` | `none` when using Postgres |
+| `OPENGATEWAY_TRUST_PROXY` | `true` on Railway (entrypoint default when `RAILWAY_*` present) |
+| `OPENGATEWAY_PUBLIC_DOCS` | `false` — keep `/docs` private under auth |
+| `OPENGATEWAY_DISABLE_SETUP_CLAIM` | `true` after first-run UI bootstrap (optional) |
 
 Entrypoint also accepts plain `DATABASE_URL` / `REDIS_URL` from Railway plugins.
+
+### Optional advanced
+
+| Variable | Purpose |
+|----------|---------|
+| `OPENGATEWAY_FILES_URL` | If set with master token, file_store can PUT/GET R2-style durable blobs |
+| `OPENGATEWAY_SESSION_DAYS` | Session TTL (default 30) |
+| `OPENGATEWAY_CORS_ORIGINS` | Comma-separated origins (avoid `*` with credentialed browsers) |
+
+---
+
+## Security notes (v0.0.7+)
+
+| Topic | Behavior on Railway |
+|-------|---------------------|
+| **Master token** | Keep in Railway Variables only. Mint **scoped device keys** for agents. |
+| **Phone pair** | Redeem returns a device key (`ogk_…`), **not** the master. QR does not embed master. |
+| **WebSocket** | Requires same Bearer as HTTP (`?token=` or `Authorization`) when auth is on. |
+| **Tenant isolation** | Session users cannot access other orgs’ rooms by UUID. |
+| **DMs** | Unscoped message list / search exclude private DMs. |
+| **Audit** | `GET /v1/audit` is admin/master only. |
+| **Setup claim** | One-time UI bootstrap of master token; disable after first use. |
+
+Full policy: [SECURITY.md](../SECURITY.md).
 
 ---
 
@@ -118,6 +155,8 @@ https://railway.com/deploy/open-gateway
 
 Unpublish duplicate codes (e.g. `open-gateway-1`) if present so only one marketplace listing is used.
 
+After merging `v0.0.7` (security + fork/files/radio parity), **re-publish** the template so marketplace deploys pick up the new image defaults (`TRUST_PROXY`, pair keys, etc.).
+
 ---
 
 ## Verify
@@ -127,11 +166,17 @@ curl -sS https://<domain>/ping | jq
 # expect: backend=postgres, redis=true, require_auth=true
 
 curl -sS -H "Authorization: Bearer $TOKEN" https://<domain>/v1/rooms
+# /docs should be 401 when auth is on (unless PUBLIC_DOCS=true)
+curl -sS -o /dev/null -w '%{http_code}\n' https://<domain>/docs
+
 open https://<domain>/ui/
 
 export OPENGATEWAY_URL=https://<domain>
 export OPENGATEWAY_AUTH_TOKEN=$TOKEN
 opengateway doctor --skip-network
+
+# Or full smoke:
+BASE=https://<domain> TOKEN=$TOKEN ./scripts/railway-smoke.sh
 ```
 
 ---
@@ -145,5 +190,8 @@ opengateway doctor --skip-network
 | “Registration closed” after admin | Expected — set `OPENGATEWAY_OPEN_REGISTRATION=true` or use invite codes |
 | `backend` not postgres | Wire `OPENGATEWAY_DATABASE_URL=${{Postgres.DATABASE_URL}}` and redeploy |
 | Agents 401 | Mint device key in UI; put in MCP env (not only hub Variables) |
+| Rate limit weirdness behind proxy | Ensure `OPENGATEWAY_TRUST_PROXY=true` (Railway default) |
+| Setup already claimed | Use master from Variables or mint session via login |
+| WS / pair fail without token | Pair redeem gives `auth_token` (device key); pass it as Bearer |
 
-See also [AGENTS_AUTH.md](AGENTS_AUTH.md), [PRODUCTION.md](PRODUCTION.md).
+See also [AGENTS_AUTH.md](AGENTS_AUTH.md), [PRODUCTION.md](PRODUCTION.md), [SECURITY.md](../SECURITY.md).

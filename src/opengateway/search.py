@@ -109,6 +109,9 @@ async def global_search(
     *,
     limit: int = 40,
     room_id: Optional[str] = None,
+    tenant_id: Optional[str] = None,
+    include_dms: bool = False,
+    for_participant: Optional[str] = None,
 ) -> dict[str, Any]:
     raw = (query or "").strip()
     q, type_filter = _parse_query(raw)
@@ -118,9 +121,12 @@ async def global_search(
 
     # type-only query (e.g. "type:task") — list recent of that type
     search_q = q if q else raw
-    rooms = await store.list_rooms()
+    rooms = await store.list_rooms(tenant_id=tenant_id)
     if room_id:
         rooms = [r for r in rooms if r.id == room_id]
+    # Tenant-scoped callers: hide legacy null-tenant rooms
+    if tenant_id is not None:
+        rooms = [r for r in rooms if r.tenant_id == tenant_id]
 
     def _want(t: str) -> bool:
         return type_filter is None or type_filter == t
@@ -164,13 +170,27 @@ async def global_search(
                         }
                     )
 
-        # Room messages vs private DMs — distinct types for search filters
-        if _want("message") or _want("dm"):
-            for m in await store.list_messages(room.id, limit=300):
+        # Room messages vs private DMs — DMs only when explicitly allowed for a participant
+        if _want("message") or (_want("dm") and (include_dms or for_participant)):
+            msgs = await store.list_messages(
+                room.id,
+                limit=300,
+                for_participant=for_participant,
+                include_dms=bool(include_dms and not for_participant),
+            )
+            for m in msgs:
                 text = m.message.text() if hasattr(m.message, "text") else ""
                 is_dm = bool(m.to_participant_id)
                 kind = "dm" if is_dm else "message"
                 if not _want(kind):
+                    continue
+                # Never surface foreign DMs
+                if is_dm and for_participant and not (
+                    m.to_participant_id == for_participant
+                    or m.from_participant_id == for_participant
+                ):
+                    continue
+                if is_dm and not for_participant and not include_dms:
                     continue
                 sc = _score(search_q, text, m.from_name, "dm" if is_dm else "room")
                 # type-only listing
@@ -281,7 +301,11 @@ async def global_search(
                             "title": f.title,
                             "subtitle": f"Fork · {room.name}",
                             "room_id": room.id,
-                            "path": f"/ui/#room={room.id}&msg={f.root_message_id}",
+                            "path": (
+                                f"/ui/#room={f.forked_room_id}"
+                                if f.forked_room_id
+                                else f"/ui/#room={room.id}&msg={f.root_message_id}"
+                            ),
                         }
                     )
 

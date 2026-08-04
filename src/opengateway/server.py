@@ -39,6 +39,16 @@ from opengateway.auth import (
 )
 from opengateway.config import GatewayConfig, load_gateway_config, local_ips, network_ui_label
 from opengateway.redis_bus import try_create_bus
+from opengateway.security import (
+    cors_credentials_for_origins,
+    is_admin_principal,
+    resolve_auth,
+    resolve_room_file_path,
+    room_visible_to,
+    safe_upload_filename,
+    tenant_must_isolate,
+    token_from_websocket,
+)
 from opengateway.models import (
     AgentManifest,
     AgentsListResponse,
@@ -51,8 +61,10 @@ from opengateway.models import (
     Fork,
     GatewayEvent,
     GatewayRecord,
+    Harness,
     JoinRoomRequest,
     Message,
+    MessagePart,
     Participant,
     ParticipantStatus,
     PostMessageRequest,
@@ -61,6 +73,7 @@ from opengateway.models import (
     RegisteredAgent,
     Room,
     RoomMessage,
+    RoomStatus,
     Run,
     RunCreateRequest,
     RunStatus,
@@ -68,6 +81,7 @@ from opengateway.models import (
     Task,
     TaskStatus,
     UpdateParticipantRequest,
+    UpdateRoomRequest,
     UpdateTaskRequest,
     new_id,
     text_message,
@@ -176,7 +190,8 @@ def create_app(
     app.add_middleware(
         CORSMiddleware,
         allow_origins=cfg.allow_origins,
-        allow_credentials=True,
+        # Browsers reject credentials with origin *; never enable both
+        allow_credentials=cors_credentials_for_origins(cfg.allow_origins),
         allow_methods=["*"],
         allow_headers=["*"],
     )
@@ -186,6 +201,38 @@ def create_app(
 
     app.state.store = st
     app.state.gateway_config = cfg
+
+    def _auth_ctx(request: Request) -> dict[str, Any]:
+        return {
+            "auth_kind": getattr(request.state, "auth_kind", None),
+            "auth_scopes": getattr(request.state, "auth_scopes", None) or [],
+            "tenant_id": getattr(request.state, "tenant_id", None),
+            "user": getattr(request.state, "user", None),
+            "api_key": getattr(request.state, "api_key", None),
+        }
+
+    async def _require_room(request: Request, room_id: str) -> Room:
+        """Load room or 404; enforce tenant isolation for session/tenant API keys."""
+        room = await st.get_room(room_id)
+        if not room or not room_visible_to(room, _auth_ctx(request)):
+            raise HTTPException(status_code=404, detail="Room not found")
+        return room
+
+    def _require_admin(request: Request) -> None:
+        if not is_admin_principal(_auth_ctx(request)):
+            # Master / admin scope / session admin only
+            user = getattr(request.state, "user", None)
+            if getattr(request.state, "auth_kind", None) == "master":
+                return
+            if user and user.get("role") == "admin":
+                return
+            scopes = getattr(request.state, "auth_scopes", None) or []
+            if "admin" in scopes:
+                return
+            # Internal mode without auth: allow
+            if not cfg.require_auth:
+                return
+            raise HTTPException(status_code=403, detail="Admin only")
 
     # ── Health / meta ──────────────────────────────────────────────────────
 
@@ -294,14 +341,21 @@ def create_app(
             body = {}
         if not isinstance(body, dict):
             body = {}
-        tenant_id = (user or {}).get("tenant_id") or body.get("tenant_id")
+        # Session admins may only invite into their own tenant
+        if user and user.get("tenant_id"):
+            tenant_id = user["tenant_id"]
+        else:
+            tenant_id = body.get("tenant_id")
         if not tenant_id:
             raise HTTPException(status_code=400, detail="tenant_id required")
-        inv = await st.create_invite(
-            tenant_id=str(tenant_id),
-            created_by=(user or {}).get("email") or "admin",
-            role=str(body.get("role") or "member"),
-        )
+        try:
+            inv = await st.create_invite(
+                tenant_id=str(tenant_id),
+                created_by=(user or {}).get("email") or "admin",
+                role=str(body.get("role") or "member"),
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
         return inv
 
     @app.get("/v1/setup")
@@ -363,14 +417,13 @@ def create_app(
             raise HTTPException(status_code=403, detail="Setup claim disabled on this gateway")
         if not cfg.require_auth or not cfg.auth_token:
             raise HTTPException(status_code=400, detail="Gateway does not require / have a master token")
-        if st.get_meta("setup_claimed") == "1":
+        won = await st.claim_setup()
+        if not won:
             record_auth_failure(ip)
             raise HTTPException(
                 status_code=410,
                 detail="Setup already claimed — use Railway Variables OPENGATEWAY_AUTH_TOKEN",
             )
-        st.set_meta("setup_claimed", "1")
-        st.set_meta("setup_claimed_at", __import__("opengateway.models", fromlist=["utcnow"]).utcnow().isoformat())
         await st.audit(
             "setup.claim",
             ip=ip,
@@ -384,8 +437,9 @@ def create_app(
         }
 
     @app.post("/v1/setup/reset")
-    async def setup_reset() -> dict[str, Any]:
+    async def setup_reset(request: Request) -> dict[str, Any]:
         """Admin: re-enable one-time UI claim (requires master/admin Bearer)."""
+        _require_admin(request)
         st.set_meta("setup_claimed", "0")
         if st.get_meta("setup_claimed_at"):
             st.set_meta("setup_claimed_at", "")
@@ -393,12 +447,14 @@ def create_app(
 
     @app.get("/v1/audit")
     async def list_audit(
+        request: Request,
         limit: int = Query(100, ge=1, le=500),
         action: Optional[str] = Query(None),
         room_id: Optional[str] = Query(None),
         since_id: Optional[int] = Query(None),
     ) -> dict[str, Any]:
-        """Append-only audit trail (enabled for public/auth gateways by default)."""
+        """Append-only audit trail — admin / master only."""
+        _require_admin(request)
         if not st._audit_enabled:
             raise HTTPException(
                 status_code=404,
@@ -609,11 +665,10 @@ def create_app(
         return cfg.base_url.rstrip("/")
 
     def _build_pair_url(base: str, code: str, room: Optional[str]) -> str:
+        # Never embed master token in QR/URL (redeem mints a scoped device key)
         pair_url = f"{base.rstrip('/')}/ui/#pair={code}"
         if room:
             pair_url += f"&room={room}"
-        if cfg.require_auth and cfg.auth_token:
-            pair_url += f"&token={cfg.auth_token}"
         return pair_url
 
     @app.post("/v1/pair")
@@ -700,7 +755,7 @@ def create_app(
         name = str(body.get("name") or body.get("label") or "mobile").strip() or "mobile"
         # Normalize multi-word mobile names (spaces OK)
         name = " ".join(name.split()) or "mobile"
-        if not code or len(code) > 16:
+        if not code or len(code) > 32:
             record_auth_failure(ip)
             raise HTTPException(status_code=404, detail="Invalid or expired pair code")
         rec = await st.redeem_pair_code(code)
@@ -708,6 +763,21 @@ def create_app(
             record_auth_failure(ip)
             raise HTTPException(status_code=404, detail="Invalid or expired pair code")
         clear_auth_failures(ip)
+        # Mint a scoped device key — never hand out the master token
+        device_token: Optional[str] = None
+        if cfg.require_auth:
+            key = await st.create_api_key(
+                name=f"pair-{name}"[:48],
+                scopes=["read", "write", "pair", "push"],
+                role="contributor",
+                device_label=name,
+                metadata={
+                    "via": "pair",
+                    "room_id": rec.get("room_id"),
+                    "pair_label": rec.get("label") or name,
+                },
+            )
+            device_token = key.get("token")
         return {
             "ok": True,
             "code": rec["code"],
@@ -715,14 +785,12 @@ def create_app(
             "label": rec.get("label") or name,
             "suggested_name": name,
             "harness": "mobile",
-            # Prefer request origin path when possible; clients on MagicDNS stay there
             "base_url": cfg.base_url,
             "require_auth": cfg.require_auth,
-            # Trusted pair: return token so phone can call API without manual paste
-            # (short-lived pair link; rotate gateway token if a QR is shared broadly)
-            "auth_token": cfg.auth_token if cfg.require_auth else None,
+            "auth_token": device_token,
             "auth_hint": (
-                "Use returned auth_token as Authorization: Bearer …"
+                "Use returned auth_token as Authorization: Bearer … "
+                "(scoped device key — not the master token)"
                 if cfg.require_auth
                 else None
             ),
@@ -822,12 +890,26 @@ def create_app(
 
     @app.get("/v1/search")
     async def search(
+        request: Request,
         q: str = Query("", min_length=0),
         limit: int = Query(40, ge=1, le=100),
         room_id: Optional[str] = None,
+        for_participant: Optional[str] = None,
     ) -> dict[str, Any]:
-        """Predictive global search across rooms, people, messages, tasks, bookmarks, forks."""
-        return await global_search(st, q, limit=limit, room_id=room_id)
+        """Predictive global search — tenant-scoped; DMs only for for_participant."""
+        auth = _auth_ctx(request)
+        tenant_id = auth.get("tenant_id") if tenant_must_isolate(auth) else None
+        if room_id:
+            await _require_room(request, room_id)
+        return await global_search(
+            st,
+            q,
+            limit=limit,
+            room_id=room_id,
+            tenant_id=tenant_id,
+            for_participant=for_participant,
+            include_dms=False,
+        )
 
     web_dir = _find_web_dir()
     if web_dir is not None:
@@ -965,33 +1047,99 @@ def create_app(
         return await st.create_room(room)
 
     @app.get("/v1/rooms")
-    async def list_rooms(request: Request) -> dict[str, Any]:
-        tenant_id = _request_tenant_id(request)
-        # Master / device keys without tenant see all; session users filtered
+    async def list_rooms(
+        request: Request,
+        include_archived: bool = Query(False),
+    ) -> dict[str, Any]:
+        auth = _auth_ctx(request)
+        tenant_id = auth.get("tenant_id") if tenant_must_isolate(auth) else None
         rooms = await st.list_rooms(
-            tenant_id=tenant_id if getattr(request.state, "auth_kind", None) == "session" else None
+            tenant_id=tenant_id, include_archived=include_archived
         )
         return {"rooms": [r.model_dump(mode="json") for r in rooms]}
 
     @app.get("/v1/rooms/{room_id}", response_model=Room)
-    async def get_room(room_id: str) -> Room:
-        room = await st.get_room(room_id)
-        if not room:
-            raise HTTPException(status_code=404, detail="Room not found")
-        return room
+    async def get_room(request: Request, room_id: str) -> Room:
+        return await _require_room(request, room_id)
+
+    @app.patch("/v1/rooms/{room_id}", response_model=Room)
+    async def update_room(
+        request: Request, room_id: str, body: UpdateRoomRequest
+    ) -> Room:
+        """Rename, edit goal, or archive/unarchive a room (id stays stable)."""
+        await _require_room(request, room_id)
+        try:
+            return await st.patch_room(
+                room_id,
+                name=body.name,
+                goal=body.goal,
+                project_path=body.project_path,
+                status=body.status,
+                metadata=body.metadata,
+                actor=(body.actor or "system").strip() or "system",
+                announce=body.announce,
+            )
+        except KeyError as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+
+    @app.post("/v1/rooms/{room_id}/archive", response_model=Room)
+    async def archive_room(
+        request: Request,
+        room_id: str,
+        actor: Optional[str] = Query(None),
+    ) -> Room:
+        """Archive a room (hidden from default list; id preserved)."""
+        await _require_room(request, room_id)
+        try:
+            return await st.patch_room(
+                room_id,
+                status=RoomStatus.ARCHIVED,
+                actor=(actor or "system").strip() or "system",
+                announce=True,
+            )
+        except KeyError as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+
+    @app.post("/v1/rooms/{room_id}/unarchive", response_model=Room)
+    async def unarchive_room(
+        request: Request,
+        room_id: str,
+        actor: Optional[str] = Query(None),
+    ) -> Room:
+        """Restore an archived room to open."""
+        await _require_room(request, room_id)
+        try:
+            return await st.patch_room(
+                room_id,
+                status=RoomStatus.OPEN,
+                actor=(actor or "system").strip() or "system",
+                announce=True,
+            )
+        except KeyError as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
 
     @app.post("/v1/rooms/{room_id}/join", response_model=Participant)
-    async def join_room(room_id: str, body: JoinRoomRequest) -> Participant:
-        if not await st.get_room(room_id):
-            raise HTTPException(status_code=404, detail="Room not found")
+    async def join_room(request: Request, room_id: str, body: JoinRoomRequest) -> Participant:
+        await _require_room(request, room_id)
         name = (body.name or "").strip() or "agent"
-        # 1) Explicit id always wins (stable client session)
+        meta = dict(body.metadata or {})
+        user = getattr(request.state, "user", None)
+        if user and user.get("user_id"):
+            meta.setdefault("user_id", user["user_id"])
+        elif user and user.get("id"):
+            meta.setdefault("user_id", user["id"])
+        # 1) Explicit id always wins (stable client session) — same room only
         if body.participant_id and (existing := await st.get_participant(body.participant_id)):
+            if existing.room_id and existing.room_id != room_id:
+                # Moving seats is allowed but old roster is cleaned in store.join_room
+                pass
             existing.name = name
             existing.harness = body.harness
             existing.role = body.role
             existing.capabilities = body.capabilities
-            existing.metadata = {**existing.metadata, **body.metadata}
+            existing.metadata = {**existing.metadata, **meta}
             return await st.join_room(room_id, existing)
         # 2) Reuse same name+harness seat (kills ghost duplicates on leave/rejoin)
         twin = st.find_participant_by_identity(room_id, name, body.harness.value)
@@ -1000,26 +1148,26 @@ def create_app(
             twin.harness = body.harness
             twin.role = body.role
             twin.capabilities = body.capabilities or twin.capabilities
-            twin.metadata = {**twin.metadata, **body.metadata}
+            twin.metadata = {**twin.metadata, **meta}
             return await st.join_room(room_id, twin)
         participant = Participant(
             name=name,
             harness=body.harness,
             role=body.role,
             capabilities=body.capabilities,
-            metadata=body.metadata,
+            metadata=meta,
         )
         return await st.join_room(room_id, participant)
 
     @app.patch("/v1/rooms/{room_id}/participants/{participant_id}", response_model=Participant)
     async def update_participant(
+        request: Request,
         room_id: str,
         participant_id: str,
         body: UpdateParticipantRequest,
     ) -> Participant:
         """Rename or patch a participant without creating a new one."""
-        if not await st.get_room(room_id):
-            raise HTTPException(status_code=404, detail="Room not found")
+        await _require_room(request, room_id)
         p = await st.get_participant(participant_id)
         if not p or p.room_id != room_id:
             raise HTTPException(status_code=404, detail="Participant not found in room")
@@ -1036,7 +1184,10 @@ def create_app(
         return updated
 
     @app.post("/v1/rooms/{room_id}/leave")
-    async def leave_room(room_id: str, participant_id: str = Query(...)) -> dict[str, str]:
+    async def leave_room(
+        request: Request, room_id: str, participant_id: str = Query(...)
+    ) -> dict[str, str]:
+        await _require_room(request, room_id)
         result = await st.leave_room(room_id, participant_id)
         if not result:
             raise HTTPException(status_code=404, detail="Room or participant not found")
@@ -1053,9 +1204,8 @@ def create_app(
         return sorted(people, key=key)
 
     @app.get("/v1/rooms/{room_id}/participants")
-    async def list_participants(room_id: str) -> dict[str, Any]:
-        if not await st.get_room(room_id):
-            raise HTTPException(status_code=404, detail="Room not found")
+    async def list_participants(request: Request, room_id: str) -> dict[str, Any]:
+        await _require_room(request, room_id)
         people = _sort_participants(await st.list_participants(room_id))
         return {"participants": [p.model_dump(mode="json") for p in people]}
 
@@ -1107,84 +1257,340 @@ def create_app(
     files_root = Path.home() / ".opengateway" / "files"
     files_root.mkdir(parents=True, exist_ok=True)
 
+    def _guess_content_type(filename: str, declared: Optional[str]) -> str:
+        import mimetypes
+
+        if declared and declared != "application/octet-stream":
+            return declared
+        guessed, _ = mimetypes.guess_type(filename)
+        return guessed or declared or "application/octet-stream"
+
     @app.post("/v1/rooms/{room_id}/files")
     async def upload_room_file(
+        request: Request,
         room_id: str,
         shared_by: str = Form(...),
         file: UploadFile = File(...),
     ) -> Artifact:
-        """Upload a file into the room as an artifact (for chat attachments)."""
-        if not await st.get_room(room_id):
-            raise HTTPException(status_code=404, detail="Room not found")
+        """Upload a chat/file attachment (humans + agents).
+
+        Small files may include inline content for agents; larger files use disk
+        (and optional R2 when OPENGATEWAY_FILES_URL is configured).
+        """
+        from opengateway.file_store import (
+            FILE_MAX_BYTES,
+            artifact_meta,
+            put_blob,
+        )
+
+        await _require_room(request, room_id)
         if not await st.get_participant(shared_by):
             raise HTTPException(status_code=400, detail="Unknown shared_by participant")
         raw = await file.read()
-        if len(raw) > 25 * 1024 * 1024:
-            raise HTTPException(status_code=400, detail="File too large (max 25MB)")
-        safe_name = Path(file.filename or "upload.bin").name
+        if len(raw) > FILE_MAX_BYTES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"File too large (max {FILE_MAX_BYTES // (1024 * 1024)}MB)",
+            )
+        safe_name = safe_upload_filename(file.filename)
         art_id = str(uuid.uuid4())
-        dest_dir = files_root / room_id
-        dest_dir.mkdir(parents=True, exist_ok=True)
-        dest = dest_dir / f"{art_id}_{safe_name}"
-        dest.write_bytes(raw)
-        content_type = file.content_type or "application/octet-stream"
-        # Small text files also store inline for agents without download
-        inline: Optional[str] = None
-        encoding = "plain"
-        if content_type.startswith("text/") and len(raw) < 200_000:
+        content_type = _guess_content_type(safe_name, file.content_type)
+        try:
+            blob = put_blob(
+                room_id=room_id,
+                file_id=art_id,
+                filename=safe_name,
+                raw=raw,
+                content_type=content_type,
+                files_root=files_root,
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+
+        # Defense in depth: only allow metadata paths under files_root
+        meta = artifact_meta(blob, content_type)
+        if meta.get("path"):
             try:
-                inline = raw.decode("utf-8")
-            except UnicodeDecodeError:
-                inline = base64.b64encode(raw).decode("ascii")
-                encoding = "base64"
-        elif len(raw) < 400_000:
-            inline = base64.b64encode(raw).decode("ascii")
-            encoding = "base64"
+                p = Path(str(meta["path"])).resolve()
+                root = files_root.resolve()
+                if not (str(p).startswith(str(root) + "/") or p.parent == root):
+                    meta.pop("path", None)
+            except Exception:
+                meta.pop("path", None)
 
         artifact = Artifact(
             id=art_id,
             room_id=room_id,
             name=safe_name,
             content_type=content_type,
-            content=inline,
+            content=blob.inline_content,
             content_url=f"/v1/rooms/{room_id}/files/{art_id}/download",
-            content_encoding=encoding if inline else "plain",
+            content_encoding=blob.content_encoding if blob.inline_content else "plain",
             shared_by=shared_by,
-            description=f"Chat attachment ({len(raw)} bytes)",
-            metadata={"bytes": len(raw), "path": str(dest)},
+            description=f"Chat attachment ({blob.bytes} bytes, storage={blob.storage})",
+            metadata=meta,
         )
-        return await st.share_artifact(artifact)
+        saved = await st.share_artifact(artifact)
+        await st.audit(
+            "file.upload",
+            actor=shared_by,
+            room_id=room_id,
+            resource_type="file",
+            resource_id=art_id,
+            detail={
+                "bytes": blob.bytes,
+                "storage": blob.storage,
+                "durable": blob.durable,
+                "name": safe_name,
+            },
+        )
+        # Never echo multi-MB base64 back to the browser
+        if saved.content and len(saved.content) > 80_000:
+            saved = saved.model_copy(
+                update={"content": None, "content_encoding": "plain"}
+            )
+        return saved
 
-    @app.get("/v1/rooms/{room_id}/files/{file_id}/download")
-    async def download_room_file(room_id: str, file_id: str) -> FileResponse:
+    @app.get("/v1/rooms/{room_id}/files/{file_id}")
+    async def file_metadata(
+        request: Request, room_id: str, file_id: str
+    ) -> dict[str, Any]:
+        """Metadata only (agent-friendly; no body)."""
+        await _require_room(request, room_id)
         arts = await st.list_artifacts(room_id)
         art = next((a for a in arts if a.id == file_id), None)
         if not art:
             raise HTTPException(status_code=404, detail="File not found")
-        path = (art.metadata or {}).get("path")
-        if not path or not Path(path).is_file():
-            # fallback: reconstruct from known layout
-            matches = list((files_root / room_id).glob(f"{file_id}_*"))
-            if not matches:
-                raise HTTPException(status_code=404, detail="File missing on disk")
-            path = str(matches[0])
-        return FileResponse(
-            path,
+        meta = art.metadata or {}
+        return {
+            "id": art.id,
+            "room_id": room_id,
+            "name": art.name,
+            "content_type": art.content_type,
+            "content_url": art.content_url
+            or f"/v1/rooms/{room_id}/files/{file_id}/download",
+            "bytes": meta.get("bytes"),
+            "sha256": meta.get("sha256"),
+            "storage": meta.get("storage") or ("inline" if art.content else "unknown"),
+            "durable": meta.get("durable", bool(art.content)),
+            "has_inline_content": bool(art.content),
+            "category": meta.get("category"),
+            "shared_by": art.shared_by,
+            "created_at": art.created_at.isoformat()
+            if hasattr(art.created_at, "isoformat")
+            else art.created_at,
+        }
+
+    @app.get("/v1/rooms/{room_id}/files/{file_id}/download")
+    async def download_room_file(
+        request: Request,
+        room_id: str,
+        file_id: str,
+        format: str = Query("binary", description="binary | json (small/inline only)"),
+    ) -> Any:
+        from fastapi.responses import Response
+
+        from opengateway.file_store import FILE_INLINE_BINARY, get_blob_bytes
+
+        await _require_room(request, room_id)
+        arts = await st.list_artifacts(room_id)
+        art = next((a for a in arts if a.id == file_id), None)
+        if not art:
+            raise HTTPException(status_code=404, detail="File not found")
+        meta = art.metadata or {}
+        # Prefer safe path resolution under files_root (blocks LFI via metadata.path)
+        raw: Optional[bytes] = None
+        resolved = resolve_room_file_path(
+            files_root,
+            room_id,
+            file_id,
+            metadata_path=meta.get("path"),
+        )
+        if resolved:
+            raw = resolved.read_bytes()
+        if raw is None:
+            raw = get_blob_bytes(
+                r2_key=meta.get("r2_key"),
+                disk_path=None,  # never trust arbitrary path; only allowlist above
+                inline_content=art.content,
+                content_encoding=art.content_encoding or "plain",
+            )
+        if raw is None:
+            raise HTTPException(status_code=404, detail="File missing on disk")
+
+        if format == "json":
+            if len(raw) > FILE_INLINE_BINARY:
+                return {
+                    "id": art.id,
+                    "name": art.name,
+                    "content_type": art.content_type,
+                    "bytes": len(raw),
+                    "sha256": meta.get("sha256"),
+                    "storage": meta.get("storage"),
+                    "content_url": f"/v1/rooms/{room_id}/files/{file_id}/download",
+                    "has_inline_content": False,
+                    "error": "file_too_large_for_json",
+                    "hint": (
+                        "Use GET .../download (binary) with Authorization: Bearer. "
+                        "Do not base64 large files into the agent context."
+                    ),
+                }
+            return {
+                "id": art.id,
+                "name": art.name,
+                "content_type": art.content_type,
+                "content_encoding": "base64",
+                "content": base64.b64encode(raw).decode("ascii"),
+                "bytes": len(raw),
+                "sha256": meta.get("sha256"),
+                "storage": meta.get("storage"),
+                "content_url": f"/v1/rooms/{room_id}/files/{file_id}/download",
+                "has_inline_content": True,
+            }
+        return Response(
+            content=raw,
             media_type=art.content_type or "application/octet-stream",
-            filename=art.name,
+            headers={
+                "Content-Disposition": f'attachment; filename="{safe_upload_filename(art.name)}"',
+                "X-OG-Storage": str(meta.get("storage") or ""),
+                "X-OG-Bytes": str(len(raw)),
+            },
         )
 
+    def _file_id_from_url(url: Optional[str]) -> Optional[str]:
+        if not url:
+            return None
+        m = re.search(r"/files/([^/?#]+)/download", url)
+        return m.group(1) if m else None
+
+    def _strip_auth_query(url: Optional[str]) -> Optional[str]:
+        """Never persist browser Bearer tokens inside message content_url."""
+        if not url:
+            return url
+        try:
+            from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+
+            p = urlparse(url)
+            q = [
+                (k, v)
+                for k, v in parse_qsl(p.query, keep_blank_values=True)
+                if k.lower() not in {"token", "access_token"}
+            ]
+            return urlunparse(p._replace(query=urlencode(q)))
+        except Exception:
+            return re.sub(r"([?&])(token|access_token)=[^&]*", r"\1", url).rstrip("?&")
+
+    async def _enrich_message_parts(
+        room_id: str, parts: list[MessagePart]
+    ) -> list[MessagePart]:
+        """Attachment parts: strip tokens, relative URLs, inline small blobs."""
+        arts = {a.id: a for a in await st.list_artifacts(room_id)}
+        out: list[MessagePart] = []
+        for p in parts:
+            data = p.model_dump()
+            data["content_url"] = _strip_auth_query(data.get("content_url"))
+            url = data.get("content_url") or ""
+            if url.startswith("http://") or url.startswith("https://"):
+                m = re.search(r"(/v1/rooms/[^?#]+)", url)
+                if m:
+                    data["content_url"] = m.group(1)
+                    url = data["content_url"]
+            fid = _file_id_from_url(url)
+            art = arts.get(fid) if fid else None
+            if art:
+                if not data.get("name"):
+                    data["name"] = art.name
+                if not data.get("content_type") or data["content_type"] == "application/octet-stream":
+                    data["content_type"] = art.content_type or data.get("content_type")
+                art_content = art.content or ""
+                if (
+                    not data.get("content")
+                    and art_content
+                    and len(art_content) <= 80_000
+                ):
+                    data["content"] = art.content
+                    data["content_encoding"] = getattr(
+                        art, "content_encoding", None
+                    ) or "base64"
+                if data.get("content") and len(str(data["content"])) > 80_000:
+                    data["content"] = None
+                    data["content_encoding"] = "plain"
+                if not data.get("content_url"):
+                    data["content_url"] = (
+                        art.content_url
+                        or f"/v1/rooms/{room_id}/files/{art.id}/download"
+                    )
+            out.append(MessagePart.model_validate(data))
+        return out
+
+    async def _messages_json(
+        room_id: str, items: list[RoomMessage]
+    ) -> list[dict[str, Any]]:
+        """Serialize messages and re-hydrate attachment parts for agents."""
+        out: list[dict[str, Any]] = []
+        arts = {a.id: a for a in await st.list_artifacts(room_id)}
+        for m in items:
+            dump = m.model_dump(mode="json")
+            try:
+                parts = m.message.parts if m.message else []
+                if parts:
+                    enriched = await _enrich_message_parts(room_id, list(parts))
+                    dump["message"]["parts"] = [
+                        p.model_dump(mode="json") for p in enriched
+                    ]
+                    att = []
+                    for p in enriched:
+                        if not (
+                            p.name
+                            or p.content_url
+                            or (
+                                p.content_type
+                                and not p.content_type.startswith("text/")
+                            )
+                        ):
+                            continue
+                        fid = _file_id_from_url(p.content_url)
+                        art = arts.get(fid) if fid else None
+                        am = (art.metadata if art else None) or {}
+                        att.append(
+                            {
+                                "name": p.name or (art.name if art else None),
+                                "content_type": p.content_type
+                                or (art.content_type if art else None),
+                                "content_url": p.content_url,
+                                "has_inline_content": bool(p.content)
+                                or bool(art and art.content),
+                                "file_id": fid,
+                                "bytes": am.get("bytes"),
+                                "sha256": am.get("sha256"),
+                                "storage": am.get("storage"),
+                                "durable": am.get("durable"),
+                            }
+                        )
+                    dump["attachments"] = att
+            except Exception:
+                pass
+            out.append(dump)
+        return out
+
     @app.post("/v1/rooms/{room_id}/messages")
-    async def post_message(room_id: str, body: PostMessageRequest) -> Any:
-        if not await st.get_room(room_id):
-            raise HTTPException(status_code=404, detail="Room not found")
+    async def post_message(
+        request: Request, room_id: str, body: PostMessageRequest
+    ) -> Any:
+        await _require_room(request, room_id)
         participant = await st.get_participant(body.from_participant_id)
         if not participant:
             raise HTTPException(status_code=400, detail="Unknown from_participant_id — join the room first")
+        if participant.room_id and participant.room_id != room_id:
+            raise HTTPException(
+                status_code=400,
+                detail="from_participant_id is not seated in this room",
+            )
         if body.parts:
+            parts = await _enrich_message_parts(room_id, list(body.parts))
             message = Message(
                 role=body.role or f"agent/{participant.name}",
-                parts=body.parts,
+                parts=parts,
             )
         else:
             message = text_message(body.role or f"agent/{participant.name}", body.content, body.content_type)
@@ -1300,18 +1706,26 @@ def create_app(
 
     @app.get("/v1/rooms/{room_id}/messages")
     async def list_messages(
+        request: Request,
         room_id: str,
         since: Optional[str] = None,
         for_participant: Optional[str] = None,
         limit: int = Query(100, ge=1, le=500),
     ) -> dict[str, Any]:
-        if not await st.get_room(room_id):
-            raise HTTPException(status_code=404, detail="Room not found")
-        items = await st.list_messages(room_id, since=since, for_participant=for_participant, limit=limit)
-        return {"messages": [m.model_dump(mode="json") for m in items]}
+        await _require_room(request, room_id)
+        # Public messages by default; DMs only when for_participant is set
+        items = await st.list_messages(
+            room_id,
+            since=since,
+            for_participant=for_participant,
+            limit=limit,
+            include_dms=False,
+        )
+        return {"messages": await _messages_json(room_id, items)}
 
     @app.get("/v1/rooms/{room_id}/messages/wait")
     async def wait_messages(
+        request: Request,
         room_id: str,
         since: Optional[str] = None,
         for_participant: Optional[str] = None,
@@ -1321,9 +1735,9 @@ def create_app(
         """Long-poll for new messages (IM-style). Blocks until a message arrives or timeout.
 
         Agents should loop: wait → process → wait again, using the last message id as `since`.
+        Attachment parts include content_url + inline base64 when small.
         """
-        if not await st.get_room(room_id):
-            raise HTTPException(status_code=404, detail="Room not found")
+        await _require_room(request, room_id)
         if for_participant:
             # long-poll = radio on (UI "listening" badge)
             await st.touch_participant(for_participant, listening=True)
@@ -1339,7 +1753,7 @@ def create_app(
         # next_since = last message id for the client's wait cursor (top-level, not nested)
         last_id = items[-1].id if items else since
         return {
-            "messages": [m.model_dump(mode="json") for m in items],
+            "messages": await _messages_json(room_id, items),
             "timed_out": len(items) == 0,
             "since": since,
             "last_id": last_id,
@@ -1350,9 +1764,10 @@ def create_app(
     # ── Tasks ──────────────────────────────────────────────────────────────
 
     @app.post("/v1/rooms/{room_id}/tasks", response_model=Task)
-    async def create_task(room_id: str, body: CreateTaskRequest) -> Task:
-        if not await st.get_room(room_id):
-            raise HTTPException(status_code=404, detail="Room not found")
+    async def create_task(
+        request: Request, room_id: str, body: CreateTaskRequest
+    ) -> Task:
+        await _require_room(request, room_id)
         task = Task(
             room_id=room_id,
             title=body.title,
@@ -1365,15 +1780,23 @@ def create_app(
 
     @app.get("/v1/rooms/{room_id}/tasks")
     async def list_tasks(
+        request: Request,
         room_id: str,
         status: Optional[TaskStatus] = None,
     ) -> dict[str, Any]:
-        if not await st.get_room(room_id):
-            raise HTTPException(status_code=404, detail="Room not found")
-        return {"tasks": [t.model_dump(mode="json") for t in await st.list_tasks(room_id, status=status)]}
+        await _require_room(request, room_id)
+        return {
+            "tasks": [
+                t.model_dump(mode="json")
+                for t in await st.list_tasks(room_id, status=status)
+            ]
+        }
 
     @app.patch("/v1/rooms/{room_id}/tasks/{task_id}", response_model=Task)
-    async def update_task(room_id: str, task_id: str, body: UpdateTaskRequest) -> Task:
+    async def update_task(
+        request: Request, room_id: str, task_id: str, body: UpdateTaskRequest
+    ) -> Task:
+        await _require_room(request, room_id)
         fields: dict[str, Any] = {}
         if body.status is not None:
             fields["status"] = body.status
@@ -1393,11 +1816,15 @@ def create_app(
     # ── Artifacts ──────────────────────────────────────────────────────────
 
     @app.post("/v1/rooms/{room_id}/artifacts", response_model=Artifact)
-    async def share_artifact(room_id: str, body: ShareArtifactRequest) -> Artifact:
-        if not await st.get_room(room_id):
-            raise HTTPException(status_code=404, detail="Room not found")
+    async def share_artifact(
+        request: Request, room_id: str, body: ShareArtifactRequest
+    ) -> Artifact:
+        await _require_room(request, room_id)
         if not body.content and not body.content_url:
             raise HTTPException(status_code=400, detail="Provide content or content_url")
+        # Never allow clients to set filesystem paths for later download LFI
+        meta = dict(body.metadata or {})
+        meta.pop("path", None)
         artifact = Artifact(
             room_id=room_id,
             name=body.name,
@@ -1407,15 +1834,18 @@ def create_app(
             content_encoding=body.content_encoding,
             shared_by=body.shared_by,
             description=body.description,
-            metadata=body.metadata,
+            metadata=meta,
         )
         return await st.share_artifact(artifact)
 
     @app.get("/v1/rooms/{room_id}/artifacts")
-    async def list_artifacts(room_id: str) -> dict[str, Any]:
-        if not await st.get_room(room_id):
-            raise HTTPException(status_code=404, detail="Room not found")
-        return {"artifacts": [a.model_dump(mode="json") for a in await st.list_artifacts(room_id)]}
+    async def list_artifacts(request: Request, room_id: str) -> dict[str, Any]:
+        await _require_room(request, room_id)
+        return {
+            "artifacts": [
+                a.model_dump(mode="json") for a in await st.list_artifacts(room_id)
+            ]
+        }
 
     # ── Events (SSE + poll) ────────────────────────────────────────────────
 
@@ -1457,13 +1887,12 @@ def create_app(
 
     @app.get("/v1/rooms/{room_id}/events")
     async def room_events_sse(room_id: str, request: Request) -> EventSourceResponse:
-        if not await st.get_room(room_id):
-            raise HTTPException(status_code=404, detail="Room not found")
+        await _require_room(request, room_id)
 
         async def gen():
             q = st.subscribe()
             try:
-                # Replay recent
+                # Replay recent — strip private DM payloads for non-targeted events
                 for e in st.recent_events(room_id=room_id, limit=20):
                     yield {"event": e.type, "id": e.id, "data": json.dumps(e.model_dump(mode="json"))}
                 while True:
@@ -1489,28 +1918,59 @@ def create_app(
 
     @app.websocket("/v1/rooms/{room_id}/ws")
     async def room_ws(websocket: WebSocket, room_id: str) -> None:
-        """Realtime room socket.
+        """Realtime room socket (requires same auth as HTTP when require_auth).
 
-        Query: participant_id (required after connect handshake msg if omitted).
+        Query: token / access_token (when auth required), participant_id.
         Client → server JSON:
           {"type":"hello","participant_id":"..."}
           {"type":"message","content":"...","to_participant_id":null}
           {"type":"ping"}
-        Server → client JSON:
-          {"type":"hello_ok","participant":{...}}
-          {"type":"message","message":{...}}
-          {"type":"event","event":{...}}
-          {"type":"error","detail":"..."}
-          {"type":"pong"}
         """
-        await websocket.accept()
-        if not await st.get_room(room_id):
-            await websocket.send_json({"type": "error", "detail": "room_not_found"})
-            await websocket.close()
+        # Authenticate before accept when auth is required
+        ws_auth: Optional[dict[str, Any]] = None
+        if cfg.require_auth:
+            token = token_from_websocket(websocket)
+            ws_auth = await resolve_auth(
+                token,
+                config=cfg,
+                store=st,
+                method="GET",
+                path=f"/v1/rooms/{room_id}/ws",
+            )
+            # Tailscale identity only on localhost binds (parity with HTTP middleware)
+            if (not ws_auth or ws_auth.get("forbidden")) and (
+                cfg.trust_tailscale_identity and cfg.is_localhost_bind
+            ):
+                login = websocket.headers.get("tailscale-user-login")
+                if login:
+                    ws_auth = {
+                        "auth_kind": "tailscale",
+                        "auth_scopes": ["admin"],
+                        "tenant_id": None,
+                    }
+            if not ws_auth or ws_auth.get("forbidden"):
+                await websocket.close(code=4401)
+                return
+
+        room = await st.get_room(room_id)
+        if not room or (ws_auth and not room_visible_to(room, ws_auth)):
+            await websocket.close(code=4404)
             return
+
+        await websocket.accept()
 
         participant_id = websocket.query_params.get("participant_id")
         q = st.subscribe(maxsize=512)
+
+        def _dm_allowed(msg_payload: dict[str, Any]) -> bool:
+            """Fan-out private DMs only to the two participants (or admins)."""
+            to_id = msg_payload.get("to_participant_id")
+            if not to_id:
+                return True
+            if is_admin_principal(ws_auth):
+                return True
+            from_id = msg_payload.get("from_participant_id")
+            return participant_id in {to_id, from_id}
 
         async def pump_events() -> None:
             try:
@@ -1518,9 +1978,16 @@ def create_app(
                     event = await q.get()
                     if event.room_id is not None and event.room_id != room_id:
                         continue
-                    payload: dict[str, Any] = {"type": "event", "event": event.model_dump(mode="json")}
                     if event.type == "message" and "message" in event.payload:
-                        payload = {"type": "message", "message": event.payload["message"]}
+                        msg = event.payload["message"]
+                        if isinstance(msg, dict) and not _dm_allowed(msg):
+                            continue
+                        payload = {"type": "message", "message": msg}
+                    else:
+                        payload = {
+                            "type": "event",
+                            "event": event.model_dump(mode="json"),
+                        }
                     await websocket.send_json(payload)
             except Exception:
                 return
@@ -1530,7 +1997,7 @@ def create_app(
             # Optional immediate hello via query param
             if participant_id:
                 p = await st.get_participant(participant_id)
-                if p:
+                if p and (not p.room_id or p.room_id == room_id):
                     await st.touch_participant(participant_id, listening=True)
                     await websocket.send_json(
                         {"type": "hello_ok", "participant": p.model_dump(mode="json")}
@@ -1556,7 +2023,7 @@ def create_app(
                 if msg_type == "hello":
                     participant_id = data.get("participant_id") or participant_id
                     p = await st.get_participant(participant_id) if participant_id else None
-                    if not p:
+                    if not p or (p.room_id and p.room_id != room_id):
                         await websocket.send_json({"type": "error", "detail": "unknown_participant"})
                         continue
                     await st.touch_participant(participant_id, listening=True)
@@ -1572,7 +2039,7 @@ def create_app(
                         )
                         continue
                     p = await st.get_participant(participant_id)
-                    if not p:
+                    if not p or (p.room_id and p.room_id != room_id):
                         await websocket.send_json({"type": "error", "detail": "unknown_participant"})
                         continue
                     content = (data.get("content") or "").strip()
@@ -1587,7 +2054,6 @@ def create_app(
                         message=text_message(f"agent/{p.name}", content),
                     )
                     saved = await st.post_message(room_msg)
-                    # Echo confirmation (subscribers also get the fan-out)
                     await websocket.send_json(
                         {"type": "message_ack", "message": saved.model_dump(mode="json")}
                     )
@@ -1603,17 +2069,17 @@ def create_app(
     # ── Bookmarks / forks / DMs ────────────────────────────────────────────
 
     @app.get("/v1/rooms/{room_id}/bookmarks")
-    async def list_bookmarks(room_id: str) -> dict[str, Any]:
-        if not await st.get_room(room_id):
-            raise HTTPException(status_code=404, detail="Room not found")
+    async def list_bookmarks(request: Request, room_id: str) -> dict[str, Any]:
+        await _require_room(request, room_id)
         return {
             "bookmarks": [b.model_dump(mode="json") for b in await st.list_bookmarks(room_id)]
         }
 
     @app.post("/v1/rooms/{room_id}/bookmarks")
-    async def create_bookmark(room_id: str, body: CreateBookmarkRequest) -> Bookmark:
-        if not await st.get_room(room_id):
-            raise HTTPException(status_code=404, detail="Room not found")
+    async def create_bookmark(
+        request: Request, room_id: str, body: CreateBookmarkRequest
+    ) -> Bookmark:
+        await _require_room(request, room_id)
         msg = await st.get_message(room_id, body.message_id)
         if not msg:
             raise HTTPException(status_code=404, detail="Message not found")
@@ -1632,32 +2098,140 @@ def create_app(
         return await st.add_bookmark(bookmark)
 
     @app.delete("/v1/rooms/{room_id}/bookmarks/{bookmark_id}")
-    async def remove_bookmark(room_id: str, bookmark_id: str) -> dict[str, str]:
+    async def remove_bookmark(
+        request: Request, room_id: str, bookmark_id: str
+    ) -> dict[str, str]:
+        await _require_room(request, room_id)
         ok = await st.delete_bookmark(room_id, bookmark_id)
         if not ok:
             raise HTTPException(status_code=404, detail="Bookmark not found")
         return {"status": "deleted"}
 
     @app.get("/v1/rooms/{room_id}/forks")
-    async def list_forks(room_id: str) -> dict[str, Any]:
-        if not await st.get_room(room_id):
-            raise HTTPException(status_code=404, detail="Room not found")
+    async def list_forks(request: Request, room_id: str) -> dict[str, Any]:
+        await _require_room(request, room_id)
         return {"forks": [f.model_dump(mode="json") for f in await st.list_forks(room_id)]}
 
     @app.post("/v1/rooms/{room_id}/forks")
-    async def create_fork(room_id: str, body: CreateForkRequest) -> Fork:
-        if not await st.get_room(room_id):
-            raise HTTPException(status_code=404, detail="Room not found")
+    async def create_fork(
+        request: Request, room_id: str, body: CreateForkRequest
+    ) -> Fork:
+        """Fork a message into a **new room** (branch chat).
+
+        Copies optional prior context + the root message into the new room, joins
+        the creator, and records Fork.forked_room_id for UI/agents to open.
+        """
+        parent = await _require_room(request, room_id)
         msg = await st.get_message(room_id, body.root_message_id)
         if not msg:
             raise HTTPException(status_code=404, detail="Message not found")
-        text = (msg.message.parts[0].content or "")[:80] if msg.message.parts else ""
-        title = body.title.strip() or f"Fork of {msg.from_name}: {text}"
+
+        text = ""
+        if msg.message and msg.message.parts:
+            text = (msg.message.parts[0].content or "")[:80]
+        title = body.title.strip() or f"Fork · {msg.from_name}: {text}".strip()
         if len(title) > 120:
             title = title[:117] + "…"
+
+        branch = Room(
+            name=title[:80] or f"fork-{msg.id[:8]}",
+            goal=(
+                body.note.strip()
+                or f'Fork of “{parent.name}” from message by {msg.from_name}'
+            ),
+            created_by=body.created_by or "system",
+            tenant_id=parent.tenant_id,
+            status=RoomStatus.OPEN,
+            metadata={
+                "is_fork": True,
+                "parent_room_id": room_id,
+                "parent_room_name": parent.name,
+                "parent_message_id": body.root_message_id,
+                "root_from": msg.from_name,
+            },
+        )
+        branch = await st.create_room(branch)
+
+        history = await st.list_messages(room_id, limit=500, include_dms=False)
+        try:
+            idx = next(i for i, m in enumerate(history) if m.id == msg.id)
+        except StopIteration:
+            idx = len(history) - 1
+        start = max(0, idx - int(body.context_messages or 0))
+        context_slice = history[start : idx + 1]
+
+        seed_lines = [
+            f'🔀 Forked from room “{parent.name}” ({room_id}).',
+            f"Root message by {msg.from_name}.",
+            "This is a new chat branch — continue the discussion here.",
+        ]
+        if body.note.strip():
+            seed_lines.append(f"Note: {body.note.strip()}")
+        await st.post_message(
+            RoomMessage(
+                room_id=branch.id,
+                from_participant_id="system",
+                from_name="system",
+                message=text_message("agent/system", "\n".join(seed_lines)),
+                metadata={
+                    "system": True,
+                    "fork": True,
+                    "parent_room_id": room_id,
+                    "parent_message_id": body.root_message_id,
+                },
+            )
+        )
+
+        for src in context_slice:
+            is_root = src.id == msg.id
+            copied = RoomMessage(
+                room_id=branch.id,
+                from_participant_id=src.from_participant_id,
+                from_name=src.from_name,
+                to_participant_id=None,
+                message=src.message.model_copy(deep=True)
+                if src.message
+                else text_message(f"agent/{src.from_name}", ""),
+                metadata={
+                    **(src.metadata or {}),
+                    "forked_from_message_id": src.id,
+                    "fork_root": is_root,
+                    "fork_context": not is_root,
+                },
+            )
+            await st.post_message(copied)
+
+        if body.join_creator and body.created_by:
+            creator = await st.get_participant(body.created_by)
+            if creator:
+                await st.join_room(
+                    branch.id,
+                    Participant(
+                        id=new_id(),
+                        name=body.created_by_name or creator.name,
+                        harness=creator.harness,
+                        role=creator.role or "admin",
+                        capabilities=list(
+                            creator.capabilities or ["monitor", "chat"]
+                        ),
+                        metadata={"forked_from_participant": creator.id},
+                    ),
+                )
+            else:
+                await st.join_room(
+                    branch.id,
+                    Participant(
+                        name=body.created_by_name or "human",
+                        harness=Harness.HUMAN,
+                        role="admin",
+                        capabilities=["monitor", "chat"],
+                    ),
+                )
+
         fork = Fork(
             room_id=room_id,
             root_message_id=body.root_message_id,
+            forked_room_id=branch.id,
             title=title,
             created_by=body.created_by,
             created_by_name=body.created_by_name,
@@ -1666,20 +2240,63 @@ def create_app(
                 **body.metadata,
                 "root_from": msg.from_name,
                 "root_excerpt": text,
+                "forked_room_name": branch.name,
+                "context_count": len(context_slice),
             },
         )
-        return await st.add_fork(fork)
+        fork = await st.add_fork(fork)
+
+        branch.metadata = {**(branch.metadata or {}), "fork_id": fork.id}
+        await st.update_room(branch, action="updated")
+
+        await st.post_message(
+            RoomMessage(
+                room_id=room_id,
+                from_participant_id="system",
+                from_name="system",
+                message=text_message(
+                    "agent/system",
+                    f'Branch created: “{branch.name}” → open room {branch.id}'
+                    + (
+                        f" (by {body.created_by_name})"
+                        if body.created_by_name
+                        else ""
+                    ),
+                ),
+                metadata={
+                    "system": True,
+                    "fork": True,
+                    "fork_id": fork.id,
+                    "forked_room_id": branch.id,
+                },
+            )
+        )
+        await st.emit(
+            GatewayEvent(
+                type="fork",
+                room_id=branch.id,
+                payload={
+                    "action": "branch_opened",
+                    "fork": fork.model_dump(mode="json"),
+                    "room": branch.model_dump(mode="json"),
+                },
+            )
+        )
+        return fork
 
     @app.get("/v1/rooms/{room_id}/dms")
     async def list_dms(
+        request: Request,
         room_id: str,
         participant_id: str = Query(...),
         limit: int = Query(100, ge=1, le=500),
     ) -> dict[str, Any]:
         """List DM threads involving this participant (directed messages only)."""
-        if not await st.get_room(room_id):
-            raise HTTPException(status_code=404, detail="Room not found")
-        all_msgs = await st.list_messages(room_id, limit=500)
+        await _require_room(request, room_id)
+        # Must use for_participant so private DMs are included for this seat only
+        all_msgs = await st.list_messages(
+            room_id, for_participant=participant_id, limit=500
+        )
         dms = [
             m
             for m in all_msgs
@@ -1724,16 +2341,25 @@ def create_app(
     # ── Snapshot helper for agents ─────────────────────────────────────────
 
     @app.get("/v1/rooms/{room_id}/snapshot")
-    async def room_snapshot(room_id: str) -> dict[str, Any]:
-        room = await st.get_room(room_id)
-        if not room:
-            raise HTTPException(status_code=404, detail="Room not found")
+    async def room_snapshot(
+        request: Request,
+        room_id: str,
+        for_participant: Optional[str] = None,
+    ) -> dict[str, Any]:
+        await _require_room(request, room_id)
         people = _sort_participants(await st.list_participants(room_id))
+        # Public room thread only unless for_participant (then + their DMs)
+        msgs = await st.list_messages(
+            room_id,
+            limit=200,
+            for_participant=for_participant,
+            include_dms=False,
+        )
         return {
-            "room": room.model_dump(mode="json"),
+            "room": (await st.get_room(room_id)).model_dump(mode="json"),  # type: ignore[union-attr]
             "participants": [p.model_dump(mode="json") for p in people],
             "tasks": [t.model_dump(mode="json") for t in await st.list_tasks(room_id)],
-            "messages": [m.model_dump(mode="json") for m in await st.list_messages(room_id, limit=200)],
+            "messages": [m.model_dump(mode="json") for m in msgs],
             "artifacts": [a.model_dump(mode="json") for a in await st.list_artifacts(room_id)],
             "bookmarks": [b.model_dump(mode="json") for b in await st.list_bookmarks(room_id)],
             "forks": [f.model_dump(mode="json") for f in await st.list_forks(room_id)],

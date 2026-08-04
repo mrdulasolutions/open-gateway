@@ -51,4 +51,48 @@ if [[ "$UI_CODE" != "200" && "$UI_CODE" != "301" && "$UI_CODE" != "302" ]]; then
   exit 1
 fi
 
+echo "== /docs under auth (expect 401 unless PUBLIC_DOCS=true) =="
+DOCS_CODE="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 "$BASE/docs" || true)"
+echo "GET /docs → HTTP $DOCS_CODE"
+if [[ "$DOCS_CODE" != "401" && "$DOCS_CODE" != "200" && "$DOCS_CODE" != "404" ]]; then
+  echo "unexpected /docs status" >&2
+  exit 1
+fi
+
+if [[ -n "$TOKEN" ]]; then
+  echo "== pair create (scoped redeem key, no master in URL) =="
+  export TOKEN
+  PAIR_JSON="$(curl -fsS --max-time 20 -H "Authorization: Bearer $TOKEN" \
+    -H "Content-Type: application/json" \
+    -d '{}' "$BASE/v1/pair" || true)"
+  if [[ -n "$PAIR_JSON" ]]; then
+    echo "$PAIR_JSON" | python3 -c "
+import sys, json
+d=json.load(sys.stdin)
+url=d.get('url') or ''
+assert 'token=' not in url, 'pair URL must not embed master token'
+code=d.get('code') or ''
+assert len(code) >= 12, ('pair code too short', code)
+print('pair code ok, url has no token=')
+"
+    CODE="$(echo "$PAIR_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('code',''))")"
+    if [[ -n "$CODE" ]]; then
+      REDEEM="$(curl -fsS --max-time 20 -H "Content-Type: application/json" \
+        -d "{\"code\":\"$CODE\",\"name\":\"smoke-phone\"}" "$BASE/v1/pair/redeem")"
+      echo "$REDEEM" | TOKEN="$TOKEN" python3 -c "
+import sys, json, os
+master=os.environ.get('TOKEN') or ''
+d=json.load(sys.stdin)
+assert d.get('ok') is True
+tok=d.get('auth_token') or ''
+assert tok.startswith('ogk_'), ('expected scoped device key', tok[:20])
+assert tok != master, 'redeem must not return master token'
+print('pair redeem returns scoped ogk_ key (not master)')
+"
+    fi
+  else
+    echo "(pair create skipped — request failed)"
+  fi
+fi
+
 echo "OK — smoke passed for $BASE"

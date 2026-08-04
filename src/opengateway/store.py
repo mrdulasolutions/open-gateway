@@ -215,7 +215,13 @@ class Store:
             tenant_id = tid
             role = "admin"
         elif invite_code:
-            inv = self._db.get_invite(invite_code) if self._db else None
+            code_key = (invite_code or "").strip()
+            inv = None
+            if self._db:
+                inv = self._db.get_invite(code_key)
+            else:
+                mem = getattr(self, "_memory_invites", {})
+                inv = mem.get(code_key) or mem.get(code_key.upper())
             if not inv:
                 raise ValueError("Invalid invite code")
             if inv.get("uses", 0) >= inv.get("max_uses", 20):
@@ -225,6 +231,9 @@ class Store:
             inv["uses"] = int(inv.get("uses") or 0) + 1
             if self._db:
                 self._db.save_invite(inv)
+            else:
+                self._memory_invites = getattr(self, "_memory_invites", {})
+                self._memory_invites[inv["code"]] = inv
         elif open_registration():
             # Join first tenant
             tenants = self._db.list_tenants() if self._db else list(
@@ -379,6 +388,14 @@ class Store:
     async def create_invite(
         self, *, tenant_id: str, created_by: str, role: str = "member"
     ) -> dict[str, Any]:
+        # Validate tenant exists when we have tenant storage
+        if self._db and hasattr(self._db, "get_tenant"):
+            if not self._db.get_tenant(tenant_id):
+                raise ValueError("Unknown tenant_id")
+        else:
+            tenants = getattr(self, "_memory_tenants", {}) or {}
+            if tenants and tenant_id not in tenants:
+                raise ValueError("Unknown tenant_id")
         code = mint_invite_code()
         rec = {
             "id": new_id(),
@@ -392,7 +409,19 @@ class Store:
         }
         if self._db:
             self._db.save_invite(rec)
+        else:
+            self._memory_invites = getattr(self, "_memory_invites", {})
+            self._memory_invites[code] = rec
         return {"code": code, "role": rec["role"], "max_uses": 20}
+
+    async def claim_setup(self) -> bool:
+        """Atomic one-time setup claim. Returns True if this caller won the claim."""
+        async with self._lock:
+            if self.get_meta("setup_claimed") == "1":
+                return False
+            self.set_meta("setup_claimed", "1")
+            self.set_meta("setup_claimed_at", utcnow().isoformat())
+            return True
 
     def attach_redis(self, bus: Any) -> None:
         """Attach optional RedisBus for multi-worker event fan-out + pair codes."""
@@ -539,21 +568,159 @@ class Store:
     async def get_room(self, room_id: str) -> Optional[Room]:
         return self.rooms.get(room_id)
 
-    async def list_rooms(self, tenant_id: Optional[str] = None) -> list[Room]:
+    async def list_rooms(
+        self,
+        tenant_id: Optional[str] = None,
+        *,
+        include_archived: bool = False,
+    ) -> list[Room]:
         rooms = list(self.rooms.values())
-        if tenant_id is None:
-            return rooms
-        # Tenant users only see their tenant's rooms (legacy null rooms hidden)
-        return [r for r in rooms if r.tenant_id == tenant_id]
+        if tenant_id is not None:
+            # Tenant users only see their tenant's rooms (legacy null rooms hidden)
+            rooms = [r for r in rooms if r.tenant_id == tenant_id]
+        if not include_archived:
+            rooms = [r for r in rooms if r.status != RoomStatus.ARCHIVED]
+        return rooms
 
-    async def update_room(self, room: Room) -> Room:
+    async def update_room(
+        self,
+        room: Room,
+        *,
+        action: str = "updated",
+        previous: Optional[dict[str, Any]] = None,
+    ) -> Room:
         room.updated_at = utcnow()
         async with self._lock:
             self.rooms[room.id] = room
             self._persist_room(room)
         await self.emit(
-            GatewayEvent(type="room", room_id=room.id, payload={"action": "updated", "room": room.model_dump(mode="json")})
+            GatewayEvent(
+                type="room",
+                room_id=room.id,
+                payload={
+                    "action": action,
+                    "room": room.model_dump(mode="json"),
+                    **({"previous": previous} if previous else {}),
+                },
+            )
         )
+        return room
+
+    async def patch_room(
+        self,
+        room_id: str,
+        *,
+        name: Optional[str] = None,
+        goal: Optional[str] = None,
+        project_path: Optional[str] = None,
+        status: Optional[RoomStatus] = None,
+        metadata: Optional[dict[str, Any]] = None,
+        actor: str = "system",
+        announce: bool = True,
+    ) -> Room:
+        """Rename / archive / edit room; fan-out GatewayEvent + optional system message.
+
+        Room id is stable so agents keep the same room_id while tracking name/status.
+        """
+        from opengateway.models import text_message
+
+        room = self.rooms.get(room_id)
+        if not room:
+            raise KeyError(f"Room not found: {room_id}")
+
+        previous = {
+            "name": room.name,
+            "goal": room.goal,
+            "status": room.status.value if hasattr(room.status, "value") else str(room.status),
+            "project_path": room.project_path,
+        }
+        changed: list[str] = []
+
+        if name is not None:
+            cleaned = " ".join(str(name).split()).strip()
+            if cleaned and cleaned != room.name:
+                room.name = cleaned
+                changed.append("name")
+        if goal is not None and goal != room.goal:
+            room.goal = goal
+            changed.append("goal")
+        if project_path is not None and project_path != room.project_path:
+            room.project_path = project_path or None
+            changed.append("project_path")
+        if status is not None and status != room.status:
+            room.status = status
+            changed.append("status")
+        if metadata is not None:
+            room.metadata = {**room.metadata, **metadata}
+            changed.append("metadata")
+
+        if not changed:
+            return room
+
+        if changed == ["status"] and room.status == RoomStatus.ARCHIVED:
+            action = "archived"
+        elif (
+            "status" in changed
+            and previous.get("status") == RoomStatus.ARCHIVED.value
+            and room.status != RoomStatus.ARCHIVED
+        ):
+            action = "unarchived"
+        elif "name" in changed and set(changed) <= {"name", "goal"}:
+            action = "renamed" if "name" in changed else "updated"
+        elif "name" in changed:
+            action = "renamed"
+        else:
+            action = "updated"
+
+        await self.update_room(room, action=action, previous=previous)
+        await self.audit(
+            f"room.{action}",
+            actor=actor,
+            room_id=room.id,
+            resource_type="room",
+            resource_id=room.id,
+            detail={"changed": changed, "previous": previous, "name": room.name},
+        )
+
+        if announce:
+            if action == "renamed":
+                body = (
+                    f'Room renamed: "{previous["name"]}" → "{room.name}"'
+                    + (f" (by {actor})" if actor and actor != "system" else "")
+                )
+            elif action == "archived":
+                body = f'Room archived: "{room.name}"' + (
+                    f" (by {actor})" if actor and actor != "system" else ""
+                )
+            elif action == "unarchived":
+                body = f'Room restored: "{room.name}"' + (
+                    f" (by {actor})" if actor and actor != "system" else ""
+                )
+            else:
+                parts = []
+                if "name" in changed:
+                    parts.append(f'name "{previous["name"]}" → "{room.name}"')
+                if "goal" in changed:
+                    parts.append("goal updated")
+                if "status" in changed:
+                    parts.append(f"status → {room.status.value}")
+                body = "Room updated: " + (", ".join(parts) if parts else "metadata")
+            note = RoomMessage(
+                room_id=room.id,
+                from_participant_id="system",
+                from_name="system",
+                message=text_message("agent/system", body),
+                metadata={
+                    "system": True,
+                    "room_event": action,
+                    "room_id": room.id,
+                    "room_name": room.name,
+                    "previous": previous,
+                    "actor": actor,
+                },
+            )
+            await self.post_message(note)
+
         return room
 
     # ── Participants ───────────────────────────────────────────────────────
@@ -562,10 +729,20 @@ class Store:
         room = self.rooms.get(room_id)
         if not room:
             raise KeyError(f"Room not found: {room_id}")
+        # If seat moved from another room, detach from old roster (no dual-room ghosts)
+        old_room_id = participant.room_id
         participant.room_id = room_id
         participant.status = ParticipantStatus.ONLINE
         participant.last_seen_at = utcnow()
         async with self._lock:
+            if old_room_id and old_room_id != room_id:
+                old_room = self.rooms.get(old_room_id)
+                if old_room and participant.id in old_room.participant_ids:
+                    old_room.participant_ids = [
+                        x for x in old_room.participant_ids if x != participant.id
+                    ]
+                    old_room.updated_at = utcnow()
+                    self._persist_room(old_room)
             self.participants[participant.id] = participant
             if participant.id not in room.participant_ids:
                 room.participant_ids.append(participant.id)
@@ -1068,7 +1245,15 @@ class Store:
         since: Optional[str] = None,
         for_participant: Optional[str] = None,
         limit: int = 100,
+        include_dms: bool = False,
     ) -> list[RoomMessage]:
+        """List room messages.
+
+        Privacy (production default):
+        - Without ``for_participant``: only public room messages (no private DMs),
+          unless ``include_dms=True`` (admin/master audit paths only).
+        - With ``for_participant``: public + DMs involving that participant.
+        """
         items = self.messages.get(room_id, [])
         if since:
             try:
@@ -1084,6 +1269,8 @@ class Store:
                 or m.to_participant_id == for_participant
                 or m.from_participant_id == for_participant
             ]
+        elif not include_dms:
+            items = [m for m in items if m.to_participant_id is None]
         return items[-limit:]
 
     async def wait_for_messages(
@@ -1316,9 +1503,10 @@ class Store:
         import secrets
         from datetime import timedelta
 
-        code = secrets.token_hex(3).upper()  # 6 hex chars
+        # 16 hex chars (~64 bits) — short enough for QR, hard to brute-force
+        code = secrets.token_hex(8).upper()
         while code in self.pair_codes:
-            code = secrets.token_hex(3).upper()
+            code = secrets.token_hex(8).upper()
         rec = {
             "code": code,
             "room_id": room_id,

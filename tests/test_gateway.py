@@ -745,11 +745,21 @@ async def test_global_search_rooms_and_type_filter(client: AsyncClient):
     hits = r.json()["hits"]
     assert any(h["type"] == "room" and h["title"] == "search-lab" for h in hits)
 
+    # Public search: room messages only (no private DMs)
     r2 = await client.get("/v1/search", params={"q": "needle"})
     types = {h["type"] for h in r2.json()["hits"]}
     assert "message" in types
-    assert "dm" in types
-    dm_hit = next(h for h in r2.json()["hits"] if h["type"] == "dm")
+    assert "dm" not in types
+
+    # DMs only when for_participant is the involved seat
+    r2b = await client.get(
+        "/v1/search",
+        params={"q": "needle", "for_participant": p["id"]},
+    )
+    types_b = {h["type"] for h in r2b.json()["hits"]}
+    assert "message" in types_b
+    assert "dm" in types_b
+    dm_hit = next(h for h in r2b.json()["hits"] if h["type"] == "dm")
     assert dm_hit.get("type_label") == "DM"
     assert "DM ·" in dm_hit["subtitle"]
 
@@ -758,8 +768,13 @@ async def test_global_search_rooms_and_type_filter(client: AsyncClient):
     assert body.get("parsed", {}).get("type") == "task"
     assert any(h["type"] == "task" for h in body["hits"])
 
+    # type:dm without participant → no hits (privacy)
     r4 = await client.get("/v1/search", params={"q": "type:dm"})
-    assert all(h["type"] == "dm" for h in r4.json()["hits"])
+    assert r4.json()["hits"] == []
+    r4b = await client.get(
+        "/v1/search", params={"q": "type:dm", "for_participant": p["id"]}
+    )
+    assert all(h["type"] == "dm" for h in r4b.json()["hits"])
 
 
 @pytest.mark.asyncio
@@ -894,7 +909,13 @@ async def test_dm_is_private_and_lists_peer_status(client: AsyncClient):
     ).json()
     assert dm["to_participant_id"] == b["id"]
 
-    # for_participant=a sees DM; unscoped list includes it but UI filters public
+    # for_participant=a sees DM; unscoped list must NOT include private DMs
+    public_only = (
+        await client.get(f"/v1/rooms/{room_id}/messages")
+    ).json()["messages"]
+    assert not any(
+        "secret hello" in (m["message"]["parts"][0]["content"]) for m in public_only
+    )
     for_a = (
         await client.get(
             f"/v1/rooms/{room_id}/messages",

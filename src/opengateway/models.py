@@ -49,8 +49,24 @@ class Message(BaseModel):
     def text(self) -> str:
         chunks: list[str] = []
         for p in self.parts:
-            if p.content and (p.content_type.startswith("text/") or p.content_type == "application/json"):
+            if p.content and (
+                p.content_type.startswith("text/")
+                or p.content_type == "application/json"
+            ):
                 chunks.append(p.content)
+            elif p.name or p.content_url or (
+                p.content and not p.content_type.startswith("text/")
+            ):
+                # Surface attachments so agents don't only see blank text
+                label = p.name or "file"
+                kind = p.content_type or "application/octet-stream"
+                url = p.content_url or ""
+                inline = "inline" if p.content else "link-only"
+                chunks.append(
+                    f"[attachment name={label!r} type={kind} {inline}"
+                    + (f" url={url}" if url else "")
+                    + "]"
+                )
         return "\n".join(chunks)
 
 
@@ -84,6 +100,7 @@ class RoomStatus(str, Enum):
     ACTIVE = "active"
     PAUSED = "paused"
     CLOSED = "closed"
+    ARCHIVED = "archived"
 
 
 class TaskStatus(str, Enum):
@@ -213,11 +230,16 @@ class Bookmark(BaseModel):
 
 
 class Fork(BaseModel):
-    """Fork of a message / conversation branch."""
+    """Fork of a conversation into a new room (branch chat).
+
+    ``room_id`` is the parent room. ``forked_room_id`` is the new branch room
+    where the forked chat continues. Agents and UI open ``forked_room_id``.
+    """
 
     id: str = Field(default_factory=new_id)
     room_id: str
     root_message_id: str
+    forked_room_id: Optional[str] = None
     title: str
     created_by: str
     created_by_name: str = ""
@@ -235,6 +257,18 @@ class CreateRoomRequest(BaseModel):
     project_path: Optional[str] = None
     created_by: str = "system"
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class UpdateRoomRequest(BaseModel):
+    """Rename, edit goal/path, or archive/unarchive a room (id stable)."""
+
+    name: Optional[str] = None
+    goal: Optional[str] = None
+    project_path: Optional[str] = None
+    status: Optional[RoomStatus] = None
+    metadata: Optional[dict[str, Any]] = None
+    actor: Optional[str] = None
+    announce: bool = True
 
 
 class JoinRoomRequest(BaseModel):
@@ -309,6 +343,10 @@ class CreateForkRequest(BaseModel):
     note: str = ""
     created_by: str
     created_by_name: str = ""
+    # Copy this many messages before the root into the new room as context
+    context_messages: int = Field(default=15, ge=0, le=100)
+    # Auto-join creator into the forked room
+    join_creator: bool = True
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 

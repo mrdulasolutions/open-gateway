@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import time
 from collections import defaultdict, deque
 from threading import Lock
@@ -11,18 +12,31 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
-from opengateway.api_keys import SCOPE_ADMIN, scopes_allow
+from opengateway.api_keys import SCOPE_ADMIN
 from opengateway.config import GatewayConfig
+from opengateway.security import (
+    client_ip as security_client_ip,
+    const_eq,
+    resolve_auth,
+    token_from_request,
+)
 
 # Paths that stay open for health / static UI bootstrap
 PUBLIC_PREFIXES = (
     "/ping",
     "/ui",
-    "/docs",
-    "/openapi.json",
-    "/redoc",
     "/favicon",
 )
+
+# OpenAPI/docs are public only when explicitly enabled (production-safe default: off when auth on)
+def _docs_public() -> bool:
+    return os.environ.get("OPENGATEWAY_PUBLIC_DOCS", "").lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
 
 # Auth failure rate limit: max failures per IP in window (production default)
 _AUTH_FAIL_WINDOW_SEC = 60.0
@@ -32,13 +46,7 @@ _fail_buckets: dict[str, Deque[float]] = defaultdict(deque)
 
 
 def _client_ip(request: Request) -> str:
-    # Prefer first X-Forwarded-For hop when behind a reverse proxy
-    xff = request.headers.get("x-forwarded-for") or request.headers.get("X-Forwarded-For")
-    if xff:
-        return xff.split(",")[0].strip() or "unknown"
-    if request.client:
-        return request.client.host or "unknown"
-    return "unknown"
+    return security_client_ip(request)
 
 
 def _auth_failures_blocked(ip: str) -> bool:
@@ -100,6 +108,13 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
         # Allow unauthenticated static UI + health (health reveals little)
         if path == "/" or any(path == p or path.startswith(p + "/") for p in PUBLIC_PREFIXES):
             return await call_next(request)
+        # OpenAPI only when explicitly enabled (or when auth not required — handled above)
+        if _docs_public() and path in {"/docs", "/openapi.json", "/redoc"}:
+            return await call_next(request)
+        if _docs_public() and (
+            path.startswith("/docs/") or path.startswith("/redoc/")
+        ):
+            return await call_next(request)
         # Phone pair redeem is public (code is the secret); create still requires auth
         if path.rstrip("/") == "/v1/pair/redeem" and request.method in {"POST", "OPTIONS"}:
             return await call_next(request)
@@ -133,64 +148,37 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
                 headers={"Retry-After": str(int(_AUTH_FAIL_WINDOW_SEC))},
             )
 
-        # Bearer / query token
-        token = _extract_token(request)
+        token = token_from_request(request)
         request.state.auth_kind = None
         request.state.api_key = None
         request.state.auth_scopes = [SCOPE_ADMIN]
+        request.state.user = None
+        request.state.tenant_id = None
 
-        if token and has_master and _const_eq(token, self.config.auth_token):
+        auth = await resolve_auth(
+            token,
+            config=self.config,
+            store=self.store,
+            method=request.method,
+            path=path,
+        )
+        if auth and auth.get("forbidden"):
+            return JSONResponse(
+                status_code=403,
+                content={
+                    "detail": "Token scope does not allow this action",
+                    "scopes": auth.get("auth_scopes") or [],
+                    "path": path,
+                },
+            )
+        if auth:
             _clear_auth_failures(ip)
-            request.state.auth_kind = "master"
-            request.state.auth_scopes = [SCOPE_ADMIN]
+            request.state.auth_kind = auth.get("auth_kind")
+            request.state.auth_scopes = auth.get("auth_scopes") or [SCOPE_ADMIN]
+            request.state.user = auth.get("user")
+            request.state.api_key = auth.get("api_key")
+            request.state.tenant_id = auth.get("tenant_id")
             return await call_next(request)
-
-        # User session tokens (ogs_…) from email/password login
-        if token and self.store is not None and token.startswith("ogs_"):
-            try:
-                sess = await self.store.verify_session_token(token)
-            except Exception:
-                sess = None
-            if sess:
-                scopes = sess.get("scopes") or ["read", "write"]
-                if not scopes_allow(scopes, request.method, path):
-                    return JSONResponse(
-                        status_code=403,
-                        content={
-                            "detail": "Session does not allow this action",
-                            "scopes": scopes,
-                        },
-                    )
-                _clear_auth_failures(ip)
-                request.state.auth_kind = "session"
-                request.state.user = sess
-                request.state.tenant_id = sess.get("tenant_id")
-                request.state.auth_scopes = scopes
-                return await call_next(request)
-
-        # Per-device API keys
-        if token and self.store is not None:
-            try:
-                key = await self.store.verify_api_key(token)
-            except Exception:
-                key = None
-            if key:
-                scopes = key.get("scopes") or []
-                if not scopes_allow(scopes, request.method, path):
-                    return JSONResponse(
-                        status_code=403,
-                        content={
-                            "detail": "API key scope does not allow this action",
-                            "scopes": scopes,
-                            "path": path,
-                        },
-                    )
-                _clear_auth_failures(ip)
-                request.state.auth_kind = "api_key"
-                request.state.api_key = key
-                request.state.tenant_id = (key.get("metadata") or {}).get("tenant_id")
-                request.state.auth_scopes = scopes
-                return await call_next(request)
 
         # Optional: Tailscale Serve identity headers (ONLY when bound to localhost)
         if self.config.trust_tailscale_identity and self.config.is_localhost_bind:
@@ -224,15 +212,8 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
 
 
 def _extract_token(request: Request) -> Optional[str]:
-    auth = request.headers.get("authorization") or request.headers.get("Authorization")
-    if auth:
-        parts = auth.split(None, 1)
-        if len(parts) == 2 and parts[0].lower() == "bearer":
-            return parts[1].strip()
-        return auth.strip()
-    # Query param for EventSource (cannot set headers easily)
-    q = request.query_params.get("token") or request.query_params.get("access_token")
-    return q
+    """Back-compat for server.auth_logout and tests."""
+    return token_from_request(request)
 
 
 def _extract_tailscale_identity(request: Request) -> Optional[dict[str, str]]:
@@ -259,9 +240,5 @@ def _extract_tailscale_identity(request: Request) -> Optional[dict[str, str]]:
 
 
 def _const_eq(a: str, b: str) -> bool:
-    if len(a) != len(b):
-        return False
-    result = 0
-    for x, y in zip(a.encode(), b.encode()):
-        result |= x ^ y
-    return result == 0
+    """Back-compat alias — prefer security.const_eq."""
+    return const_eq(a, b)
