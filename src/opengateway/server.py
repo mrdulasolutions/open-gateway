@@ -23,7 +23,7 @@ from fastapi import (
     WebSocketDisconnect,
 )
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from sse_starlette.sse import EventSourceResponse
 
@@ -258,7 +258,32 @@ def create_app(
             "audit": st._audit_enabled,
             "redis": bool(getattr(app.state, "redis_bus", None)),
             "push": __import__("opengateway.push", fromlist=["vapid_configured"]).vapid_configured(),
+            "nudge_grammar": __import__(
+                "opengateway.nudge_policy", fromlist=["NudgeRateLimiter"]
+            ).NudgeRateLimiter.document_grammar(),
         }
+
+    @app.get("/v1/agent/playbook")
+    async def agent_playbook(topic: str = "connect") -> PlainTextResponse:
+        """Public markdown playbooks for agents (no private git required)."""
+        from opengateway.agent_playbook import playbook
+
+        return PlainTextResponse(
+            playbook(topic),
+            media_type="text/markdown; charset=utf-8",
+            headers={"Cache-Control": "public, max-age=300"},
+        )
+
+    @app.get("/v1/agent/skill")
+    async def agent_skill() -> PlainTextResponse:
+        """Public SKILL.md for opengateway-collab."""
+        from opengateway.agent_playbook import skill_markdown
+
+        return PlainTextResponse(
+            skill_markdown(),
+            media_type="text/markdown; charset=utf-8",
+            headers={"Cache-Control": "public, max-age=300"},
+        )
 
     # ── User login (multi-user / multi-tenant) ────────────────────────────
 
@@ -386,9 +411,9 @@ def create_app(
                 "Open Live Ops and click Connect — one-time claim stores the token in this browser."
                 if claimable
                 else (
-                    "Setup already claimed — paste token from Railway Variables → OPENGATEWAY_AUTH_TOKEN."
+                    "Setup already claimed — paste the OPENGATEWAY_AUTH_TOKEN you set when starting this hub."
                     if claimed
-                    else "Paste bearer token in Settings, or set OPENGATEWAY_AUTH_TOKEN on the server."
+                    else "Paste bearer token in Settings, or set OPENGATEWAY_AUTH_TOKEN when you start serve."
                 )
             ),
         }
@@ -422,7 +447,7 @@ def create_app(
             record_auth_failure(ip)
             raise HTTPException(
                 status_code=410,
-                detail="Setup already claimed — use Railway Variables OPENGATEWAY_AUTH_TOKEN",
+                detail="Setup already claimed — use this hub's OPENGATEWAY_AUTH_TOKEN",
             )
         await st.audit(
             "setup.claim",
@@ -499,6 +524,28 @@ def create_app(
             metadata=meta,
         )
         return created
+
+    @app.get("/v1/keys/{key_id}/usage")
+    async def key_usage(key_id: str) -> dict[str, Any]:
+        """Participants currently bound to this key (revoke confirm)."""
+        keys = await st.list_api_keys()
+        meta = next((k for k in keys if k.get("id") == key_id), None)
+        if not meta:
+            raise HTTPException(status_code=404, detail="Key not found")
+        used_by = st.participants_for_api_key(key_id)
+        names = sorted({u["name"] for u in used_by if u.get("name")})
+        return {
+            "id": key_id,
+            "name": meta.get("name"),
+            "key_prefix": meta.get("key_prefix"),
+            "used_by": used_by,
+            "used_by_names": names,
+            "warning": (
+                f"This key is used by: {', '.join(names)}. All will disconnect."
+                if names
+                else "No live participants bound to this key."
+            ),
+        }
 
     @app.delete("/v1/keys/{key_id}")
     async def delete_key(key_id: str, revoke: bool = Query(False)) -> dict[str, str]:
@@ -1123,13 +1170,39 @@ def create_app(
     @app.post("/v1/rooms/{room_id}/join", response_model=Participant)
     async def join_room(request: Request, room_id: str, body: JoinRoomRequest) -> Participant:
         await _require_room(request, room_id)
-        name = (body.name or "").strip() or "agent"
-        meta = dict(body.metadata or {})
+        from opengateway.identity import participant_key_metadata, resolve_join_name
+
+        api_key = getattr(request.state, "api_key", None)
+        key_name = ""
+        if isinstance(api_key, dict):
+            key_name = str(api_key.get("name") or "").strip()
+        name, name_err = resolve_join_name(
+            request_name=(body.name or "").strip(),
+            key_agent_name=key_name,
+            harness=body.harness.value if hasattr(body.harness, "value") else str(body.harness),
+            enforce_key_name=bool(key_name),
+        )
+        if name_err:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "agent_name_mismatch",
+                    "message": name_err,
+                    "token_agent_name": key_name,
+                    "requested_name": (body.name or "").strip(),
+                    "hint": "Mint one token per agent persona, or join with the token's name.",
+                },
+            )
+        name = name or "agent"
+        key_meta = participant_key_metadata(api_key if isinstance(api_key, dict) else None)
+        meta = {**(body.metadata or {}), **key_meta}
         user = getattr(request.state, "user", None)
         if user and user.get("user_id"):
             meta.setdefault("user_id", user["user_id"])
         elif user and user.get("id"):
             meta.setdefault("user_id", user["id"])
+        if not meta.get("primary_room_id"):
+            meta["primary_room_id"] = room_id
         # 1) Explicit id always wins (stable client session) — same room only
         if body.participant_id and (existing := await st.get_participant(body.participant_id)):
             if existing.room_id and existing.room_id != room_id:
@@ -1141,7 +1214,18 @@ def create_app(
             existing.capabilities = body.capabilities
             existing.metadata = {**existing.metadata, **meta}
             return await st.join_room(room_id, existing)
-        # 2) Reuse same name+harness seat (kills ghost duplicates on leave/rejoin)
+        # 2) Same API key in this room → reattach
+        key_id = key_meta.get("api_key_id")
+        if key_id:
+            by_key = st.find_participant_by_api_key(room_id, str(key_id))
+            if by_key:
+                by_key.name = name
+                by_key.harness = body.harness
+                by_key.role = body.role
+                by_key.capabilities = body.capabilities or by_key.capabilities
+                by_key.metadata = {**by_key.metadata, **meta}
+                return await st.join_room(room_id, by_key)
+        # 3) Reuse same name+harness seat (kills ghost duplicates on leave/rejoin)
         twin = st.find_participant_by_identity(room_id, name, body.harness.value)
         if twin:
             twin.name = name
@@ -1604,17 +1688,33 @@ def create_app(
         ]
         mentioned = _mentioned_peers(body.content or "", all_peers)
 
+        import os as _os
+
+        from opengateway.nudge_policy import (
+            is_listen_only,
+            message_kind_from_meta,
+            nudge_target_eligible,
+            should_create_nudge_task,
+            should_skip_nudge,
+        )
+
+        meta = dict(body.metadata or {})
+        if "kind" not in meta:
+            meta["kind"] = message_kind_from_meta(meta, to_participant_id=to_id)
+
         msg = RoomMessage(
             room_id=room_id,
             from_participant_id=body.from_participant_id,
             from_name=participant.name,
             to_participant_id=to_id,  # None = public room thread
             message=message,
-            metadata=body.metadata,
+            metadata=meta,
         )
         saved = await st.post_message(msg)
 
         nudged: list[dict[str, Any]] = []
+        skipped: list[dict[str, Any]] = []
+        skipped_reason = ""
         # @all / everyone → nudge all agents. Single @name → nudge that agent.
         # Explicit nudge_all still supported for API clients.
         # Private DMs (explicit to_id) do not auto-nudge everyone.
@@ -1624,24 +1724,67 @@ def create_app(
         want_nudge_mentioned = (
             bool(mentioned) and not want_nudge_all and not to_id
         )
+        skip, skip_why = should_skip_nudge(
+            content=body.content or "",
+            metadata=meta,
+            to_participant_id=to_id,
+        )
+        if skip and (want_nudge_all or want_nudge_mentioned):
+            skipped_reason = skip_why
+            want_nudge_all = False
+            want_nudge_mentioned = False
+
+        include_joined = (
+            str(_os.environ.get("OPENGATEWAY_NUDGE_INCLUDE_JOINED") or "")
+            .lower()
+            in {"1", "true", "yes", "on"}
+            or bool(meta.get("nudge_include_joined"))
+        )
+
         if want_nudge_all or want_nudge_mentioned:
-            if want_nudge_all:
-                peers = [
-                    p
-                    for p in all_peers
-                    if p.harness.value not in {"human"}
-                    and p.status == ParticipantStatus.ONLINE
-                ]
-            else:
-                peers = [
-                    p
-                    for p in mentioned
-                    if p.harness.value not in {"human"}
-                    and p.status == ParticipantStatus.ONLINE
-                ]
-            # Only online non-human agents — offline ghosts must not get tasks/DMs
-            for peer in peers:
-                # Personal DM so wait_for_messages(for_participant=peer) always fires
+            candidates = all_peers if want_nudge_all else list(mentioned)
+            seen_keys: set[str] = set()
+            unique_peers: list[Participant] = []
+            for p in candidates:
+                kid = str((p.metadata or {}).get("api_key_id") or p.id)
+                if kid in seen_keys:
+                    continue
+                seen_keys.add(kid)
+                unique_peers.append(p)
+
+            create_tasks = should_create_nudge_task(
+                want_nudge_all=want_nudge_all,
+                content=body.content or "",
+                metadata=meta,
+            )
+            for peer in unique_peers:
+                ok, why = nudge_target_eligible(
+                    peer, include_joined=include_joined
+                )
+                if not ok:
+                    skipped.append(
+                        {
+                            "participant_id": peer.id,
+                            "name": peer.name,
+                            "reason": why,
+                            "presence": getattr(peer, "presence", None),
+                        }
+                    )
+                    continue
+                allowed, rate_why = st.nudge_limiter.allow(
+                    room_id, body.from_participant_id, peer.id
+                )
+                if not allowed:
+                    skipped.append(
+                        {
+                            "participant_id": peer.id,
+                            "name": peer.name,
+                            "reason": rate_why,
+                            "presence": getattr(peer, "presence", None),
+                        }
+                    )
+                    continue
+                listen_only = is_listen_only(peer)
                 dm = RoomMessage(
                     room_id=room_id,
                     from_participant_id=body.from_participant_id,
@@ -1651,58 +1794,121 @@ def create_app(
                         f"agent/{participant.name}",
                         f"@nudge → {peer.name}: {body.content}",
                     ),
-                    metadata={"nudge": True, "broadcast_id": saved.id},
-                )
-                await st.post_message(dm)
-                task = Task(
-                    room_id=room_id,
-                    title=f"Respond to {participant.name}",
-                    description=(
-                        f"{participant.name} addressed everyone:\n\n{body.content}\n\n"
-                        f"Please reply in the room (post_message). This task is for {peer.name}."
-                    ),
-                    created_by=body.from_participant_id,
-                    claimed_by=peer.id,
-                    status=TaskStatus.CLAIMED,
                     metadata={
                         "nudge": True,
-                        "assignee_id": peer.id,
-                        "assignee_name": peer.name,
-                        "source_message_id": saved.id,
+                        "kind": "nudge",
+                        "broadcast_id": saved.id,
+                        "listen_only": listen_only,
                     },
                 )
-                await st.create_task(task)
+                await st.post_message(dm)
+                st.nudge_limiter.record_edge(
+                    room_id,
+                    body.from_participant_id,
+                    peer.id,
+                    from_name=participant.name,
+                    to_name=peer.name,
+                )
+                task_id = None
+                if create_tasks and not listen_only:
+                    task = Task(
+                        room_id=room_id,
+                        title=f"Respond to {participant.name}",
+                        description=(
+                            f"{participant.name} addressed the room:\n\n{body.content}\n\n"
+                            f"Please reply in the room (post_message). This task is for {peer.name}."
+                        ),
+                        created_by=body.from_participant_id,
+                        claimed_by=peer.id,
+                        status=TaskStatus.CLAIMED,
+                        metadata={
+                            "nudge": True,
+                            "assignee_id": peer.id,
+                            "assignee_name": peer.name,
+                            "source_message_id": saved.id,
+                        },
+                    )
+                    await st.create_task(task)
+                    task_id = task.id
                 nudged.append(
                     {
                         "participant_id": peer.id,
                         "name": peer.name,
-                        "task_id": task.id,
+                        "task_id": task_id,
+                        "presence": getattr(peer, "presence", None),
+                        "listen_only": listen_only,
                     }
                 )
-            # System note in the public channel
+            n_listen = len(nudged)
+            n_off = sum(1 for s in skipped if s.get("reason") == "offline")
+            n_joined = sum(
+                1 for s in skipped if s.get("reason") == "joined_not_listening"
+            )
+            n_other = len(skipped) - n_off - n_joined
+            toast = (
+                f"{n_listen} listening"
+                + (f", {n_joined} joined not listening" if n_joined else "")
+                + (f", {n_off} offline" if n_off else "")
+                + " — only listening agents get DMs"
+            )
             note = RoomMessage(
                 room_id=room_id,
                 from_participant_id=body.from_participant_id,
                 from_name="system",
                 message=text_message(
                     "agent/system",
-                    "Nudge sent to: "
-                    + (", ".join(n["name"] for n in nudged) if nudged else "(no online agents)"),
+                    "Nudge: "
+                    + toast
+                    + (
+                        " → "
+                        + ", ".join(n["name"] for n in nudged)
+                        if nudged
+                        else " → (none)"
+                    ),
                 ),
-                metadata={"system": True, "nudge_summary": True},
+                metadata={
+                    "system": True,
+                    "nudge_summary": True,
+                    "kind": "system",
+                    "nudge_counts": {
+                        "nudged": n_listen,
+                        "skipped_offline": n_off,
+                        "skipped_joined_not_listening": n_joined,
+                        "skipped_other": n_other,
+                    },
+                },
             )
-            # Post as synthetic system — use a fixed from that still validates
-            # Keep from as sender so auth stays simple; name shown as system via role
             note.from_name = "system"
             await st.post_message(note)
 
-        if want_nudge_all or want_nudge_mentioned:
+        if want_nudge_all or want_nudge_mentioned or skipped_reason:
+            storm = st.nudge_limiter.room_stats(room_id)
+            delivered_n = len(nudged)
             return {
-                "message": saved.model_dump(mode="json"),
+                "message": {
+                    **saved.model_dump(mode="json"),
+                    "kind": (saved.metadata or {}).get("kind") or "chat",
+                },
                 "nudged": nudged,
-                "nudge_count": len(nudged),
+                "skipped": skipped,
+                "nudge_count": delivered_n,
+                "nudge_skipped": skipped_reason or None,
+                "nudge_summary": {
+                    "nudged": delivered_n,
+                    "skipped_offline": sum(
+                        1 for s in skipped if s.get("reason") == "offline"
+                    ),
+                    "skipped_joined_not_listening": sum(
+                        1
+                        for s in skipped
+                        if s.get("reason") == "joined_not_listening"
+                    ),
+                },
+                "nudge_stats": storm,
             }
-        return saved
+        out = saved.model_dump(mode="json")
+        out["kind"] = (saved.metadata or {}).get("kind") or "chat"
+        return out
 
     @app.get("/v1/rooms/{room_id}/messages")
     async def list_messages(
@@ -1778,19 +1984,45 @@ def create_app(
         )
         return await st.create_task(task)
 
+    @app.get("/v1/rooms/{room_id}/nudge-stats")
+    async def room_nudge_stats(request: Request, room_id: str) -> dict[str, Any]:
+        """Live Ops storm banner + who-nudged-whom edges."""
+        await _require_room(request, room_id)
+        stats = st.nudge_limiter.room_stats(room_id)
+        return {"room_id": room_id, **stats}
+
     @app.get("/v1/rooms/{room_id}/tasks")
     async def list_tasks(
         request: Request,
         room_id: str,
         status: Optional[TaskStatus] = None,
+        include_nudge: bool = Query(
+            False,
+            description="Include auto-nudge tasks (default: hide)",
+        ),
     ) -> dict[str, Any]:
         await _require_room(request, room_id)
+        items = await st.list_tasks(room_id, status=status)
+        if not include_nudge:
+            items = [t for t in items if not (t.metadata or {}).get("nudge")]
         return {
-            "tasks": [
-                t.model_dump(mode="json")
-                for t in await st.list_tasks(room_id, status=status)
-            ]
+            "tasks": [t.model_dump(mode="json") for t in items],
+            "include_nudge": include_nudge,
         }
+
+    @app.post("/v1/rooms/{room_id}/tasks/cancel-nudges")
+    async def cancel_nudge_tasks(request: Request, room_id: str) -> dict[str, Any]:
+        """Bulk-cancel open/claimed auto-nudge tasks."""
+        await _require_room(request, room_id)
+        cancelled = 0
+        for t in await st.list_tasks(room_id):
+            if not (t.metadata or {}).get("nudge"):
+                continue
+            if t.status not in {TaskStatus.OPEN, TaskStatus.CLAIMED}:
+                continue
+            await st.update_task(room_id, t.id, status=TaskStatus.CANCELLED)
+            cancelled += 1
+        return {"cancelled": cancelled, "room_id": room_id}
 
     @app.patch("/v1/rooms/{room_id}/tasks/{task_id}", response_model=Task)
     async def update_task(
@@ -2355,15 +2587,407 @@ def create_app(
             for_participant=for_participant,
             include_dms=False,
         )
+        from opengateway.workspace import list_workspace as _ws_list
+
         return {
             "room": (await st.get_room(room_id)).model_dump(mode="json"),  # type: ignore[union-attr]
             "participants": [p.model_dump(mode="json") for p in people],
-            "tasks": [t.model_dump(mode="json") for t in await st.list_tasks(room_id)],
+            "tasks": [
+                t.model_dump(mode="json")
+                for t in await st.list_tasks(room_id)
+                if not (t.metadata or {}).get("nudge")
+            ],
             "messages": [m.model_dump(mode="json") for m in msgs],
             "artifacts": [a.model_dump(mode="json") for a in await st.list_artifacts(room_id)],
             "bookmarks": [b.model_dump(mode="json") for b in await st.list_bookmarks(room_id)],
             "forks": [f.model_dump(mode="json") for f in await st.list_forks(room_id)],
+            "workspace": _ws_list(st, room_id)[:200],
         }
+
+    # ── Tool credential vault (secrets never leave hub to agents) ─────────
+
+    @app.get("/v1/tools/credentials")
+    async def list_tool_credentials() -> dict[str, Any]:
+        from opengateway.tool_vault import list_credentials
+
+        return {"credentials": list_credentials(st)}
+
+    @app.put("/v1/tools/credentials/{name}")
+    async def put_tool_credential(name: str, request: Request) -> dict[str, Any]:
+        from opengateway.tool_vault import put_credential
+
+        _require_admin(request)
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if not isinstance(body, dict):
+            body = {}
+        value = body.get("value")
+        if value is None:
+            raise HTTPException(status_code=400, detail="value is required")
+        try:
+            public = put_credential(
+                st,
+                name=name,
+                value=str(value),
+                description=str(body.get("description") or ""),
+                header_name=str(body.get("header_name") or "Authorization"),
+                inject=str(body.get("inject") or "bearer"),
+                allowed_hosts=body.get("allowed_hosts")
+                if isinstance(body.get("allowed_hosts"), list)
+                else None,
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        await st.audit(
+            "tool_credential.put",
+            actor=str(
+                getattr(request.state, "auth_kind", None)
+                or getattr(request.state, "user", None)
+                or "admin"
+            ),
+            resource_type="tool_credential",
+            resource_id=public.get("name"),
+            detail={"name": public.get("name"), "inject": public.get("inject")},
+        )
+        return public
+
+    @app.delete("/v1/tools/credentials/{name}")
+    async def delete_tool_credential(name: str, request: Request) -> dict[str, Any]:
+        from opengateway.tool_vault import delete_credential, validate_name
+
+        _require_admin(request)
+        try:
+            validate_name(name)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        ok = delete_credential(st, name)
+        if not ok:
+            raise HTTPException(status_code=404, detail="Credential not found")
+        await st.audit(
+            "tool_credential.delete",
+            actor=str(
+                getattr(request.state, "auth_kind", None)
+                or getattr(request.state, "user", None)
+                or "admin"
+            ),
+            resource_type="tool_credential",
+            resource_id=name,
+        )
+        return {"ok": True, "name": name}
+
+    @app.post("/v1/tools/proxy")
+    async def tool_credential_proxy(request: Request) -> dict[str, Any]:
+        import base64 as b64
+        import httpx
+
+        from opengateway.api_keys import SCOPE_ADMIN
+        from opengateway.tool_vault import (
+            MAX_PROXY_BODY,
+            MAX_PROXY_RESPONSE,
+            PROXY_TIMEOUT,
+            apply_query_secret,
+            assert_safe_url,
+            build_auth_header,
+            get_secret_value,
+            host_allowed,
+            load_vault,
+            validate_name,
+        )
+
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if not isinstance(body, dict):
+            body = {}
+        cred_name = str(body.get("credential") or body.get("name") or "").strip()
+        method = str(body.get("method") or "GET").upper()
+        url = str(body.get("url") or "").strip()
+        if not cred_name or not url:
+            raise HTTPException(
+                status_code=400, detail="credential and url are required"
+            )
+        if method not in {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"}:
+            raise HTTPException(status_code=400, detail="Unsupported method")
+        try:
+            validate_name(cred_name)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        vault = load_vault(st)
+        rec = vault.get(cred_name)
+        if not rec:
+            raise HTTPException(status_code=404, detail="Credential not found")
+        secret = get_secret_value(st, cred_name)
+        if secret is None:
+            raise HTTPException(status_code=404, detail="Credential not found")
+        scopes = list(getattr(request.state, "auth_scopes", None) or [])
+        auth_kind = getattr(request.state, "auth_kind", None)
+        allow_private = bool(body.get("allow_private")) and (
+            SCOPE_ADMIN in scopes or auth_kind in {"master", "session"}
+        )
+        try:
+            _, hostname = assert_safe_url(url, allow_private=allow_private)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        if not host_allowed(rec, hostname):
+            raise HTTPException(
+                status_code=403,
+                detail=f"Host {hostname!r} not in allowed_hosts for this credential",
+            )
+        inject = (rec.get("inject") or "bearer").lower()
+        out_url = url
+        headers: dict[str, str] = {}
+        extra = body.get("headers")
+        if isinstance(extra, dict):
+            for k, v in extra.items():
+                if k and v is not None:
+                    headers[str(k)] = str(v)
+        if inject == "query":
+            out_url = apply_query_secret(url, rec, secret)
+        else:
+            headers.update(build_auth_header(rec, secret))
+
+        req_body: bytes | None = None
+        if body.get("body_base64"):
+            try:
+                req_body = b64.b64decode(str(body["body_base64"]))
+            except Exception as e:
+                raise HTTPException(status_code=400, detail="invalid body_base64") from e
+        elif body.get("body") is not None:
+            raw_b = body["body"]
+            if isinstance(raw_b, (dict, list)):
+                req_body = json.dumps(raw_b).encode("utf-8")
+                headers.setdefault("Content-Type", "application/json")
+            else:
+                req_body = str(raw_b).encode("utf-8")
+        if req_body is not None and len(req_body) > MAX_PROXY_BODY:
+            raise HTTPException(status_code=400, detail="Request body too large")
+
+        timeout = min(float(body.get("timeout") or PROXY_TIMEOUT), 60.0)
+        try:
+            async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
+                resp = await client.request(
+                    method, out_url, headers=headers, content=req_body
+                )
+        except httpx.RequestError as e:
+            await st.audit(
+                "tool_proxy.error",
+                actor="agent",
+                resource_type="tool_credential",
+                resource_id=cred_name,
+                detail={"url_host": hostname, "error": type(e).__name__},
+                outcome="error",
+            )
+            raise HTTPException(
+                status_code=502, detail=f"Upstream request failed: {type(e).__name__}"
+            ) from e
+
+        content = resp.content[:MAX_PROXY_RESPONSE]
+        truncated = len(resp.content) > MAX_PROXY_RESPONSE
+        text_out: str | None = None
+        b64_out: str | None = None
+        try:
+            text_out = content.decode("utf-8")
+            if any(ord(c) < 9 for c in text_out[:200]):
+                raise UnicodeError("binary")
+        except Exception:
+            text_out = None
+            b64_out = b64.b64encode(content).decode("ascii")
+
+        safe_resp_headers = {
+            k: v
+            for k, v in resp.headers.items()
+            if k.lower()
+            not in {
+                "set-cookie",
+                "authorization",
+                "proxy-authorization",
+                "transfer-encoding",
+            }
+        }
+        await st.audit(
+            "tool_proxy.call",
+            actor="agent",
+            resource_type="tool_credential",
+            resource_id=cred_name,
+            detail={
+                "method": method,
+                "url_host": hostname,
+                "status": resp.status_code,
+                "bytes": len(content),
+            },
+        )
+        return {
+            "credential": cred_name,
+            "status_code": resp.status_code,
+            "headers": safe_resp_headers,
+            "body": text_out,
+            "body_base64": b64_out,
+            "bytes": len(content),
+            "truncated": truncated,
+        }
+
+    # ── Room workspace (path-addressed shared FS) ─────────────────────────
+
+    @app.get("/v1/rooms/{room_id}/workspace")
+    async def workspace_list_route(
+        request: Request,
+        room_id: str,
+        prefix: str = Query("", description="Path prefix filter"),
+    ) -> dict[str, Any]:
+        from opengateway.workspace import list_workspace
+
+        await _require_room(request, room_id)
+        files = list_workspace(st, room_id, prefix=prefix)
+        return {"room_id": room_id, "prefix": prefix or "", "files": files}
+
+    @app.get("/v1/rooms/{room_id}/workspace/{path:path}")
+    async def workspace_get_route(
+        request: Request,
+        room_id: str,
+        path: str,
+        format: str = Query(
+            "auto",
+            description="auto | json | binary — auto returns JSON for text, binary otherwise",
+        ),
+    ) -> Any:
+        from fastapi.responses import Response
+        from opengateway.workspace import read_workspace_bytes
+
+        await _require_room(request, room_id)
+        try:
+            result = read_workspace_bytes(st, room_id, path)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        if result is None:
+            raise HTTPException(status_code=404, detail="File not found")
+        raw, entry = result
+        ct = entry.get("content_type") or "application/octet-stream"
+        fmt = (format or "auto").lower()
+        is_text = ct.startswith("text/") or ct in {
+            "application/json",
+            "application/xml",
+            "application/javascript",
+            "application/x-yaml",
+            "application/yaml",
+        }
+        if fmt == "binary" or (fmt == "auto" and not is_text):
+            return Response(
+                content=raw,
+                media_type=ct,
+                headers={
+                    "X-Workspace-Path": entry["path"],
+                    "X-Workspace-Sha256": entry.get("sha256") or "",
+                },
+            )
+        text: str | None = None
+        b64_content: str | None = None
+        if is_text or fmt == "json":
+            try:
+                text = raw.decode("utf-8")
+            except UnicodeDecodeError:
+                b64_content = base64.b64encode(raw).decode("ascii")
+        else:
+            b64_content = base64.b64encode(raw).decode("ascii")
+        return {
+            "path": entry["path"],
+            "bytes": len(raw),
+            "content_type": ct,
+            "sha256": entry.get("sha256"),
+            "updated_at": entry.get("updated_at"),
+            "updated_by": entry.get("updated_by"),
+            "content": text,
+            "content_base64": b64_content,
+            "storage": entry.get("storage"),
+        }
+
+    @app.put("/v1/rooms/{room_id}/workspace/{path:path}")
+    async def workspace_put_route(
+        request: Request,
+        room_id: str,
+        path: str,
+        updated_by: str = Query("", description="Participant id or agent name"),
+        content_type: str = Query("", description="MIME type override"),
+    ) -> dict[str, Any]:
+        from opengateway.workspace import put_workspace_file
+
+        await _require_room(request, room_id)
+        ctype_hdr = (request.headers.get("content-type") or "").split(";")[0].strip()
+        raw: bytes
+        if ctype_hdr == "application/json":
+            try:
+                body = await request.json()
+            except Exception:
+                body = {}
+            if not isinstance(body, dict):
+                raise HTTPException(status_code=400, detail="JSON body must be object")
+            if body.get("content_base64") is not None:
+                try:
+                    raw = base64.b64decode(str(body["content_base64"]))
+                except Exception as e:
+                    raise HTTPException(status_code=400, detail="invalid content_base64") from e
+            elif body.get("content") is not None:
+                raw = str(body["content"]).encode("utf-8")
+            else:
+                raise HTTPException(
+                    status_code=400, detail="content or content_base64 required"
+                )
+            ct = (
+                content_type
+                or str(body.get("content_type") or "")
+                or "text/plain"
+            )
+            who = updated_by or str(body.get("updated_by") or "")
+        else:
+            raw = await request.body()
+            ct = content_type or ctype_hdr or "application/octet-stream"
+            who = updated_by
+        try:
+            meta = put_workspace_file(
+                st,
+                room_id=room_id,
+                path=path,
+                raw=raw,
+                content_type=ct or None,
+                updated_by=who,
+                files_root=files_root,
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        await st.audit(
+            "workspace.put",
+            actor=who or "agent",
+            room_id=room_id,
+            resource_type="workspace",
+            resource_id=meta["path"],
+            detail={"bytes": meta["bytes"], "storage": meta.get("storage")},
+        )
+        return meta
+
+    @app.delete("/v1/rooms/{room_id}/workspace/{path:path}")
+    async def workspace_delete_route(
+        request: Request, room_id: str, path: str
+    ) -> dict[str, Any]:
+        from opengateway.workspace import delete_workspace_file, normalize_path
+
+        await _require_room(request, room_id)
+        try:
+            norm = normalize_path(path)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        ok = delete_workspace_file(st, room_id, norm)
+        if not ok:
+            raise HTTPException(status_code=404, detail="File not found")
+        await st.audit(
+            "workspace.delete",
+            actor="agent",
+            room_id=room_id,
+            resource_type="workspace",
+            resource_id=norm,
+        )
+        return {"ok": True, "path": norm}
 
     return app
 

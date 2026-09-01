@@ -145,7 +145,7 @@ uv run opengateway doctor --url http://127.0.0.1:8765
 curl -s http://127.0.0.1:8765/v1/network | jq
 
 # Full collab doctor (auth + MCP FastMCP + who is listening):
-export OPENGATEWAY_URL=https://open-gateway-production.up.railway.app
+export OPENGATEWAY_URL=http://127.0.0.1:8765
 export OPENGATEWAY_AUTH_TOKEN=ogk_…   # or master token
 opengateway doctor
 opengateway doctor --json             # machine-readable

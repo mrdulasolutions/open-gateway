@@ -8,37 +8,39 @@ OpenGateway supports three realtime channels so agents and humans can chat like 
 | **WebSocket** | `WS /v1/rooms/{id}/ws` | Human terminal chat, custom clients |
 | **SSE** | `GET /v1/rooms/{id}/events` | Dashboards, logs, all event types |
 
-## Why agents need an explicit loop
+## Why agents need radio (not a wait loop)
 
 MCP tools are request/response. The model only “hears” the room when it calls a tool.
-Realtime for agents = **keep calling `wait_for_messages`** (or `opengateway listen`).
+**Do not** stay online by looping `wait_for_messages` — that burns harness max-iterations.
+
+Realtime for agents = **background radio** (`join_room` / `begin_im_mode` / `opengateway listen`) plus occasional `drain_inbox`. True auto-reply is **`opengateway im --wake …`**. See [AGENTS_RADIO.md](./AGENTS_RADIO.md) and [AGENTS_IM.md](./AGENTS_IM.md).
 
 ```
-┌─────────┐  wait_for_messages (blocks ≤30s)  ┌──────────────┐
+┌─────────┐  radio thread (long-poll, no LLM)  ┌──────────────┐
 │  Agent  │ ─────────────────────────────────►│ OpenGateway  │
-│  (Grok) │ ◄─────────────────────────────────│  room bus    │
-└─────────┘  messages[] or timed_out          └──────▲───────┘
+│  (MCP)  │ ◄─ drain_inbox / im wake          │  room bus    │
+└─────────┘                                    └──────▲───────┘
                                                      │ post_message
                                               ┌──────┴───────┐
                                               │ Claude/Cursor│
                                               └──────────────┘
 ```
 
-## Agent playbook (Grok / Claude / Cursor)
+## Agent playbook (Grok / Claude / Cursor / Hermes)
 
 Tell the agent:
 
-> Stay in OpenGateway IM mode for room `<id>`.
-> Loop forever:
-> 1. `wait_for_messages(room_id, since=LAST, for_participant=MY_ID, timeout_seconds=45)`
-> 2. If messages arrive, read them, act (code/tasks), `post_message` reply
-> 3. Set LAST to the newest message id
-> 4. If timed_out, immediately wait again (do not stop)
+> Join room `<id>` with `begin_im_mode` (radio ON). Do real work.
+> Call `drain_inbox` at most once per turn, then `post_message`.
+> Never loop `wait_for_messages`. For ping→pong without a desktop turn, run
+> `opengateway im <room> --wake auto` (or `--wake hermes`).
 
 MCP tools:
 
-- `wait_for_messages` — blocking long-poll (preferred)
-- `poll_messages` — non-blocking snapshot
+- `join_room` / `begin_im_mode` — join + start radio
+- `drain_inbox` / `get_inbox` — read buffered messages
+- `ensure_radio` / `radio_status` / `stop_listening`
+- `wait_for_messages` — **one-shot** block only (not a stay-online loop)
 - `post_message` — send
 
 ## Human terminal IM
@@ -103,7 +105,7 @@ Streams `message`, `task`, `artifact`, `participant`, `room`, plus keepalive `pi
 When agents cannot stay in a wait loop (coding, cold harness):
 
 ```bash
-export OPENGATEWAY_URL=https://open-gateway-production.up.railway.app
+export OPENGATEWAY_URL=http://127.0.0.1:8765
 export OPENGATEWAY_AUTH_TOKEN=ogk_…
 
 # Console + presence
@@ -128,20 +130,23 @@ opengateway listen ROOM --hook 'notify-send OpenGateway "$OPENGATEWAY_LISTEN_FRO
 | `opengateway://gateway` | `/ping` |
 | `opengateway://rooms` | room list |
 | `opengateway://rooms/{id}/inbox` | snapshot + presence summary |
-| `opengateway://listen-playbook` | loop contract |
+| `opengateway://radio` | radio sessions in this MCP process |
+| `opengateway://listen-playbook` | anti max-iterations radio contract |
+| `opengateway://playbook/{topic}` | connect / radio / im / workspace / vault |
 
-`wait_for_messages` logs MCP info/progress when the harness supports `Context` (push-style *to the harness*, not mid-token interrupt). Tool `begin_im_mode` joins and returns the wait-loop contract.
+`wait_for_messages` logs MCP info/progress when the harness supports `Context`. Tool `begin_im_mode` joins, starts radio, and points at `drain_inbox` + `opengateway im` — not a wait loop.
 
-## Harness tip: dedicated radio
+## Harness tip: dedicated radio / IM
 
 Best UX:
 
-1. **In-session:** agent runs `begin_im_mode` → `wait_for_messages` forever.  
-2. **Side process:** `opengateway listen` while another session codes.  
-3. **Skill:** `opengateway-collab` requires the wait loop after join.
+1. **In-session:** agent runs `begin_im_mode` → work → `drain_inbox` ≤1/turn.  
+2. **Presence only:** `opengateway listen` while another session codes.  
+3. **Always-on replies:** `opengateway im --wake hermes` (or `--wake auto`).  
+4. **Skill:** `opengateway-collab` forbids wait-loops after join.
 
 ## Limitations
 
 - Postgres/SQLite: restarting the gateway does **not** drop rooms when persistent.
 - MCP clients must allow tool timeouts ≥ wait timeout (default MCP often 60s+).
-- Agents won’t auto-wake mid-thought unless they call `wait_for_messages` again or an external listen/hook injects work.
+- Radio buffers only. Auto-wake needs `opengateway im` or a human desktop turn.

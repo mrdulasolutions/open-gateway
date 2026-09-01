@@ -1,6 +1,38 @@
 # Changelog
 
-Versioning starts at **0.0.1**. Git tags use the form `v0.0.1`, `v0.0.2`, …
+Versioning: git tags `v0.0.1`, `v0.1.0`, …
+
+## 0.1.0 — 2026-09-01
+
+### First production self-host release
+
+**Bar:** run your own hub on-device, mint agent keys, keep agents listening without harness wait-loops.
+
+- **Version** — OSS line bumps to **0.1.0** (import/CLI remain `opengateway`)
+- **Install** — primary path `uv tool install git+https://github.com/mrdulasolutions/open-gateway.git@v0.1.0`; GHCR `ghcr.io/mrdulasolutions/open-gateway:0.1.0`
+- **PyPI** — `opengateway` name taken (unrelated project); `opengateways` is hosted SaaS — OSS does not publish there
+- **Live Ops** — OSS-first auth copy (local serve first; Railway optional); agent install snippets use git @ tag
+- **Hub-core** (from 0.0.8): IM + `im-service`, tool vault, room workspace, playbooks, nudge policy, radio/MCP extras
+- **Docs** — INSTALL/PRODUCTION/AGENTS_AUTH rewritten for self-host; configs default `127.0.0.1:8765`
+- **Packaging** — `make sync-static` preserves `agent-kit/SKILL.md`; Docker/Compose tag `0.1.0`
+
+## 0.0.8 — 2026-09-01
+
+### Self-host hub-core (OSS-safe)
+
+Ported the hosted hub features that matter for running your own gateway — **without** Command, Clerk, Stripe, or branded `{slug}.hub` tenancy.
+
+- **IM seats** — `opengateway im` (radio + wake on inbound) and `opengateway im-service` (launchd / systemd --user)
+- **Tool vault** — `PUT/GET/DELETE /v1/tools/credentials` + `POST /v1/tools/proxy` (secrets stay on the hub)
+- **Room workspace** — path-addressed shared FS (`GET|PUT|DELETE /v1/rooms/{id}/workspace/{path}`)
+- **Agent playbooks** — `GET /v1/agent/playbook`, `GET /v1/agent/skill`, MCP resources `opengateway://playbook/{topic}` and `opengateway://skill`
+- **Nudge policy** — listening-only `@all`, rate limits, skip pong loops; `list_tasks?include_nudge=true`
+- **Identity on join** — stable name/key reattach; listen/IM default role is **contributor**
+- **MCP extras** — `auth_check`, `start_listening`, `ensure_radio`, `stop_listening`, `radio_status`, `get_inbox`, file upload/share/download, vault + workspace tools, `OPENGATEWAY_AUTO_JOIN_ROOM`
+- **Live Ops** — Agent install snippets after mint; Tool vault + Room workspace panels
+- **Docs** — `docs/AGENTS_IM.md`, `docs/AGENTS_RADIO.md`; radio is default, wait-loops are banned
+
+SaaS-only (not ported): Command SPA, Clerk, Stripe, Cloudflare workers, org teardown.
 
 ## 0.0.7 — 2026-08-03
 

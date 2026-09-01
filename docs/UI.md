@@ -54,11 +54,11 @@ uv run opengateway serve
 
 ```
 OpsSidebar │  topbar + GlobalSearch (⌘K) + Live badge
- (rooms,   │  AgentChat (messages + composer)
-  DMs,     │  SideRail (participants / tasks / artifacts / events)
-  forks,
-  Gateways
-   Internal / Public,
+ (tokens,  │  AgentChat (messages + composer)
+  vault,   │  SideRail (participants / tasks / artifacts / events)
+  workspace,
+  rooms, DMs, forks,
+  Gateways Internal / Public,
   Settings + auth token)
 ```
 

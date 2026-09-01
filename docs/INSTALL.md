@@ -1,19 +1,21 @@
 # Install & package OpenGateway
 
-Neat ways to run the hub — pick one path.
+Neat ways to run the hub on **your machine** — pick one path.
 
 | Path | Best for | UI included? |
 |------|----------|--------------|
-| **A. `uv tool install` (git)** | Daily driver on a Mac/Linux box | Yes (packaged static) |
+| **A. `uv tool install` (git @ tag)** | Daily driver on Mac/Linux | Yes (packaged static) |
 | **B. Clone + `uv sync`** | Development / contrib | Yes (`webapp/dist`) |
 | **C. Docker Compose** | Always-on hub / lab server | Yes |
-| **D. Wheel / PyPI (later)** | `pip install opengateway` | Yes when published |
+| **D. GHCR image** | Pull prebuilt container | Yes |
 
-All public/LAN/serve modes need a strong token:
+Any non-loopback mode needs a strong token:
 
 ```bash
 export OPENGATEWAY_AUTH_TOKEN="$(openssl rand -hex 24)"
 ```
+
+**PyPI note:** the name `opengateway` is taken by an unrelated project; `opengateways` is the hosted SaaS line. OSS installs use **git @ tag** or **GHCR** until a separate PyPI name is reserved.
 
 ---
 
@@ -22,9 +24,7 @@ export OPENGATEWAY_AUTH_TOKEN="$(openssl rand -hex 24)"
 Requires [uv](https://docs.astral.sh/uv/) and Python 3.11+.
 
 ```bash
-uv tool install "git+https://github.com/mrdulasolutions/open-gateway.git"
-# pin a release:
-# uv tool install "git+https://github.com/mrdulasolutions/open-gateway.git@v0.0.3"
+uv tool install "git+https://github.com/mrdulasolutions/open-gateway.git@v0.1.0"
 
 opengateway serve
 # → http://127.0.0.1:8765/ui/
@@ -38,22 +38,20 @@ opengateway serve --mode public --via open --network lan \
   --host 0.0.0.0 --token "$OPENGATEWAY_AUTH_TOKEN" \
   --public-url "http://$(ipconfig getifaddr en0 2>/dev/null || hostname -I | awk '{print $1}'):8765"
 
-# other terminal / once:
 tailscale serve --bg 8765
 ```
 
 **Upgrade**
 
 ```bash
-uv tool upgrade opengateway
-# or reinstall from git @ tag
+uv tool install "git+https://github.com/mrdulasolutions/open-gateway.git@v0.1.0" --force
 ```
 
 **MCP harness** (gateway already running):
 
 ```bash
-# stdio MCP points at the same machine's hub
 opengateway mcp
+# one-shot: uvx "git+https://github.com/mrdulasolutions/open-gateway.git@v0.1.0" mcp
 ```
 
 Wire templates from the repo: [`configs/`](../configs/) — set `OPENGATEWAY_URL` + `OPENGATEWAY_AUTH_TOKEN` in the harness env.
@@ -89,22 +87,23 @@ open http://localhost:8765/ui/
 
 Data lives in the `og-data` volume (`OPENGATEWAY_DB=/data/state.db`).
 
-Stop / wipe:
+---
+
+## D. GHCR image
+
+After release tag `v0.1.0`:
 
 ```bash
-docker compose down
-docker compose down -v   # also delete room state
-```
-
-Tailscale Serve on the **host** (not inside the container by default):
-
-```bash
-tailscale serve --bg 8765   # proxies to published host port
+docker pull ghcr.io/mrdulasolutions/open-gateway:0.1.0
+docker run --rm -p 8765:8765 \
+  -e OPENGATEWAY_AUTH_TOKEN="$OPENGATEWAY_AUTH_TOKEN" \
+  -v og-data:/data \
+  ghcr.io/mrdulasolutions/open-gateway:0.1.0
 ```
 
 ---
 
-## D. Local wheel (offline / airgap)
+## E. Local wheel (offline / airgap)
 
 ```bash
 git clone https://github.com/mrdulasolutions/open-gateway.git && cd open-gateway
@@ -121,7 +120,7 @@ opengateway serve
 |----------|----------|
 | Python package `opengateway` | API, CLI, MCP, SQLite store |
 | `opengateway/static/` | Live Ops UI (Vite build) |
-| Console script | `opengateway` → `serve`, `mcp`, `doctor`, `pair`, … |
+| Console script | `opengateway` → `serve`, `mcp`, `doctor`, `pair`, `im`, … |
 | Default DB | `~/.opengateway/state.db` (or `OPENGATEWAY_DB`) |
 
 No Node runtime is required to **run** the hub. Node/Bun is only needed to **change** the UI sources under `webapp/`.
@@ -142,14 +141,11 @@ Skill playbook: [`skills/opengateway-collab/SKILL.md`](../skills/opengateway-col
 
 ---
 
-## Cloud deploy
+## Optional cloud deploy
 
 See **[DEPLOY.md](DEPLOY.md)** for Fly.io, Railway, GHCR, and Redis multi-worker.
 
-```bash
-fly deploy          # after fly.toml + secrets
-# or Railway from GitHub with railway.toml
-```
+---
 
 ## Production checklist
 

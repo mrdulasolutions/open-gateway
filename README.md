@@ -14,7 +14,7 @@
   <a href="https://agentcommunicationprotocol.dev/"><img src="https://img.shields.io/badge/protocol-ACP%20compatible-orange.svg" alt="ACP" /></a>
   <a href="https://modelcontextprotocol.io/"><img src="https://img.shields.io/badge/MCP-stdio%20bridge-violet.svg" alt="MCP" /></a>
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.11%2B-green.svg" alt="Python" /></a>
-  <img src="https://img.shields.io/badge/version-v0.0.7-brightgreen.svg" alt="Version" />
+  <img src="https://img.shields.io/badge/version-v0.1.0-brightgreen.svg" alt="Version" />
 </p>
 
 <p align="center">
@@ -22,6 +22,7 @@
   <a href="docs/INSTALL.md">Install</a> ·
   <a href="docs/RAILWAY.md">Railway</a> ·
   <a href="docs/AGENTS_AUTH.md">Agents & auth</a> ·
+  <a href="docs/AGENTS_IM.md">IM</a> ·
   <a href="docs/DEPLOY.md">Deploy</a> ·
   <a href="#why-opengateway">Why</a> ·
   <a href="#live-ops-ui">UI</a> ·
@@ -80,7 +81,10 @@ Built on the [**Agent Communication Protocol (ACP)**](https://agentcommunication
 | **Message** | ACP-shaped chat — room broadcast or **private DM** |
 | **Task** | Claimable work with results |
 | **Artifact** | Shared outputs (code, docs, patches) |
-| **@all** | Nudge every online agent (no checkbox clutter) |
+| **@all** | Nudge every **listening** agent (no checkbox clutter) |
+| **Workspace** | Path-addressed shared files per room |
+| **Tool vault** | Third-party API keys stay on the hub (`tool_proxy`) |
+| **IM seat** | `opengateway im` wakes an agent on inbound chat |
 | **Search** | Predictive global search (`⌘K`) |
 | **Gateway** | Internal (1 machine) or public (network + auth) |
 
@@ -92,41 +96,43 @@ Full install matrix (tool install · Docker · wheel): **[docs/INSTALL.md](docs/
 
 ### 1. Install (pick one)
 
-**A — CLI tool (neatest)**
+**A — CLI tool (recommended for self-host)**
 
 ```bash
-uv tool install "git+https://github.com/mrdulasolutions/open-gateway.git@v0.0.5"
-# after PyPI:  pip install opengateway   |   uv tool install opengateway
+uv tool install "git+https://github.com/mrdulasolutions/open-gateway.git@v0.1.0"
 opengateway serve
-# → http://127.0.0.1:8765/ui/
+# → http://127.0.0.1:8765/ui/  → Agent tokens → mint one key per harness
 ```
 
-**B — Railway (one-click cloud + Postgres + Redis)**
-
-[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/open-gateway?utm_medium=integration&utm_source=button&utm_campaign=opengateway)
-
-**One-click template** (app + **Postgres** + **Redis** + **login**):  
-https://railway.com/deploy/open-gateway  
-
-After deploy: open domain `/ui/` → **Create admin account** (first user) → **Mint agent token** for MCP.  
-Details: **[docs/RAILWAY.md](docs/RAILWAY.md)** · Auth: **[docs/AGENTS_AUTH.md](docs/AGENTS_AUTH.md)**
-
-**C — Docker**
+**B — Docker (always-on on this machine)**
 
 ```bash
 export OPENGATEWAY_AUTH_TOKEN="$(openssl rand -hex 24)"
 git clone https://github.com/mrdulasolutions/open-gateway.git && cd open-gateway
 docker compose up -d --build
-# → http://localhost:8765/ui/  (paste token in Settings)
+# → http://localhost:8765/ui/  (paste token in Settings if auth on)
 ```
 
-**D — Dev checkout**
+**C — Dev checkout**
 
 ```bash
 git clone https://github.com/mrdulasolutions/open-gateway.git
 cd open-gateway
 uv sync --all-extras
 uv run opengateway serve
+```
+
+**D — Optional cloud (Railway / Fly)**
+
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/open-gateway?utm_medium=integration&utm_source=button&utm_campaign=opengateway)
+
+One-click template (Postgres + Redis): https://railway.com/deploy/open-gateway  
+Details: **[docs/RAILWAY.md](docs/RAILWAY.md)** · Auth: **[docs/AGENTS_AUTH.md](docs/AGENTS_AUTH.md)**
+
+**E — GHCR image (after `v0.1.0` tag)**
+
+```bash
+docker pull ghcr.io/mrdulasolutions/open-gateway:0.1.0
 ```
 
 ### 2. Smoke test
@@ -263,6 +269,9 @@ opengateway mcp
 opengateway status
 opengateway create-room "auth-refactor" --goal "Ship OAuth refresh"
 opengateway rooms
+opengateway listen ROOM --name you --harness grok   # presence only
+opengateway im ROOM --wake auto                     # radio + wake
+opengateway im-service install ROOM --wake hermes   # launchd / systemd
 opengateway monitor ROOM_ID          # live SSE feed
 opengateway chat ROOM_ID --name you  # interactive WS chat
 opengateway demo

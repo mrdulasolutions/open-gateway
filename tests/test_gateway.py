@@ -148,7 +148,11 @@ async def test_everyone_nudges_all_agents(client: AsyncClient):
     names = {n["name"] for n in res["nudged"]}
     assert names == {"alice", "grok"}
 
-    tasks = (await client.get(f"/v1/rooms/{room_id}/tasks")).json()["tasks"]
+    tasks = (
+        await client.get(
+            f"/v1/rooms/{room_id}/tasks", params={"include_nudge": "true"}
+        )
+    ).json()["tasks"]
     assert len(tasks) == 2
     # Each agent should see a DM nudge when filtering for themselves
     for agent in (a, b):

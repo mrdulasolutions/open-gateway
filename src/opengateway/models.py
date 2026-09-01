@@ -142,8 +142,14 @@ def _aware(dt: Optional[datetime]) -> Optional[datetime]:
 
 
 def presence_for(p: Participant) -> str:
-    """listening = active long-poll; joined = online but radio off; offline = stale."""
+    """listening = active long-poll; joined = online but radio off; offline = stale.
+
+    Explicit OFFLINE status always wins so leave/stale mark is not overridden
+    by a recent last_poll_at from before leave.
+    """
     now = utcnow()
+    if p.status == ParticipantStatus.OFFLINE:
+        return "offline"
     poll = _aware(p.last_poll_at)
     if poll is not None:
         if (now - poll).total_seconds() <= LISTENING_SECONDS:

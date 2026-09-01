@@ -35,21 +35,19 @@ mcp = FastMCP(
     "OpenGateway",
     instructions=(
         "OpenGateway multi-agent collaboration tools. Work with other agents "
-        "(Claude Code, Grok, Cursor, ACP) in shared rooms.\n\n"
-        "AUTH: public/Railway needs OPENGATEWAY_URL + OPENGATEWAY_AUTH_TOKEN in MCP env.\n\n"
-        "MANDATORY realtime (you are deaf until you do this):\n"
-        "After join_room, immediately start the IM loop and never exit it while collab is open:\n"
-        "  LAST=\"\"\n"
-        "  loop forever:\n"
-        "    wait_for_messages(room_id, since=LAST, for_participant=MY_ID, timeout_seconds=45)\n"
-        "    if messages: handle + post_message replies; LAST=next_since\n"
-        "    if timed_out: call wait_for_messages again immediately\n"
-        "If you must code for a long stretch, tell the user to run "
-        "`opengateway listen <room>` so presence stays radio-on.\n\n"
-        "Resources: opengateway://gateway, opengateway://rooms, "
-        "opengateway://rooms/{room_id}/inbox — read for passive inbox snapshot.\n\n"
-        "Flow: list/create room → join_room (save id/participant_id) → "
-        "wait loop → post_message / tasks / artifacts → room_snapshot"
+        "(Claude Code, Grok, Cursor, Hermes, ACP) in shared rooms.\n\n"
+        "AUTH: public hubs need OPENGATEWAY_URL + OPENGATEWAY_AUTH_TOKEN in MCP env.\n\n"
+        "ALWAYS-ON RADIO (default):\n"
+        "1. join_room or begin_im_mode once → background long-poll starts (radio ON)\n"
+        "2. Do real work (code, tools, think)\n"
+        "3. Occasionally drain_inbox / get_inbox (at most once per assistant turn)\n"
+        "4. post_message to reply; leave_room when done\n"
+        "NEVER loop wait_for_messages (burns harness max-iterations).\n"
+        "True IM (auto-reply without a desktop chat): "
+        "`opengateway im <room> --wake hermes` (or --wake auto).\n\n"
+        "Resources: opengateway://gateway|rooms|rooms/{id}/inbox|radio|listen-playbook\n"
+        "Workspace: workspace_list/read/write. Vault: list_tool_credentials + tool_proxy.\n\n"
+        "Flow: list/create room → join_room (auto radio) → work → drain_inbox + post_message"
     ),
 )
 
@@ -138,27 +136,96 @@ def resource_room_inbox(room_id: str) -> str:
 
 @mcp.resource("opengateway://listen-playbook")
 def resource_listen_playbook() -> str:
-    """How to stay radio-on (MCP loop + external daemon)."""
-    return """# OpenGateway listen playbook
+    """How to stay radio-on without burning harness tool-iteration budgets."""
+    return """# OpenGateway radio playbook (anti max-iterations)
 
-## In-session (MCP agent)
-1. join_room → save participant_id (field `id` or `participant_id`)
-2. Loop forever:
-   wait_for_messages(room_id, since=LAST, for_participant=MY_ID, timeout_seconds=45)
-   handle messages; LAST = next_since; on timed_out, wait again immediately
-3. Do not exit the loop while collaboration is active
+## Problem
+Hermes / Claude Code / Cursor / Grok cap tool calls per turn (~90 on Hermes).
+Looping wait_for_messages burns that budget → "max iterations" stop.
 
-## External radio (when coding / cold harness)
-  opengateway listen <room> --name <you> --harness grok \\
-    --file ~/.opengateway/inbox.jsonl
+## Default (always-on) — USE THIS
+1. join_room or begin_im_mode → radio starts automatically (background long-poll)
+2. You stay presence=listening while the MCP process is alive
+3. Do real work; occasionally drain_inbox (≤1 per assistant turn)
+4. post_message to reply; leave_room / stop_listening when done
 
-Optional sinks: --webhook URL, --hook 'shell…'
+## Do NOT
+- Call wait_for_messages in a tight loop to "stay online"
+- Poll more than once per turn just for presence
+
+## One-shot block (rare)
+  wait_for_messages(...) — single block until a message or timeout; then stop
+
+## External CLI radio (presence only — no LLM wake)
+  opengateway listen <room> --name <you> --harness hermes
+
+## True IM (presence + wake agent on every message)
+  opengateway im <room> --name "Hermes COO" --harness hermes --wake hermes
+  opengateway im <room> --wake auto   # ping→pong smoke test without LLM
+  See docs/AGENTS_IM.md
 
 ## Presence badges (Live Ops)
-- listening — long-poll in last ~90s
-- joined — online but not polling
+- listening — long-poll in last ~90s (radio on)
+- joined — online but radio off
 - offline — stale
 """
+
+
+@mcp.resource("opengateway://radio")
+def resource_radio() -> str:
+    """Always-on radio sessions in this MCP process."""
+    from opengateway.radio import radio
+
+    return _dumps({"sessions": radio.list_sessions()})
+
+
+@mcp.resource("opengateway://playbook/{topic}")
+def resource_playbook(topic: str = "connect") -> str:
+    """Public playbooks: connect | radio | im | mcp | workspace | vault."""
+    from opengateway.agent_playbook import playbook
+
+    return playbook(topic)
+
+
+@mcp.resource("opengateway://skill")
+def resource_skill() -> str:
+    """opengateway-collab skill markdown."""
+    from opengateway.agent_playbook import skill_markdown
+
+    return skill_markdown()
+
+
+@mcp.tool()
+def auth_check() -> str:
+    """Verify OPENGATEWAY_AUTH_TOKEN can call room APIs.
+
+    On 401: stop all room tools, tell the human to mint a new device key and restart
+    the harness MCP process. Do not tight-loop.
+    """
+    with _client() as c:
+        ping = _json(c.get("/ping"))
+        rooms = c.get("/v1/rooms")
+        auth = c.get("/v1/auth/status")
+        try:
+            auth_body = auth.json()
+        except Exception:
+            auth_body = {"status_code": auth.status_code}
+        ok = rooms.status_code < 400
+        out: dict[str, Any] = {
+            "auth_ok": ok,
+            "rooms_status": rooms.status_code,
+            "auth": auth_body,
+            "ping_ok": isinstance(ping, dict) and ping.get("status") == "ok",
+            "gateway_url": _base(),
+        }
+        if not ok:
+            out["action"] = (
+                "STOP. Do not retry room tools in a loop. "
+                "Human must mint a new agent token in Live Ops, set OPENGATEWAY_AUTH_TOKEN, "
+                "and restart this harness MCP process."
+            )
+            out["code"] = "auth_required"
+        return _dumps(out)
 
 
 @mcp.tool()
@@ -318,8 +385,8 @@ def join_room(
             try:
                 data["radio"] = _start_radio_for(data, room_id)
                 data["hint"] = (
-                    "Use drain_inbox to read messages; post_message to reply. "
-                    "Or wait_for_messages loop."
+                    "Radio is ON. Use drain_inbox (≤1/turn) then post_message. "
+                    "Do not loop wait_for_messages. True IM: opengateway im --wake …"
                 )
             except Exception as e:
                 data["radio"] = {"radio": "error", "detail": str(e)}
@@ -370,6 +437,86 @@ def drain_inbox(
             room_id=room_id or "",
             participant_id=participant_id or "",
             max_items=limit,
+        )
+    )
+
+
+@mcp.tool()
+def start_listening(
+    room_id: str,
+    participant_id: str,
+    name: str = "",
+    timeout_seconds: float = 45.0,
+) -> str:
+    """Start (or restart) always-on radio for an already-joined participant."""
+    from opengateway.radio import radio
+
+    return _dumps(
+        radio.start(
+            room_id=room_id,
+            participant_id=participant_id,
+            name=name or DEFAULT_AGENT_NAME or "agent",
+            base_url=_base(),
+            auth_token=_auth_token(),
+            timeout=timeout_seconds,
+            restart=True,
+        )
+    )
+
+
+@mcp.tool()
+def ensure_radio(
+    room_id: str,
+    participant_id: str,
+    name: str = "",
+    timeout_seconds: float = 45.0,
+) -> str:
+    """Idempotent: ensure background radio is ON (does not block / burn wait loops)."""
+    from opengateway.radio import radio
+
+    return _dumps(
+        radio.start(
+            room_id=room_id,
+            participant_id=participant_id,
+            name=name or DEFAULT_AGENT_NAME or "agent",
+            base_url=_base(),
+            auth_token=_auth_token(),
+            timeout=timeout_seconds,
+            restart=False,
+        )
+    )
+
+
+@mcp.tool()
+def stop_listening(room_id: str = "", participant_id: str = "") -> str:
+    """Stop always-on radio (go deaf). Pass room_id and/or participant_id to filter."""
+    from opengateway.radio import radio
+
+    return _dumps(radio.stop(room_id=room_id, participant_id=participant_id))
+
+
+@mcp.tool()
+def radio_status() -> str:
+    """List always-on radio sessions in this MCP process (listening agents)."""
+    from opengateway.radio import radio
+
+    return _dumps({"sessions": radio.list_sessions()})
+
+
+@mcp.tool()
+def get_inbox(
+    participant_id: str = "",
+    room_id: str = "",
+    limit: int = 20,
+) -> str:
+    """Peek at buffered radio messages without removing them (use drain_inbox to clear)."""
+    from opengateway.radio import radio
+
+    return _dumps(
+        radio.peek_inbox(
+            participant_id=participant_id,
+            room_id=room_id,
+            limit=limit,
         )
     )
 
@@ -574,23 +721,28 @@ def begin_im_mode(
     name: str = "",
     harness: str = DEFAULT_HARNESS,
     participant_id: str = "",
+    auto_listen: bool = True,
 ) -> str:
-    """Join (or rejoin) a room and return a ready-to-run wait loop contract.
+    """Join (or rejoin) a room with always-on radio (default).
 
-    Call this first when starting multi-agent collab. Then immediately call
-    wait_for_messages with the returned participant_id and loop forever.
+    Starts background listening so Live Ops shows you online and peer agents
+    can reach you. Drain new messages with drain_inbox; reply with post_message.
+    For ping→pong without a desktop turn, run `opengateway im --wake …`.
 
     Args:
         room_id: Room UUID.
         name: Agent display name (defaults to OPENGATEWAY_AGENT_NAME / harness).
         harness: grok | claude-code | cursor | hermes | mcp | …
         participant_id: Optional rejoin id.
+        auto_listen: Default True — keep radio on until leave_room/stop_listening.
     """
+    env_name = (DEFAULT_AGENT_NAME or "").strip()
+    join_name = env_name or (name or "").strip() or harness or "agent"
     body: dict[str, Any] = {
-        "name": name or DEFAULT_AGENT_NAME or harness or "agent",
+        "name": join_name,
         "harness": harness,
         "role": "contributor",
-        "capabilities": ["chat", "listen"],
+        "capabilities": ["chat", "listen", "radio"],
     }
     if participant_id:
         body["participant_id"] = participant_id
@@ -600,24 +752,24 @@ def begin_im_mode(
         data = {**data, "participant_id": data["id"]}
     if isinstance(data, dict) and not data.get("error"):
         pid = data.get("participant_id") or data.get("id")
-        data["im_loop"] = {
+        if auto_listen:
+            data["radio"] = _start_radio_for(data, room_id)
+        data["im"] = {
             "room_id": room_id,
             "participant_id": pid,
-            "next_tool": "wait_for_messages",
-            "args": {
-                "room_id": room_id,
-                "since": "",
-                "for_participant": pid,
-                "timeout_seconds": 45,
+            "radio": "on" if auto_listen else "off",
+            "next": [
+                "Radio keeps presence=listening; it does NOT wake your LLM",
+                "For true IM (ping→pong without a human desktop turn): run "
+                "`opengateway im <room> --wake hermes` (or --wake auto)",
+                "In this desktop turn: drain_inbox ≤1, post_message, no wait loops",
+                "leave_room / stop_listening when done",
+            ],
+            "anti_pattern": {
+                "bad": "wait_for_messages forever (burns Hermes/Claude max tool turns)",
+                "good": "radio for presence + opengateway im for auto-reply wakes",
             },
-            "rule": (
-                "Call wait_for_messages next. On every response: handle messages, "
-                "set since=next_since, call wait_for_messages again. Never stop while collab is open."
-            ),
-            "external_radio": (
-                f"opengateway listen {room_id} --name {body['name']} "
-                f"--harness {harness} --file ~/.opengateway/inbox.jsonl"
-            ),
+            "docs": "docs/AGENTS_IM.md + docs/AGENTS_RADIO.md",
         }
     return _dumps(data)
 
@@ -744,6 +896,197 @@ def room_snapshot(room_id: str) -> str:
 
 
 @mcp.tool()
+def upload_file(
+    room_id: str,
+    shared_by: str,
+    filename: str,
+    content_base64: str,
+    content_type: str = "application/octet-stream",
+) -> str:
+    """Upload a file into a room. Returns artifact id + content_url."""
+    import base64 as b64
+
+    try:
+        raw = b64.b64decode(content_base64)
+    except Exception as e:
+        return _dumps({"error": "invalid_base64", "detail": str(e)})
+    files = {"file": (filename or "upload.bin", raw, content_type)}
+    data = {"shared_by": shared_by}
+    with _client() as c:
+        r = c.post(f"/v1/rooms/{room_id}/files", data=data, files=files)
+        return _dumps(_json(r))
+
+
+@mcp.tool()
+def share_file_message(
+    room_id: str,
+    from_participant_id: str,
+    file_id: str,
+    caption: str = "",
+) -> str:
+    """Announce an uploaded file in the room chat."""
+    with _client() as c:
+        meta = _json(c.get(f"/v1/rooms/{room_id}/files/{file_id}"))
+        if isinstance(meta, dict) and meta.get("error"):
+            return _dumps(meta)
+        name = (meta or {}).get("name") or "file"
+        ctype = (meta or {}).get("content_type") or "application/octet-stream"
+        url = (meta or {}).get("content_url") or (
+            f"/v1/rooms/{room_id}/files/{file_id}/download"
+        )
+        text = (caption or "").strip() or f"Shared file: {name}"
+        body = {
+            "from_participant_id": from_participant_id,
+            "content": text,
+            "parts": [
+                {"content_type": "text/plain", "content": text},
+                {"name": name, "content_type": ctype, "content_url": url},
+            ],
+            "metadata": {"files": [file_id]},
+        }
+        return _dumps(_json(c.post(f"/v1/rooms/{room_id}/messages", json=body)))
+
+
+@mcp.tool()
+def download_attachment(
+    room_id: str,
+    file_id: str = "",
+    content_url: str = "",
+) -> str:
+    """Download a chat/file attachment as JSON (inline base64 when small)."""
+    import re
+
+    fid = (file_id or "").strip()
+    if not fid and content_url:
+        m = re.search(r"/files/([^/?#]+)/download", content_url)
+        if m:
+            fid = m.group(1)
+    if not fid:
+        return _dumps(
+            {
+                "error": "file_id_or_content_url_required",
+                "hint": "Pass attachments[].file_id from the message, or content_url.",
+            }
+        )
+    with _client() as c:
+        meta = _json(c.get(f"/v1/rooms/{room_id}/files/{fid}"))
+        data = _json(
+            c.get(
+                f"/v1/rooms/{room_id}/files/{fid}/download",
+                params={"format": "json"},
+            )
+        )
+        if isinstance(data, dict) and data.get("error") == "file_too_large_for_json":
+            data["meta"] = meta
+            data["agent_action"] = (
+                "HTTP GET the content_url with your OPENGATEWAY_AUTH_TOKEN Bearer "
+                "and write bytes to a workspace file; do not base64 into the prompt."
+            )
+        return _dumps(data)
+
+
+@mcp.tool()
+def list_tool_credentials() -> str:
+    """List named tool credentials on the hub (names + metadata only — never secret values)."""
+    with _client() as c:
+        return _dumps(_json(c.get("/v1/tools/credentials")))
+
+
+@mcp.tool()
+def tool_proxy(
+    credential: str,
+    url: str,
+    method: str = "GET",
+    body: str = "",
+    body_base64: str = "",
+    headers_json: str = "",
+    timeout: float = 30.0,
+) -> str:
+    """Call an external HTTP API via the hub, injecting a vault credential server-side."""
+    payload: dict[str, Any] = {
+        "credential": credential,
+        "url": url,
+        "method": method or "GET",
+        "timeout": timeout,
+    }
+    if body_base64.strip():
+        payload["body_base64"] = body_base64.strip()
+    elif body:
+        try:
+            payload["body"] = json.loads(body)
+        except Exception:
+            payload["body"] = body
+    if headers_json.strip():
+        try:
+            payload["headers"] = json.loads(headers_json)
+        except Exception:
+            return _dumps({"error": "invalid_headers_json"})
+    with _client(timeout=max(float(timeout) + 5.0, 35.0)) as c:
+        return _dumps(_json(c.post("/v1/tools/proxy", json=payload)))
+
+
+@mcp.tool()
+def workspace_list(room_id: str, prefix: str = "") -> str:
+    """List files in the room's shared path-addressed workspace."""
+    params = {"prefix": prefix} if prefix else None
+    with _client() as c:
+        return _dumps(_json(c.get(f"/v1/rooms/{room_id}/workspace", params=params)))
+
+
+@mcp.tool()
+def workspace_read(room_id: str, path: str) -> str:
+    """Read a file from the room workspace by path (text or base64)."""
+    with _client() as c:
+        return _dumps(
+            _json(
+                c.get(
+                    f"/v1/rooms/{room_id}/workspace/{path.lstrip('/')}",
+                    params={"format": "json"},
+                )
+            )
+        )
+
+
+@mcp.tool()
+def workspace_write(
+    room_id: str,
+    path: str,
+    content: str = "",
+    content_base64: str = "",
+    content_type: str = "text/plain",
+    updated_by: str = "",
+) -> str:
+    """Write/overwrite a file in the room workspace."""
+    body: dict[str, Any] = {
+        "content_type": content_type or "text/plain",
+        "updated_by": updated_by or DEFAULT_AGENT_NAME or "",
+    }
+    if content_base64.strip():
+        body["content_base64"] = content_base64.strip()
+    else:
+        body["content"] = content
+    with _client() as c:
+        return _dumps(
+            _json(
+                c.put(
+                    f"/v1/rooms/{room_id}/workspace/{path.lstrip('/')}",
+                    json=body,
+                    headers={"Content-Type": "application/json"},
+                )
+            )
+        )
+
+
+@mcp.tool()
+def workspace_delete(room_id: str, path: str) -> str:
+    """Delete a file from the room workspace."""
+    with _client() as c:
+        return _dumps(
+            _json(c.delete(f"/v1/rooms/{room_id}/workspace/{path.lstrip('/')}"))
+        )
+
+
+@mcp.tool()
 def list_acp_agents() -> str:
     """List ACP agents exposed by the gateway (facilitator, echo, registered, live participants)."""
     with _client() as c:
@@ -792,7 +1135,50 @@ def register_agent(
         return _dumps(_json(c.post("/v1/agents/register", json=body)))
 
 
+def _maybe_auto_join() -> None:
+    """Optional OPENGATEWAY_AUTO_JOIN_ROOM=id|name — join + radio at MCP startup."""
+    room = (os.environ.get("OPENGATEWAY_AUTO_JOIN_ROOM") or "").strip()
+    if not room:
+        return
+    try:
+        with _client() as c:
+            rooms = _json(c.get("/v1/rooms"))
+            rid = room
+            if isinstance(rooms, dict):
+                for r in rooms.get("rooms") or []:
+                    if r.get("id") == room or r.get("name") == room:
+                        rid = r["id"]
+                        break
+            name = DEFAULT_AGENT_NAME or DEFAULT_HARNESS or "agent"
+            data = _json(
+                c.post(
+                    f"/v1/rooms/{rid}/join",
+                    json={
+                        "name": name,
+                        "harness": DEFAULT_HARNESS,
+                        "role": "contributor",
+                        "capabilities": ["listen", "radio", "chat"],
+                    },
+                )
+            )
+            if isinstance(data, dict) and data.get("id"):
+                radio_info = _start_radio_for(data, rid)
+                import sys
+
+                print(
+                    f"[opengateway] auto-join room={rid[:8]}… "
+                    f"as {name} radio={radio_info.get('radio')}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+    except Exception as e:
+        import sys
+
+        print(f"[opengateway] auto-join failed: {e}", file=sys.stderr, flush=True)
+
+
 def main() -> None:
+    _maybe_auto_join()
     mcp.run(transport="stdio")
 
 

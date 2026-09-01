@@ -78,6 +78,9 @@ class Store:
         self._memory_api_by_hash: dict[str, str] = {}  # hash -> id
         self._memory_push: dict[str, dict[str, Any]] = {}  # id -> sub
         self._memory_meta: dict[str, str] = {}
+        from opengateway.nudge_policy import NudgeRateLimiter
+
+        self.nudge_limiter = NudgeRateLimiter()
 
         # db_path=... means "use default from env"; None means memory-only
         if db_path is ...:
@@ -733,7 +736,13 @@ class Store:
         old_room_id = participant.room_id
         participant.room_id = room_id
         participant.status = ParticipantStatus.ONLINE
-        participant.last_seen_at = utcnow()
+        now = utcnow()
+        participant.last_seen_at = now
+        # Non-human / radio-capable agents start as listening while MCP radio warms up
+        caps = {str(c).lower() for c in (participant.capabilities or [])}
+        harness = str(getattr(participant.harness, "value", participant.harness) or "")
+        if caps & {"listen", "radio"} or harness not in {"human", ""}:
+            participant.last_poll_at = now
         async with self._lock:
             if old_room_id and old_room_id != room_id:
                 old_room = self.rooms.get(old_room_id)
@@ -777,6 +786,8 @@ class Store:
         async with self._lock:
             participant.status = ParticipantStatus.OFFLINE
             participant.last_seen_at = utcnow()
+            # Clear radio so presence is offline (not stuck listening)
+            participant.last_poll_at = None
             # Keep participant_ids — rejoin reuses same identity
             room.updated_at = utcnow()
             self._persist_participant(participant)
@@ -806,6 +817,51 @@ class Store:
             if p.name.strip().lower() == n and str(p.harness.value if hasattr(p.harness, "value") else p.harness).lower() == h:
                 return p
         return None
+
+    def find_participant_by_api_key(
+        self, room_id: str, api_key_id: str
+    ) -> Optional[Participant]:
+        """Rejoin merge: one device key → one seat per room."""
+        if not api_key_id:
+            return None
+        room = self.rooms.get(room_id)
+        if not room:
+            return None
+        candidates: list[Participant] = []
+        for pid in room.participant_ids:
+            p = self.participants.get(pid)
+            if not p:
+                continue
+            if (p.metadata or {}).get("api_key_id") == api_key_id:
+                candidates.append(p)
+        if not candidates:
+            return None
+        candidates.sort(
+            key=lambda p: (
+                0 if p.status == ParticipantStatus.ONLINE else 1,
+                -(p.last_seen_at.timestamp() if p.last_seen_at else 0.0),
+            )
+        )
+        return candidates[0]
+
+    def participants_for_api_key(self, key_id: str) -> list[dict[str, Any]]:
+        """Live seats using this key — for revoke confirm."""
+        out: list[dict[str, Any]] = []
+        for p in self.participants.values():
+            if (p.metadata or {}).get("api_key_id") != key_id:
+                continue
+            out.append(
+                {
+                    "participant_id": p.id,
+                    "name": p.name,
+                    "room_id": p.room_id,
+                    "status": p.status.value if hasattr(p.status, "value") else str(p.status),
+                    "harness": p.harness.value if hasattr(p.harness, "value") else str(p.harness),
+                    "presence": getattr(p, "presence", None),
+                    "key_prefix": (p.metadata or {}).get("key_prefix"),
+                }
+            )
+        return out
 
     # Agents that stop long-polling go stale; mark offline so @all does not spam them.
     STALE_ONLINE_SECONDS = 120.0

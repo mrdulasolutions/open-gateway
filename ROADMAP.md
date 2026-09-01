@@ -8,10 +8,20 @@ Status is intentionally honest. Shipped items stay listed so the arc is clear.
 
 ## Versioning
 
-- Package + tags start at **`v0.0.1`** (semver: `vMAJOR.MINOR.PATCH`)
-- First public tag: `v0.0.1` (this baseline)
+- Package + tags: **`v0.1.0`** is the first production self-host line (semver `vMAJOR.MINOR.PATCH`)
+- Prior `0.0.x` tags remain for history
 
-## Shipped (v0.0.1)
+## Shipped (v0.1.0) — production self-host
+
+| Area | Capability |
+|------|------------|
+| Hub-core | IM seats (`opengateway im` / `im-service`), tool vault, room workspace, agent playbooks |
+| Agents | Always-on radio (no wait-loops), nudge policy, MCP vault/workspace tools |
+| UI | OSS-first Live Ops (local mint, vault + workspace panels, install snippets) |
+| Security | v0.0.7 hardening retained (WS auth, tenant IDOR, pair keys, audit) |
+| Install | `uv tool install git+…@v0.1.0`, Docker, GHCR |
+
+## Shipped (v0.0.1 baseline)
 
 | Area | Capability |
 |------|------------|

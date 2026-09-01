@@ -9,6 +9,8 @@ import {
   GitFork,
   Globe2,
   Hash,
+  KeyRound,
+  Lock,
   MessageSquare,
   Network,
   Plus,
@@ -16,6 +18,7 @@ import {
   RefreshCw,
   Settings2,
   Shield,
+  Trash2,
   Users,
   X,
 } from "lucide-react";
@@ -23,6 +26,7 @@ import QRCode from "qrcode";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import type { DmThread, Fork, Participant, Ping, Room } from "@/lib/types";
+import { AgentInstallPanel } from "@/components/AgentInstallPanel";
 
 export type GatewayCard = {
   id: string;
@@ -231,6 +235,8 @@ export function OpsSidebar({
     () => Boolean(authToken) || Boolean(ping?.require_auth)
   );
   const [openTokens, setOpenTokens] = useState(true);
+  const [openVault, setOpenVault] = useState(false);
+  const [openWorkspace, setOpenWorkspace] = useState(false);
   const [pairGateway, setPairGateway] = useState<GatewayCard | null>(null);
 
   const internalGws = gateways.filter(
@@ -405,6 +411,33 @@ export function OpsSidebar({
             <AgentTokensPanel
               gatewayBase={ping?.base_url || window.location.origin}
               hasAuthToken={Boolean(authToken?.trim())}
+              requireAuth={Boolean(ping?.require_auth)}
+            />
+          </div>
+        </Accordion>
+
+        <Accordion
+          title="Tool vault"
+          icon={<Lock className="h-4 w-4" />}
+          open={openVault}
+          onToggle={() => setOpenVault((v) => !v)}
+        >
+          <div className="px-1 pb-1">
+            <ToolVaultPanel hasAuthToken={Boolean(authToken?.trim())} />
+          </div>
+        </Accordion>
+
+        <Accordion
+          title="Room workspace"
+          icon={<Globe2 className="h-4 w-4" />}
+          open={openWorkspace}
+          onToggle={() => setOpenWorkspace((v) => !v)}
+        >
+          <div className="px-1 pb-1">
+            <WorkspacePanel
+              hasAuthToken={Boolean(authToken?.trim())}
+              roomId={activeRoomId}
+              updatedBy={participantId || displayName}
             />
           </div>
         </Accordion>
@@ -693,8 +726,13 @@ export function OpsSidebar({
                 className="field-input mt-1 font-mono text-xs"
               />
               <span className="mt-1 block text-[10px] font-normal text-zinc-400">
-                Paste Railway master token first (Variables → OPENGATEWAY_AUTH_TOKEN).
-                Then use <strong>Agent tokens</strong> above to mint keys for agents.
+                This is your hub. If you started it with{" "}
+                <code className="text-[9px]">--token</code> /{" "}
+                <code className="text-[9px]">OPENGATEWAY_AUTH_TOKEN</code>, paste
+                that same value so this browser can mint agent keys. Loopback
+                with no token: leave empty. Railway / other cloud is optional —
+                only paste a remote host&apos;s master token if this UI is that
+                host.
               </span>
             </label>
 
@@ -1014,9 +1052,11 @@ function PairQrModal({
 function AgentTokensPanel({
   gatewayBase,
   hasAuthToken,
+  requireAuth,
 }: {
   gatewayBase: string;
   hasAuthToken: boolean;
+  requireAuth: boolean;
 }) {
   const [keys, setKeys] = useState<
     {
@@ -1033,11 +1073,9 @@ function AgentTokensPanel({
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [freshToken, setFreshToken] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
-  const [snippetCopied, setSnippetCopied] = useState(false);
 
   const load = async () => {
-    if (!hasAuthToken) {
+    if (requireAuth && !hasAuthToken) {
       setErr("");
       setKeys([]);
       return;
@@ -1057,7 +1095,7 @@ function AgentTokensPanel({
 
   useEffect(() => {
     void load();
-  }, [hasAuthToken]);
+  }, [hasAuthToken, requireAuth]);
 
   const create = async () => {
     setBusy(true);
@@ -1067,7 +1105,7 @@ function AgentTokensPanel({
       const res = await api.createKey({
         name: name.trim() || "agent",
         device_label: label.trim() || name.trim() || "agent",
-        scopes: ["write", "read", "pair", "push"],
+        scopes: ["write", "read", "pair", "push", "tools"],
         role: "contributor",
       });
       if (res.token) setFreshToken(res.token);
@@ -1093,24 +1131,23 @@ function AgentTokensPanel({
     }
   };
 
-  const mcpSnippet = (token: string) =>
-    `# MCP env for this agent (Grok / Claude / Cursor)
-OPENGATEWAY_URL="${gatewayBase.replace(/\/$/, "")}"
-OPENGATEWAY_AUTH_TOKEN="${token}"
-OPENGATEWAY_HARNESS="grok"
-OPENGATEWAY_AGENT_NAME="grok"`;
-
-  if (!hasAuthToken) {
+  if (requireAuth && !hasAuthToken) {
     return (
       <div className="space-y-2 rounded-xl border border-amber-500/35 bg-amber-50 p-3 dark:border-amber-500/30 dark:bg-amber-500/10">
         <p className="text-[11px] font-semibold text-amber-950 dark:text-amber-100">
-          Paste master token first
+          Authorize this browser first
         </p>
         <p className="text-[10px] leading-relaxed text-amber-900/90 dark:text-amber-100/85">
-          Open <strong>Settings</strong> below →{" "}
-          <strong>This browser&apos;s auth token</strong> → paste Railway{" "}
-          <code className="text-[9px]">OPENGATEWAY_AUTH_TOKEN</code> from
-          Variables. Then return here to mint agent keys.
+          OSS on-device: you run the hub yourself (
+          <code className="text-[9px]">opengateway serve --token …</code>
+          ). Open <strong>Settings</strong> →{" "}
+          <strong>This browser&apos;s auth token</strong> and paste that same
+          token. Then return here to mint one key per agent.
+        </p>
+        <p className="text-[10px] leading-relaxed text-amber-900/80 dark:text-amber-100/70">
+          Railway is optional. Only paste a remote host&apos;s{" "}
+          <code className="text-[9px]">OPENGATEWAY_AUTH_TOKEN</code> if this
+          UI is that host — not for a hub on this machine.
         </p>
       </div>
     );
@@ -1123,9 +1160,10 @@ OPENGATEWAY_AGENT_NAME="grok"`;
         Agent &amp; device tokens
       </div>
       <p className="text-[10px] leading-relaxed text-zinc-500">
-        Mint a scoped token per agent or phone. Paste it into MCP config as{" "}
-        <code className="text-[9px]">OPENGATEWAY_AUTH_TOKEN</code>. Secrets are
-        shown <strong>once</strong>.
+        {requireAuth
+          ? "Mint a scoped token per agent or phone. Paste it into MCP as OPENGATEWAY_AUTH_TOKEN. Shown once."
+          : "This hub is yours on this machine — mint a key per agent here. No Railway token. Shown once."}{" "}
+        Agents use the minted key, not the hub master token.
       </p>
 
       <div className="grid grid-cols-2 gap-2">
@@ -1166,43 +1204,11 @@ OPENGATEWAY_AGENT_NAME="grok"`;
       )}
 
       {freshToken && (
-        <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-2 space-y-2">
-          <p className="text-[10px] font-semibold text-emerald-900 dark:text-emerald-100">
-            Copy now — will not be shown again
-          </p>
-          <code className="block break-all font-mono text-[10px] text-zinc-800 dark:text-zinc-100">
-            {freshToken}
-          </code>
-          <div className="flex gap-1.5">
-            <button
-              type="button"
-              className="flex flex-1 items-center justify-center gap-1 rounded-lg border border-zinc-200 bg-white px-2 py-1.5 text-[10px] font-semibold dark:border-white/10 dark:bg-zinc-900"
-              onClick={async () => {
-                await navigator.clipboard.writeText(freshToken);
-                setCopied(true);
-                setTimeout(() => setCopied(false), 1500);
-              }}
-            >
-              <Copy className="h-3 w-3" />
-              {copied ? "Copied" : "Copy token"}
-            </button>
-            <button
-              type="button"
-              className="flex flex-1 items-center justify-center gap-1 rounded-lg border border-zinc-200 bg-white px-2 py-1.5 text-[10px] font-semibold dark:border-white/10 dark:bg-zinc-900"
-              onClick={async () => {
-                await navigator.clipboard.writeText(mcpSnippet(freshToken));
-                setSnippetCopied(true);
-                setTimeout(() => setSnippetCopied(false), 1500);
-              }}
-            >
-              <Copy className="h-3 w-3" />
-              {snippetCopied ? "Copied" : "Copy MCP env"}
-            </button>
-          </div>
-          <pre className="max-h-28 overflow-auto rounded bg-zinc-900/80 p-2 font-mono text-[9px] text-zinc-200">
-            {mcpSnippet(freshToken)}
-          </pre>
-        </div>
+        <AgentInstallPanel
+          hubUrl={gatewayBase}
+          token={freshToken}
+          defaultName={name.trim() || undefined}
+        />
       )}
 
       <ul className="space-y-1.5">
@@ -1237,6 +1243,283 @@ OPENGATEWAY_AGENT_NAME="grok"`;
             </button>
           </li>
         ))}
+      </ul>
+    </div>
+  );
+}
+
+/** Admin tool credential vault — secrets never listed; agents use tool_proxy. */
+function ToolVaultPanel({ hasAuthToken }: { hasAuthToken: boolean }) {
+  const [rows, setRows] = useState<
+    {
+      name: string;
+      description?: string;
+      inject?: string;
+      allowed_hosts?: string[];
+      has_value?: boolean;
+    }[]
+  >([]);
+  const [name, setName] = useState("github");
+  const [value, setValue] = useState("");
+  const [hosts, setHosts] = useState("api.github.com");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [ok, setOk] = useState("");
+
+  const load = async () => {
+    if (!hasAuthToken) return;
+    try {
+      const r = await api.listToolCredentials();
+      setRows(r.credentials || []);
+      setErr("");
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  useEffect(() => {
+    void load();
+  }, [hasAuthToken]);
+
+  if (!hasAuthToken) {
+    return (
+      <p className="text-[10px] text-zinc-500">Connect hub to manage vault.</p>
+    );
+  }
+
+  return (
+    <div className="space-y-2 rounded-xl border border-zinc-200 p-3 dark:border-white/10">
+      <div className="flex items-center gap-1.5 text-xs font-semibold text-zinc-700 dark:text-zinc-200">
+        <KeyRound className="h-3.5 w-3.5 text-orange-500" />
+        Tool credentials
+      </div>
+      <p className="text-[10px] leading-relaxed text-zinc-500">
+        Store third-party API keys on the hub. Agents call{" "}
+        <code className="text-[9px]">tool_proxy</code> by name — secrets never
+        enter agent env.
+      </p>
+      <label className="block text-[10px] font-medium text-zinc-500">
+        Name
+        <input
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          className="field-input mt-0.5 font-mono text-[10px]"
+          placeholder="github"
+        />
+      </label>
+      <label className="block text-[10px] font-medium text-zinc-500">
+        Secret value
+        <input
+          type="password"
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          className="field-input mt-0.5 font-mono text-[10px]"
+          placeholder="ghp_… (shown once never again)"
+          autoComplete="off"
+        />
+      </label>
+      <label className="block text-[10px] font-medium text-zinc-500">
+        Allowed hosts (comma)
+        <input
+          value={hosts}
+          onChange={(e) => setHosts(e.target.value)}
+          className="field-input mt-0.5 font-mono text-[10px]"
+          placeholder="api.github.com"
+        />
+      </label>
+      <button
+        type="button"
+        disabled={busy || !name.trim() || !value.trim()}
+        onClick={() => {
+          void (async () => {
+            setBusy(true);
+            setErr("");
+            setOk("");
+            try {
+              const allowed = hosts
+                .split(",")
+                .map((h) => h.trim())
+                .filter(Boolean);
+              await api.putToolCredential(name.trim(), {
+                value: value.trim(),
+                inject: "bearer",
+                allowed_hosts: allowed,
+              });
+              setValue("");
+              setOk(`Saved “${name.trim()}” (value never re-shown).`);
+              await load();
+            } catch (e) {
+              setErr(e instanceof Error ? e.message : String(e));
+            } finally {
+              setBusy(false);
+            }
+          })();
+        }}
+        className="w-full rounded-xl bg-zinc-900 px-3 py-2 text-[11px] font-semibold text-white dark:bg-zinc-100 dark:text-zinc-900 disabled:opacity-50"
+      >
+        {busy ? "Saving…" : "Save credential"}
+      </button>
+      {err ? (
+        <p className="text-[10px] text-rose-600 dark:text-rose-300">{err}</p>
+      ) : null}
+      {ok ? (
+        <p className="text-[10px] text-emerald-700 dark:text-emerald-300">{ok}</p>
+      ) : null}
+      <ul className="space-y-1">
+        {rows.length === 0 ? (
+          <li className="text-[10px] text-zinc-400">No credentials yet</li>
+        ) : (
+          rows.map((c) => (
+            <li
+              key={c.name}
+              className="flex items-center justify-between gap-2 rounded-lg border border-zinc-100 px-2 py-1 dark:border-white/[0.06]"
+            >
+              <div className="min-w-0">
+                <div className="truncate font-mono text-[11px] font-semibold">
+                  {c.name}
+                </div>
+                <div className="truncate text-[9px] text-zinc-500">
+                  {(c.allowed_hosts || []).join(", ") || "any host"} ·{" "}
+                  {c.inject || "bearer"}
+                </div>
+              </div>
+              <button
+                type="button"
+                className="text-zinc-400 hover:text-rose-500"
+                title="Delete"
+                onClick={() => {
+                  if (!confirm(`Delete vault credential “${c.name}”?`)) return;
+                  void api
+                    .deleteToolCredential(c.name)
+                    .then(load)
+                    .catch((e) =>
+                      setErr(e instanceof Error ? e.message : String(e))
+                    );
+                }}
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </button>
+            </li>
+          ))
+        )}
+      </ul>
+    </div>
+  );
+}
+
+/** Path-addressed room workspace (shared collab FS). */
+function WorkspacePanel({
+  hasAuthToken,
+  roomId,
+  updatedBy,
+}: {
+  hasAuthToken: boolean;
+  roomId: string | null;
+  updatedBy: string;
+}) {
+  const [files, setFiles] = useState<
+    { path: string; bytes?: number; content_type?: string }[]
+  >([]);
+  const [path, setPath] = useState("docs/notes.md");
+  const [content, setContent] = useState("# Notes\n");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  const load = async () => {
+    if (!hasAuthToken || !roomId) return;
+    try {
+      const r = await api.listWorkspace(roomId);
+      setFiles(r.files || []);
+      setErr("");
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  useEffect(() => {
+    void load();
+  }, [hasAuthToken, roomId]);
+
+  if (!hasAuthToken) {
+    return (
+      <p className="text-[10px] text-zinc-500">Connect hub to use workspace.</p>
+    );
+  }
+  if (!roomId) {
+    return (
+      <p className="text-[10px] text-zinc-500">
+        Open a room to list/write workspace files.
+      </p>
+    );
+  }
+
+  return (
+    <div className="space-y-2 rounded-xl border border-zinc-200 p-3 dark:border-white/10">
+      <p className="text-[10px] leading-relaxed text-zinc-500">
+        Shared path FS for this room. Prefer paths over dumping files into chat.
+        Agents: <code className="text-[9px]">workspace_write</code> /{" "}
+        <code className="text-[9px]">workspace_read</code>.
+      </p>
+      <label className="block text-[10px] font-medium text-zinc-500">
+        Path
+        <input
+          value={path}
+          onChange={(e) => setPath(e.target.value)}
+          className="field-input mt-0.5 font-mono text-[10px]"
+          placeholder="docs/plan.md"
+        />
+      </label>
+      <label className="block text-[10px] font-medium text-zinc-500">
+        Content
+        <textarea
+          value={content}
+          onChange={(e) => setContent(e.target.value)}
+          rows={4}
+          className="field-input mt-0.5 font-mono text-[10px]"
+        />
+      </label>
+      <button
+        type="button"
+        disabled={busy || !path.trim()}
+        onClick={() => {
+          void (async () => {
+            setBusy(true);
+            setErr("");
+            try {
+              await api.writeWorkspace(roomId, path.trim().replace(/^\//, ""), {
+                content,
+                content_type: "text/plain",
+                updated_by: updatedBy,
+              });
+              await load();
+            } catch (e) {
+              setErr(e instanceof Error ? e.message : String(e));
+            } finally {
+              setBusy(false);
+            }
+          })();
+        }}
+        className="w-full rounded-xl border border-orange-500/40 bg-orange-500/10 px-3 py-1.5 text-[11px] font-semibold text-orange-950 dark:text-orange-100 disabled:opacity-50"
+      >
+        {busy ? "Writing…" : "Write file"}
+      </button>
+      {err ? (
+        <p className="text-[10px] text-rose-600 dark:text-rose-300">{err}</p>
+      ) : null}
+      <ul className="max-h-36 space-y-1 overflow-y-auto">
+        {files.length === 0 ? (
+          <li className="text-[10px] text-zinc-400">Empty workspace</li>
+        ) : (
+          files.map((f) => (
+            <li
+              key={f.path}
+              className="flex items-center justify-between gap-2 font-mono text-[10px] text-zinc-600 dark:text-zinc-300"
+            >
+              <span className="truncate">{f.path}</span>
+              <span className="shrink-0 text-zinc-400">{f.bytes ?? "—"} B</span>
+            </li>
+          ))
+        )}
       </ul>
     </div>
   );

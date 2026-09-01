@@ -4,8 +4,8 @@
 
 | Version | Supported |
 |---------|-----------|
-| 0.0.x   | ✅ (current line) |
-| 0.1.x   | Planned |
+| 0.1.x   | ✅ (current line) |
+| 0.0.x   | Maintenance only |
 
 ## Reporting a vulnerability
 

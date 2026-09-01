@@ -33,6 +33,17 @@ def test_presence_listening_from_last_poll():
     assert p.presence == "listening"
 
 
+def test_presence_offline_status_wins_over_recent_poll():
+    p = Participant(
+        name="ghost",
+        harness=Harness.GROK,
+        status=ParticipantStatus.OFFLINE,
+        last_seen_at=utcnow(),
+        last_poll_at=utcnow(),
+    )
+    assert presence_for(p) == "offline"
+
+
 def test_presence_joined_without_poll():
     p = Participant(
         name="grok",
@@ -115,7 +126,9 @@ async def test_wait_marks_listening(monkeypatch):
             )
         ).json()
         pid = p["id"]
-        assert p.get("presence") == "joined" or p.get("last_poll_at") is None
+        # Non-human harness joins as listening so Live Ops is radio-on immediately
+        assert p.get("presence") == "listening"
+        assert p.get("last_poll_at") is not None
 
         # short wait with for_participant → listening
         w = await c.get(
@@ -134,4 +147,9 @@ def test_mcp_resources_importable():
 
     assert hasattr(mod, "resource_gateway")
     assert hasattr(mod, "resource_listen_playbook")
+    assert hasattr(mod, "resource_radio")
     assert hasattr(mod, "begin_im_mode")
+    assert hasattr(mod, "ensure_radio")
+    assert hasattr(mod, "auth_check")
+    assert hasattr(mod, "tool_proxy")
+    assert hasattr(mod, "workspace_list")

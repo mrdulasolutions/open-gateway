@@ -986,7 +986,7 @@ def listen(
         os.environ.get("OPENGATEWAY_HARNESS") or "mcp",
         help="Harness tag",
     ),
-    role: str = typer.Option("observer", help="Role (default observer for radio)"),
+    role: str = typer.Option("contributor", help="Role (default contributor so agents can reply)"),
     url: str = typer.Option(None, help="Gateway base URL"),
     timeout: float = typer.Option(45.0, help="Long-poll timeout seconds"),
     participant_id: str = typer.Option(
@@ -1104,6 +1104,304 @@ def agent_loop(
         json_out=False,
         quiet=False,
     )
+
+
+@app.command("im")
+def im_cmd(
+    room: str = typer.Argument(..., help="Room UUID or name"),
+    name: str = typer.Option(
+        os.environ.get("OPENGATEWAY_AGENT_NAME") or "Hermes COO",
+        help="Join / reply as this name",
+    ),
+    harness: str = typer.Option(
+        os.environ.get("OPENGATEWAY_HARNESS") or "hermes",
+        help="Harness tag shown in Live Ops",
+    ),
+    role: str = typer.Option(
+        "contributor",
+        help="Must be contributor (or admin) so the agent can answer",
+    ),
+    url: str = typer.Option(None, help="Hub base URL"),
+    timeout: float = typer.Option(45.0, help="Long-poll timeout seconds"),
+    participant_id: str = typer.Option(
+        "",
+        "--participant-id",
+        help="Rejoin with existing participant id",
+    ),
+    wake: str = typer.Option(
+        "harness",
+        "--wake",
+        help=(
+            "On inbound: harness (use --harness) | hermes | claude | grok | "
+            "auto | webhook | hook | none"
+        ),
+    ),
+    wake_webhook: str = typer.Option(
+        "",
+        "--wake-webhook",
+        help="POST im_wake JSON here (wake=webhook)",
+    ),
+    wake_hook: str = typer.Option(
+        "",
+        "--wake-hook",
+        help="Shell command; im_wake JSON on stdin (wake=hook)",
+    ),
+    hermes_bin: str = typer.Option(
+        "hermes",
+        "--hermes-bin",
+        help="Hermes CLI path when wake=hermes",
+    ),
+    hermes_skills: str = typer.Option(
+        "opengateway-collab",
+        "--hermes-skills",
+        help="Skills for hermes chat -s (comma-separated ok)",
+    ),
+    hermes_max_turns: int = typer.Option(
+        20,
+        "--hermes-max-turns",
+        help="Max tool iterations per Hermes IM wake (keep low)",
+    ),
+    agent_max_turns: int = typer.Option(
+        20,
+        "--agent-max-turns",
+        help="Budget hint for wake timeouts (claude/grok/hermes)",
+    ),
+    debounce: float = typer.Option(
+        1.5,
+        "--debounce",
+        help="Seconds to coalesce rapid messages into one wake",
+    ),
+    file: Optional[str] = typer.Option(
+        None,
+        "--file",
+        "-f",
+        help="Append JSONL events (messages + wake status)",
+    ),
+    quiet: bool = typer.Option(
+        False,
+        "--quiet",
+        "-q",
+        help="Less console noise",
+    ),
+) -> None:
+    """Always-on IM: radio presence + wake the agent on every room message.
+
+    ``listen`` only fills a mailbox; ``im`` also starts an agent turn so pings
+    get pongs without a human opening a desktop chat.
+
+    Examples:
+      opengateway im main --name "Hermes COO" --harness hermes --wake hermes
+      opengateway im main --name bot --wake auto
+      opengateway im main --wake webhook --wake-webhook http://127.0.0.1:8644/webhooks/og
+
+    Env: OPENGATEWAY_URL, OPENGATEWAY_AUTH_TOKEN
+    Docs: docs/AGENTS_IM.md
+    """
+    from pathlib import Path
+
+    from opengateway.im import ImConfig, run_im
+    from opengateway.listen import ListenSinks
+
+    base = _base_url(url)
+    sinks = ListenSinks(
+        print_console=not quiet,
+        file_path=Path(file).expanduser() if file else None,
+    )
+    cfg = ImConfig(
+        base_url=base,
+        room=room,
+        name=name,
+        harness=harness,
+        role=role,
+        auth_token=(os.environ.get("OPENGATEWAY_AUTH_TOKEN") or "").strip(),
+        timeout=timeout,
+        participant_id=participant_id,
+        wake=wake,
+        wake_webhook=wake_webhook,
+        wake_hook=wake_hook,
+        hermes_bin=hermes_bin,
+        hermes_skills=hermes_skills,
+        hermes_max_turns=hermes_max_turns,
+        agent_max_turns=agent_max_turns,
+        debounce_seconds=debounce,
+        sinks=sinks,
+    )
+    console.print(
+        f"[green]im[/] {base} room={room!r} as {name}/{harness} "
+        f"wake={wake} debounce={debounce}s · Ctrl-C to stop"
+    )
+    console.print(
+        "[dim]presence via long-poll; agent turns only on inbound messages[/]"
+    )
+    code = run_im(cfg)
+    if code:
+        raise typer.Exit(code)
+
+
+im_svc_app = typer.Typer(
+    name="im-service",
+    help="Install / manage always-on IM seats (launchd on macOS, systemd --user on Linux).",
+    no_args_is_help=True,
+)
+app.add_typer(im_svc_app, name="im-service")
+
+
+@im_svc_app.command("install")
+def im_service_install(
+    room: str = typer.Argument(..., help="Room UUID or name"),
+    name: str = typer.Option(
+        os.environ.get("OPENGATEWAY_AGENT_NAME") or "Hermes COO",
+        "--name",
+        help="Agent display name",
+    ),
+    harness: str = typer.Option(
+        os.environ.get("OPENGATEWAY_HARNESS") or "hermes",
+        "--harness",
+        help="Harness tag",
+    ),
+    wake: str = typer.Option(
+        "harness",
+        "--wake",
+        help="Wake backend: harness | hermes | claude | grok | auto | webhook | hook",
+    ),
+    role: str = typer.Option("contributor", "--role"),
+    url: Optional[str] = typer.Option(
+        None, "--url", help="Hub URL (default OPENGATEWAY_URL)"
+    ),
+    token: Optional[str] = typer.Option(
+        None,
+        "--token",
+        help="Device key (default OPENGATEWAY_AUTH_TOKEN) — stored in service env",
+    ),
+    participant_id: str = typer.Option("", "--participant-id"),
+    wake_webhook: str = typer.Option("", "--wake-webhook"),
+    wake_hook: str = typer.Option("", "--wake-hook"),
+    label: str = typer.Option(
+        "",
+        "--label",
+        help="Service id suffix (default: slug(name)-slug(room))",
+    ),
+    hermes_bin: str = typer.Option("hermes", "--hermes-bin"),
+    hermes_skills: str = typer.Option("opengateway-collab", "--hermes-skills"),
+    hermes_max_turns: int = typer.Option(20, "--hermes-max-turns"),
+    agent_max_turns: int = typer.Option(20, "--agent-max-turns"),
+    debounce: float = typer.Option(1.5, "--debounce"),
+) -> None:
+    """Install and start a background IM seat (survives reboot / terminal close)."""
+    from opengateway.im_service import ImServiceSpec, install_service
+
+    spec = ImServiceSpec(
+        room=room,
+        name=name,
+        harness=harness,
+        wake=wake,
+        role=role,
+        url=(url or "").strip(),
+        auth_token=(token or "").strip(),
+        participant_id=participant_id,
+        wake_webhook=wake_webhook,
+        wake_hook=wake_hook,
+        hermes_bin=hermes_bin,
+        hermes_skills=hermes_skills,
+        hermes_max_turns=hermes_max_turns,
+        agent_max_turns=agent_max_turns,
+        debounce=debounce,
+        label=label,
+    )
+    try:
+        result = install_service(spec)
+    except Exception as e:
+        console.print(f"[red]install failed:[/] {e}")
+        raise typer.Exit(1) from e
+    console.print("[green]IM service installed[/]")
+    for k in (
+        "platform",
+        "label",
+        "plist",
+        "unit",
+        "plist_id",
+        "logs",
+        "hub",
+        "room",
+        "name",
+        "wake",
+        "bin",
+    ):
+        if result.get(k):
+            console.print(f"  {k}: {result[k]}")
+    console.print(
+        "[dim]Logs under ~/.opengateway/im-services/<label>/ · "
+        "status: opengateway im-service status <label>[/]"
+    )
+
+
+@im_svc_app.command("uninstall")
+def im_service_uninstall(
+    label: str = typer.Argument(..., help="Service label (from install / list)"),
+) -> None:
+    """Stop and remove an IM service."""
+    from opengateway.im_service import uninstall_service
+
+    try:
+        result = uninstall_service(label)
+    except Exception as e:
+        console.print(f"[red]uninstall failed:[/] {e}")
+        raise typer.Exit(1) from e
+    console.print(
+        f"[green]removed[/] label={result.get('label')} "
+        f"existed={result.get('removed')}"
+    )
+
+
+@im_svc_app.command("status")
+def im_service_status(
+    label: str = typer.Argument(..., help="Service label"),
+) -> None:
+    """Show whether an IM service is loaded / running."""
+    from opengateway.im_service import service_status
+
+    try:
+        result = service_status(label)
+    except Exception as e:
+        console.print(f"[red]status failed:[/] {e}")
+        raise typer.Exit(1) from e
+    console.print_json(data=result)
+
+
+@im_svc_app.command("list")
+def im_service_list() -> None:
+    """List installed OpenGateway IM services for this user."""
+    from opengateway.im_service import list_services
+
+    rows = list_services()
+    if not rows:
+        console.print("[dim]No IM services installed.[/]")
+        return
+    for r in rows:
+        flag = "running" if r.get("running") else "stopped"
+        console.print(
+            f"  [cyan]{r.get('label')}[/]  {flag}  "
+            f"[dim]{r.get('plist') or r.get('unit')}[/]"
+        )
+
+
+@im_svc_app.command("logs")
+def im_service_logs(
+    label: str = typer.Argument(..., help="Service label"),
+    lines: int = typer.Option(80, "--lines", "-n"),
+    stderr: bool = typer.Option(False, "--stderr", help="Show stderr.log"),
+) -> None:
+    """Tail local IM service logs (~/.opengateway/im-services/<label>/)."""
+    from opengateway.im_service import default_log_dir, _slug
+
+    log_dir = default_log_dir(_slug(label))
+    path = log_dir / ("stderr.log" if stderr else "stdout.log")
+    if not path.is_file():
+        console.print(f"[dim]No log yet:[/] {path}")
+        raise typer.Exit(0)
+    text = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    for line in text[-max(1, lines) :]:
+        console.print(line)
 
 
 @app.callback()

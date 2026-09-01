@@ -230,15 +230,15 @@ class RadioManager:
                         # Skip our own posts
                         if m.get("from_participant_id") == sess.participant_id:
                             continue
-                        sess.inbox.append(
-                            {
-                                "room_id": sess.room_id,
-                                "participant_id": sess.participant_id,
-                                "message": m,
-                                "received_at": _utcnow_iso(),
-                            }
-                        )
+                        item = {
+                            "room_id": sess.room_id,
+                            "participant_id": sess.participant_id,
+                            "message": m,
+                            "received_at": _utcnow_iso(),
+                        }
+                        sess.inbox.append(item)
                         sess.messages_buffered += 1
+                        _maybe_radio_wake(sess, item)
                 sess.since = since
             except Exception as e:
                 sess.last_error = str(e)
@@ -249,6 +249,59 @@ class RadioManager:
             # Yield so other threads run; timed_out already kept radio warm
             if sess.stop_event.wait(0.05):
                 break
+
+
+def _maybe_radio_wake(sess: RadioSession, item: dict[str, Any]) -> None:
+    """Optional env-configured wake when radio buffers a message.
+
+    Prefer ``opengateway im`` for full IM. This is a thin bridge for MCP
+    processes that already run radio and want push into Hermes/webhooks.
+    """
+    url = (os.environ.get("OPENGATEWAY_RADIO_WAKE_URL") or "").strip()
+    hook = (os.environ.get("OPENGATEWAY_RADIO_WAKE_HOOK") or "").strip()
+    if not url and not hook:
+        return
+    payload = {
+        "type": "im_wake",
+        "source": "mcp_radio",
+        "room_id": sess.room_id,
+        "participant_id": sess.participant_id,
+        "agent_name": sess.name,
+        "base_url": sess.base_url,
+        "messages": [item],
+        "count": 1,
+        "ts": _utcnow_iso(),
+    }
+    line = __import__("json").dumps(payload, default=str)
+    if url:
+        try:
+            httpx.post(
+                url,
+                content=line,
+                headers={"Content-Type": "application/json"},
+                timeout=15.0,
+            )
+        except Exception as e:
+            sess.last_error = f"wake_url: {e}"
+    if hook:
+        try:
+            import shlex
+            import subprocess
+
+            args = shlex.split(hook) if isinstance(hook, str) else hook
+            subprocess.Popen(
+                args,
+                shell=False,
+                stdin=subprocess.PIPE,
+                env={
+                    **os.environ,
+                    "OPENGATEWAY_IM_WAKE": "1",
+                    "OPENGATEWAY_IM_ROOM": sess.room_id,
+                    "OPENGATEWAY_IM_PARTICIPANT": sess.participant_id,
+                },
+            ).communicate(input=line.encode("utf-8"), timeout=30)
+        except Exception as e:
+            sess.last_error = f"wake_hook: {e}"
 
 
 # Process singleton used by MCP + CLI

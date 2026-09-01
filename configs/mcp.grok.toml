@@ -1,32 +1,29 @@
 # Add this to ~/.grok/config.toml (or project .grok/config.toml)
 # Then RESTART Grok CLI so OpenGateway tools appear (config is load-once).
 #
-# Local (internal gateway):
+# Local (default):
 #   OPENGATEWAY_URL = "http://127.0.0.1:8765"
-# Railway / public:
-#   OPENGATEWAY_URL = "https://open-gateway-production.up.railway.app"
-#   OPENGATEWAY_AUTH_TOKEN = "ogk_…"   # mint in Live Ops → Mint agent token
+# LAN / Tailscale / optional cloud:
+#   OPENGATEWAY_URL = "https://your-hub.example.com"
+#   OPENGATEWAY_AUTH_TOKEN = "ogk_…"   # mint in Live Ops → Agent tokens
 # See docs/AGENTS_AUTH.md
 #
-# Install once: git clone + `uv sync` in the repo, or:
-#   uv tool install git+https://github.com/mrdulasolutions/open-gateway.git
+# Install once:
+#   uv tool install "git+https://github.com/mrdulasolutions/open-gateway.git@v0.1.0"
 
 [mcp_servers.opengateway]
-command = "uv"
+command = "uvx"
 args = [
-  "run",
-  "--directory",
-  "/path/to/open-gateway",
-  "opengateway",
+  "git+https://github.com/mrdulasolutions/open-gateway.git@v0.1.0",
   "mcp",
 ]
-# After: uv tool install git+https://github.com/mrdulasolutions/open-gateway.git
-#   command = "opengateway"
-#   args = ["mcp"]
+# Dev checkout alternative:
+#   command = "uv"
+#   args = ["run", "--directory", "/path/to/open-gateway", "opengateway", "mcp"]
 env = {
-  OPENGATEWAY_URL = "https://open-gateway-production.up.railway.app",
-  # Required for public / Railway (require_auth):
-  OPENGATEWAY_AUTH_TOKEN = "ogk_from_live_ops_ui",
+  OPENGATEWAY_URL = "http://127.0.0.1:8765",
+  # Required when hub uses --token / require_auth:
+  # OPENGATEWAY_AUTH_TOKEN = "ogk_from_live_ops_ui",
   OPENGATEWAY_HARNESS = "grok",
   OPENGATEWAY_AGENT_NAME = "grok",
 }

@@ -7,12 +7,20 @@ import secrets
 from typing import Any, Iterable, Optional
 
 # Scopes
-SCOPE_ADMIN = "admin"  # full control incl. key management
-SCOPE_WRITE = "write"  # mutate rooms/messages/tasks
+SCOPE_ADMIN = "admin"  # full control incl. key management + vault write
+SCOPE_WRITE = "write"  # mutate rooms/messages/tasks/workspace
 SCOPE_READ = "read"  # GET only
 SCOPE_PAIR = "pair"  # create pair links
 SCOPE_PUSH = "push"  # manage own push subscription
-ALL_SCOPES = (SCOPE_ADMIN, SCOPE_WRITE, SCOPE_READ, SCOPE_PAIR, SCOPE_PUSH)
+SCOPE_TOOLS = "tools"  # list vault names + hub tool proxy (never secret values)
+ALL_SCOPES = (
+    SCOPE_ADMIN,
+    SCOPE_WRITE,
+    SCOPE_READ,
+    SCOPE_PAIR,
+    SCOPE_PUSH,
+    SCOPE_TOOLS,
+)
 
 
 def hash_secret(secret: str) -> str:
@@ -54,11 +62,28 @@ def scopes_allow(scopes: list[str], method: str, path: str) -> bool:
         return False
     if p.startswith("/v1/audit") and m != "GET":
         return False
+    if p.startswith("/v1/tools/credentials"):
+        if m in {"GET", "HEAD", "OPTIONS"}:
+            return (
+                SCOPE_TOOLS in scopes
+                or SCOPE_READ in scopes
+                or SCOPE_WRITE in scopes
+            )
+        return False
+    if p.startswith("/v1/tools/proxy"):
+        return SCOPE_TOOLS in scopes or SCOPE_WRITE in scopes
     if m in {"GET", "HEAD", "OPTIONS"}:
-        return SCOPE_READ in scopes or SCOPE_WRITE in scopes or SCOPE_PAIR in scopes
+        return (
+            SCOPE_READ in scopes
+            or SCOPE_WRITE in scopes
+            or SCOPE_PAIR in scopes
+            or SCOPE_TOOLS in scopes
+        )
     if p.startswith("/v1/pair"):
         return SCOPE_PAIR in scopes or SCOPE_WRITE in scopes
     if p.startswith("/v1/push"):
         return SCOPE_PUSH in scopes or SCOPE_WRITE in scopes or SCOPE_READ in scopes
+    if "/workspace" in p:
+        return SCOPE_WRITE in scopes
     # Mutations
     return SCOPE_WRITE in scopes

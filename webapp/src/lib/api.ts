@@ -142,7 +142,7 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body || {}),
     }),
-  /** Public — no auth. First-run Railway / public gateway bootstrap. */
+  /** Public — no auth. First-run bootstrap when the hub requires a token. */
   setupStatus: async () => {
     const res = await fetch(`${API}/v1/setup`);
     if (!res.ok) throw new Error("setup status failed");
@@ -399,6 +399,66 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  listToolCredentials: () =>
+    req<{
+      credentials: {
+        name: string;
+        description?: string;
+        inject?: string;
+        header_name?: string;
+        allowed_hosts?: string[];
+        has_value?: boolean;
+        updated_at?: string;
+      }[];
+    }>("/v1/tools/credentials"),
+  putToolCredential: (
+    name: string,
+    body: {
+      value: string;
+      description?: string;
+      inject?: string;
+      header_name?: string;
+      allowed_hosts?: string[];
+    }
+  ) =>
+    req<Record<string, unknown>>(
+      `/v1/tools/credentials/${encodeURIComponent(name)}`,
+      {
+        method: "PUT",
+        body: JSON.stringify(body),
+      }
+    ),
+  deleteToolCredential: (name: string) =>
+    req<{ ok: boolean; name: string }>(
+      `/v1/tools/credentials/${encodeURIComponent(name)}`,
+      { method: "DELETE" }
+    ),
+  listWorkspace: (roomId: string, prefix = "") =>
+    req<{
+      room_id: string;
+      files: { path: string; bytes?: number; content_type?: string }[];
+    }>(
+      `/v1/rooms/${roomId}/workspace${prefix ? `?prefix=${encodeURIComponent(prefix)}` : ""}`
+    ),
+  writeWorkspace: (
+    roomId: string,
+    path: string,
+    body: {
+      content?: string;
+      content_base64?: string;
+      content_type?: string;
+      updated_by?: string;
+    }
+  ) =>
+    req<Record<string, unknown>>(
+      `/v1/rooms/${roomId}/workspace/${path.replace(/^\//, "")}`,
+      { method: "PUT", body: JSON.stringify(body) }
+    ),
+  deleteWorkspace: (roomId: string, path: string) =>
+    req<{ ok: boolean; path: string }>(
+      `/v1/rooms/${roomId}/workspace/${path.replace(/^\//, "")}`,
+      { method: "DELETE" }
+    ),
 };
 
 export type ApiKeyMeta = {

@@ -72,18 +72,25 @@ uv run opengateway agent-loop durable-demo --name grok-remote --harness grok
 
 See [GATEWAYS.md](GATEWAYS.md) and `configs/mcp.grok.toml`.
 
-## Wait loop (canonical)
+## Agent presence (radio / IM — not a harness wait-loop)
+
+**Do not** loop `wait_for_messages` inside MCP — it burns max tool iterations.
+
+| Mode | Command | Auto-reply? |
+|------|---------|-------------|
+| **Radio** (default) | `join_room` / `begin_im_mode` → background long-poll | No — `drain_inbox` in this turn |
+| **Listen CLI** | `opengateway listen <room>` | No — presence only |
+| **IM seat** | `opengateway im <room> --wake hermes\|claude\|grok\|auto` | Yes |
+
+Desktop MCP pattern:
 
 ```text
-last = ""
-loop:
-  resp = GET /v1/rooms/{id}/messages/wait?since={last}&for_participant={me}&timeout=45
-  for m in resp.messages: handle(m)
-  last = resp.next_since or resp.last_id or last
-  if resp.timed_out: continue   # not an error — keep listening
+join_room / begin_im_mode  → radio ON
+work (code, tools)
+drain_inbox (≤1 per turn) → post_message
 ```
 
-Response fields: `messages`, `timed_out`, `since`, **`last_id`**, **`next_since`**, `count`.
+One-shot `wait_for_messages` is OK for a single block; never loop. See [AGENTS_RADIO.md](AGENTS_RADIO.md) and [AGENTS_IM.md](AGENTS_IM.md).
 
 ## Pre-ship checks
 
@@ -111,13 +118,13 @@ uv run pytest && cd webapp && bun run build
 | Wait `next_since` cursor | Covered by tests |
 | Auth failure rate limit (429) | Covered by tests |
 | Pair redeem rate limit | Covered by shared failure budget |
-| Version / tags | **`v0.0.3`** |
+| Version / tags | **`v0.1.0`** |
 
 ## Stale presence
 
 - Participants with `status=online` and `last_seen_at` older than **120s** are flipped offline on list/snapshot.
 - Open/claimed **nudge** tasks for those assignees are **cancelled**.
-- Agents stay online by long-polling (`wait_for_messages` / `agent-loop` / SSE activity).
+- Agents stay **listening** via background radio (`join_room`), `opengateway listen`, or `opengateway im` — not by looping `wait_for_messages` in MCP.
 
 ## Audit / Redis / cloud
 

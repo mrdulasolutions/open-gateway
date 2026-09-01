@@ -24,13 +24,13 @@ FILE_INLINE_IMAGE = 200_000
 R2_PUT_TIMEOUT = 12.0  # never hang upload path for minutes
 
 
-def _safe_filename(name: str) -> str:
+def safe_filename(name: str) -> str:
     base = Path(name or "upload.bin").name
     base = re.sub(r"[^\w.\- ()[\]]+", "_", base).strip("._") or "upload.bin"
     return base[:180]
 
 
-def _tenant_slug() -> str:
+def tenant_slug() -> str:
     return (
         os.environ.get("OPENGATEWAY_TENANT_SLUG")
         or os.environ.get("OPENGATEWAY_TENANT")
@@ -38,7 +38,7 @@ def _tenant_slug() -> str:
     ).strip().lower()
 
 
-def _files_base() -> str:
+def files_base() -> str:
     return (
         os.environ.get("OPENGATEWAY_FILES_URL")
         or os.environ.get("OPENGATEWAY_PUBLIC_URL")
@@ -51,18 +51,18 @@ def _files_backend() -> str:
     mode = (os.environ.get("OPENGATEWAY_FILES_BACKEND") or "auto").strip().lower()
     if mode in {"r2", "disk"}:
         return mode
-    if _files_base() and os.environ.get("OPENGATEWAY_AUTH_TOKEN"):
+    if files_base() and os.environ.get("OPENGATEWAY_AUTH_TOKEN"):
         return "r2"
     return "disk"
 
 
 def r2_key(room_id: str, file_id: str, filename: str) -> str:
-    tenant = _tenant_slug()
-    safe = _safe_filename(filename)
+    tenant = tenant_slug()
+    safe = safe_filename(filename)
     return f"tenants/{tenant}/rooms/{room_id}/files/{file_id}/{safe}"
 
 
-def _master_headers() -> dict[str, str]:
+def master_headers() -> dict[str, str]:
     tok = (os.environ.get("OPENGATEWAY_AUTH_TOKEN") or "").strip()
     h = {"Authorization": f"Bearer {tok}"} if tok else {}
     return h
@@ -98,7 +98,7 @@ def put_blob(
         raise ValueError(f"File too large (max {FILE_MAX_BYTES // (1024 * 1024)}MB)")
 
     digest = _sha256(raw)
-    safe = _safe_filename(filename)
+    safe = safe_filename(filename)
     key = r2_key(room_id, file_id, safe)
     backend = _files_backend()
 
@@ -127,15 +127,15 @@ def put_blob(
 
     # R2: short timeout — disk already written; don't block API on R2 outage
     r2_ok = False
-    if backend == "r2" and _files_base():
+    if backend == "r2" and files_base():
         try:
-            url = f"{_files_base()}/__files/{key}"
+            url = f"{files_base()}/__files/{key}"
             with httpx.Client(timeout=R2_PUT_TIMEOUT) as client:
                 r = client.put(
                     url,
                     content=raw,
                     headers={
-                        **_master_headers(),
+                        **master_headers(),
                         "Content-Type": content_type or "application/octet-stream",
                     },
                 )
@@ -177,11 +177,11 @@ def get_blob_bytes(
     """Load file bytes: disk cache → R2 → inline."""
     if disk_path and Path(disk_path).is_file():
         return Path(disk_path).read_bytes()
-    if r2_key and _files_base() and _files_backend() == "r2":
+    if r2_key and files_base() and _files_backend() == "r2":
         try:
-            url = f"{_files_base()}/__files/{r2_key}"
+            url = f"{files_base()}/__files/{r2_key}"
             with httpx.Client(timeout=120.0) as client:
-                r = client.get(url, headers=_master_headers())
+                r = client.get(url, headers=master_headers())
                 if r.status_code == 200:
                     raw = r.content
                     # Warm disk cache best-effort
@@ -205,11 +205,11 @@ def delete_blob(*, r2_key: Optional[str], disk_path: Optional[str]) -> None:
                 p.unlink()
         except Exception:
             pass
-    if r2_key and _files_base():
+    if r2_key and files_base():
         try:
-            url = f"{_files_base()}/__files/{r2_key}"
+            url = f"{files_base()}/__files/{r2_key}"
             with httpx.Client(timeout=30.0) as client:
-                client.delete(url, headers=_master_headers())
+                client.delete(url, headers=master_headers())
         except Exception:
             pass
 
@@ -240,8 +240,15 @@ def artifact_meta(blob: StoredBlob, content_type: str) -> dict[str, Any]:
         "storage": blob.storage,
         "r2_key": blob.r2_key,
         "sha256": blob.sha256,
-        "tenant_slug": _tenant_slug(),
+        "tenant_slug": tenant_slug(),
         "durable": blob.durable,
         "durable_inline": bool(blob.inline_content),
         "category": category_for(content_type),
     }
+
+
+# Back-compat aliases
+_safe_filename = safe_filename
+_tenant_slug = tenant_slug
+_files_base = files_base
+_master_headers = master_headers

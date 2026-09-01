@@ -58,8 +58,9 @@ async def test_run_doctor_against_memory_hub(monkeypatch):
     p = await store.join_room(
         room.id, Participant(name="sleepy", harness="grok")
     )
-    # joined but not listening (no last_poll_at)
-    assert p.last_poll_at is None
+    # Agent harnesses start listening on join (always-on radio product default)
+    assert p.last_poll_at is not None
+    assert p.presence == "listening"
 
     app = create_app(
         store, config=GatewayConfig(mode=GatewayMode.INTERNAL, require_auth=False)

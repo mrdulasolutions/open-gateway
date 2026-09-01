@@ -14,10 +14,12 @@ ui:
 
 sync-static:
 	rm -rf src/opengateway/static
-	mkdir -p src/opengateway/static
+	mkdir -p src/opengateway/static/agent-kit
 	cp -R webapp/dist/. src/opengateway/static/
+	cp skills/opengateway-collab/SKILL.md src/opengateway/static/agent-kit/SKILL.md
 	@test -f src/opengateway/static/index.html
-	@echo "OK — UI synced to src/opengateway/static/"
+	@test -f src/opengateway/static/agent-kit/SKILL.md
+	@echo "OK — UI + agent-kit synced to src/opengateway/static/"
 
 build: test ui
 
@@ -32,7 +34,7 @@ package: check
 	@echo "Install:  uv tool install dist/opengateway-*.whl"
 
 docker:
-	docker build -t opengateway:0.0.6 -t opengateway:latest .
+	docker build -t opengateway:0.1.0 -t opengateway:latest .
 
 docker-up:
 	@test -n "$$OPENGATEWAY_AUTH_TOKEN" || (echo "Set OPENGATEWAY_AUTH_TOKEN first" && exit 1)

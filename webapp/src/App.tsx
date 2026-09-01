@@ -74,8 +74,11 @@ function AuthConnectBanner({
         <div>
           <strong className="text-base">Gateway authorization required</strong>
           <p className="mt-1 text-xs leading-relaxed opacity-90">
-            Public hubs (including Railway) require a Bearer token. This is not
-            an error in the app — this browser has not been authorized yet.
+            This hub requires a Bearer token. OSS on-device: paste the same{" "}
+            <code className="text-[10px]">--token</code> /{" "}
+            <code className="text-[10px]">OPENGATEWAY_AUTH_TOKEN</code> you
+            used when you started <code className="text-[10px]">opengateway serve</code>.
+            This browser has not been authorized yet.
           </p>
         </div>
 
@@ -92,7 +95,7 @@ function AuthConnectBanner({
 
         <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
           <label className="min-w-0 flex-1 text-xs font-medium">
-            Or paste token (Railway Variables → OPENGATEWAY_AUTH_TOKEN)
+            Or paste this hub&apos;s OPENGATEWAY_AUTH_TOKEN
             <input
               type="password"
               value={draft}
@@ -117,8 +120,9 @@ function AuthConnectBanner({
 
         <p className="text-[11px] leading-relaxed opacity-80">
           After connecting, open <strong>Agent tokens</strong> in the left menu
-          to mint keys for Grok / Claude / Cursor MCP. Template pre-sets the
-          master token on the server; this browser still needs it once.
+          to mint keys for Grok / Claude / Cursor MCP. You run the hub; this
+          browser still needs the hub token once. Railway is an optional remote
+          host, not required for on-device OSS.
         </p>
       </div>
     </div>

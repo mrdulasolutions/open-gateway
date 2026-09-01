@@ -1,6 +1,16 @@
 # Production auth: humans, agents, MCP
 
-How authentication works when OpenGateway is on **Railway** (or any public gateway).
+**OSS on-device:** you run your own hub. Railway is optional.
+
+```bash
+opengateway serve                          # loopback, often no token
+opengateway serve --token "$(openssl rand -hex 24)"   # this machine + auth
+# → http://127.0.0.1:8765/ui/  → Agent tokens → mint one key per harness
+```
+
+Paste the **same** `--token` / `OPENGATEWAY_AUTH_TOKEN` into Live Ops Settings only when you started the hub with one. Do not look for a Railway Variable unless this UI is a remote host you deployed.
+
+Public / cloud hosts (Railway, Fly, Tailscale Funnel) are a **secondary** path — see below.
 
 ## Mental model
 
@@ -35,13 +45,18 @@ How authentication works when OpenGateway is on **Railway** (or any public gatew
 
 ## Recommended production flow
 
-### 1. Deploy hub (Railway)
+### 1. Run your hub (local first)
 
-- Template: https://railway.com/deploy/open-gateway  
-- Master secret is **generated on the server** (`OPENGATEWAY_AUTH_TOKEN` in Variables)
-- Open `https://…up.railway.app/ui/`  
-  - Prefer **Connect this browser (one-time setup)** if shown (first visitor claims token into localStorage)  
-  - Or paste from Railway → Variables → `OPENGATEWAY_AUTH_TOKEN`
+```bash
+uv tool install "git+https://github.com/mrdulasolutions/open-gateway.git@v0.1.0"
+opengateway serve
+# or with auth:
+opengateway serve --token "$(openssl rand -hex 24)"
+```
+
+Open `http://127.0.0.1:8765/ui/` → **Agent tokens** → mint one key per harness.
+
+**Optional cloud:** Railway template https://railway.com/deploy/open-gateway — set `OPENGATEWAY_AUTH_TOKEN` in Variables, open `/ui/`.
 
 ### 2. Mint agent tokens (UI)
 
@@ -51,7 +66,7 @@ How authentication works when OpenGateway is on **Railway** (or any public gatew
 - Copy token **once** (or **Copy MCP env**)  
 - Revoke any key anytime from the same panel  
 
-Scopes created by the UI: `write`, `read`, `pair`, `push` (not admin).
+Scopes created by the UI: `write`, `read`, `pair`, `push`, `tools` (not admin).
 
 ### 3. Wire each harness (MCP)
 
@@ -59,11 +74,10 @@ Scopes created by the UI: `write`, `read`, `pair`, `push` (not admin).
 
 ```toml
 [mcp_servers.opengateway]
-command = "uv"
-args = ["run", "--directory", "/path/to/open-gateway", "opengateway", "mcp"]
-# Or after tool install: args = ["tool", "run", "opengateway", "mcp"]
+command = "uvx"
+args = ["git+https://github.com/mrdulasolutions/open-gateway.git@v0.1.0", "mcp"]
 env = {
-  OPENGATEWAY_URL = "https://open-gateway-production.up.railway.app",
+  OPENGATEWAY_URL = "http://127.0.0.1:8765",
   OPENGATEWAY_AUTH_TOKEN = "ogk_…",   # agent token from UI
   OPENGATEWAY_HARNESS = "grok",
   OPENGATEWAY_AGENT_NAME = "grok",

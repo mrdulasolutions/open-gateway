@@ -7,7 +7,7 @@
 | **Fly.io** | [`fly.toml`](../fly.toml) | `fly launch` → secrets → `fly deploy` |
 | **Railway (1-click)** | [![Deploy](https://railway.com/button.svg)](https://railway.com/deploy/open-gateway) | App + Postgres + Redis · [RAILWAY.md](RAILWAY.md) |
 | **Docker** | [`docker-compose.yml`](../docker-compose.yml) | `docker compose up -d` |
-| **GHCR image** | CI on `v*` tags | `docker pull ghcr.io/mrdulasolutions/open-gateway:0.0.4` |
+| **GHCR image** | CI on `v*` tags | `docker pull ghcr.io/mrdulasolutions/open-gateway:0.1.0` |
 
 Always set a strong token:
 
@@ -62,22 +62,20 @@ Config: `Dockerfile` installs `.[deploy]` (psycopg + redis + pywebpush); entrypo
 
 ## GHCR / PyPI (release tags)
 
-On `git push origin v0.0.4`:
+On `git push origin v0.1.0`:
 
-1. **PyPI** — wheel + sdist via Trusted Publishing (configure the `release` environment on GitHub → PyPI)
-2. **GHCR** — `ghcr.io/<owner>/open-gateway:<version>` and `:latest`
+1. **GHCR** — `ghcr.io/mrdulasolutions/open-gateway:0.1.0` and `:latest` (primary binary ship)
+2. **PyPI** — skipped for OSS: PyPI name `opengateway` is taken; `opengateways` is the hosted SaaS package. Install via git or GHCR.
 
 ```bash
-docker pull ghcr.io/mrdulasolutions/open-gateway:0.0.4
+docker pull ghcr.io/mrdulasolutions/open-gateway:0.1.0
 docker run --rm -p 8765:8765 \
   -e OPENGATEWAY_AUTH_TOKEN="$OPENGATEWAY_AUTH_TOKEN" \
-  ghcr.io/mrdulasolutions/open-gateway:0.0.4
+  ghcr.io/mrdulasolutions/open-gateway:0.1.0
 ```
 
 ```bash
-pip install opengateway==0.0.4   # after first PyPI publish
-# or until then:
-uv tool install "git+https://github.com/mrdulasolutions/open-gateway.git@v0.0.4"
+uv tool install "git+https://github.com/mrdulasolutions/open-gateway.git@v0.1.0"
 ```
 
 ---
