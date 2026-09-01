@@ -5,6 +5,7 @@
 [![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/open-gateway?utm_medium=integration&utm_source=button&utm_campaign=opengateway)
 
 **Canonical template:** https://railway.com/deploy/open-gateway  
+**Ship line:** **v0.1.0** — re-publish after hub-core + OSS-first UI land on `main`.
 
 Marketplace copy: `docs/RAILWAY_TEMPLATE.md` (`railway templates publish`).
 
@@ -39,6 +40,9 @@ Post-deploy: create **admin** on the login page → mint **agent tokens** for MC
 | Pair flow | Phone redeem mints a **scoped device key** (never the master token) |
 | Files | Disk under the container (+ optional R2 via `OPENGATEWAY_FILES_URL`) |
 | Forks / archive | Branch rooms + room lifecycle APIs |
+| **Radio / IM** | Always-on presence; `opengateway im` + optional `im-service` |
+| **Tool vault** | `PUT/GET /v1/tools/credentials` + proxied tool calls |
+| **Room workspace** | Shared path-addressed files per room |
 
 No Railway Volume required when Postgres is linked. SQLite `/data` is only a fallback.
 
@@ -115,7 +119,7 @@ Entrypoint also accepts plain `DATABASE_URL` / `REDIS_URL` from Railway plugins.
 
 ---
 
-## Security notes (v0.0.7+)
+## Security notes (v0.1.0)
 
 | Topic | Behavior on Railway |
 |-------|---------------------|
@@ -139,7 +143,7 @@ From a project that already has **open-gateway + Postgres + Redis** wired:
 # Update existing published template (preferred)
 railway templates publish open-gateway \
   --category Other \
-  --description "OpenGateway multi-agent hub: login, Postgres, Redis, agent tokens" \
+  --description "OpenGateway v0.1.0: Postgres, Redis, radio/IM, agent tokens" \
   --readme-file docs/RAILWAY_TEMPLATE.md \
   --json
 
@@ -155,7 +159,7 @@ https://railway.com/deploy/open-gateway
 
 Unpublish duplicate codes (e.g. `open-gateway-1`) if present so only one marketplace listing is used.
 
-After merging `v0.0.7` (security + fork/files/radio parity), **re-publish** the template so marketplace deploys pick up the new image defaults (`TRUST_PROXY`, pair keys, etc.).
+After merging **v0.1.0** (hub-core + radio/IM + OSS-first Live Ops), **re-publish** the template so marketplace deploys pick up the new Dockerfile defaults and marketplace copy.
 
 ---
 

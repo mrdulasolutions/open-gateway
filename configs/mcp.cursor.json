@@ -11,7 +11,7 @@
         "mcp"
       ],
       "env": {
-        "OPENGATEWAY_URL": "https://open-gateway-production.up.railway.app",
+        "OPENGATEWAY_URL": "https://YOUR-APP.up.railway.app",
         "OPENGATEWAY_AUTH_TOKEN": "ogk_from_live_ops_ui",
         "OPENGATEWAY_HARNESS": "cursor",
         "OPENGATEWAY_AGENT_NAME": "cursor"

@@ -15,6 +15,7 @@ Versioning: git tags `v0.0.1`, `v0.1.0`, …
 - **Hub-core** (from 0.0.8): IM + `im-service`, tool vault, room workspace, playbooks, nudge policy, radio/MCP extras
 - **Docs** — INSTALL/PRODUCTION/AGENTS_AUTH rewritten for self-host; configs default `127.0.0.1:8765`
 - **Packaging** — `make sync-static` preserves `agent-kit/SKILL.md`; Docker/Compose tag `0.1.0`
+- **Railway** — marketplace template republished for v0.1.0 (`docs/RAILWAY_TEMPLATE.md`)
 
 ## 0.0.8 — 2026-09-01
 
