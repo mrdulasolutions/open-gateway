@@ -4,7 +4,7 @@ Neat ways to run the hub on **your machine** — pick one path.
 
 | Path | Best for | UI included? |
 |------|----------|--------------|
-| **A. `uv tool install` (git @ tag)** | Daily driver on Mac/Linux | Yes (packaged static) |
+| **A. PyPI / `uv tool install`** | Daily driver on Mac/Linux | Yes (packaged static) |
 | **B. Clone + `uv sync`** | Development / contrib | Yes (`webapp/dist`) |
 | **C. Docker Compose** | Always-on hub / lab server | Yes |
 | **D. GHCR image** | Pull prebuilt container | Yes |
@@ -15,7 +15,7 @@ Any non-loopback mode needs a strong token:
 export OPENGATEWAY_AUTH_TOKEN="$(openssl rand -hex 24)"
 ```
 
-**PyPI note:** the name `opengateway` is taken by an unrelated project; `opengateways` is the hosted SaaS line. OSS installs use **git @ tag** or **GHCR** until a separate PyPI name is reserved.
+**PyPI:** OSS publishes as **`open-gateway`** (`uv tool install open-gateway` — CLI entry is still `opengateway`). Unrelated PyPI project `opengateway` and hosted SaaS `opengateways` are different packages.
 
 ---
 
@@ -24,10 +24,16 @@ export OPENGATEWAY_AUTH_TOKEN="$(openssl rand -hex 24)"
 Requires [uv](https://docs.astral.sh/uv/) and Python 3.11+.
 
 ```bash
-uv tool install "git+https://github.com/mrdulasolutions/open-gateway.git@v0.1.0"
+uv tool install open-gateway==0.1.0
 
 opengateway serve
 # → http://127.0.0.1:8765/ui/
+```
+
+**Alternative (git @ tag):**
+
+```bash
+uv tool install "git+https://github.com/mrdulasolutions/open-gateway.git@v0.1.0"
 ```
 
 **LAN + Tailscale (dual path)**
@@ -44,14 +50,16 @@ tailscale serve --bg 8765
 **Upgrade**
 
 ```bash
-uv tool install "git+https://github.com/mrdulasolutions/open-gateway.git@v0.1.0" --force
+uv tool install open-gateway==0.1.0 --force
+# or: uv tool install "git+https://github.com/mrdulasolutions/open-gateway.git@v0.1.0" --force
 ```
 
 **MCP harness** (gateway already running):
 
 ```bash
 opengateway mcp
-# one-shot: uvx "git+https://github.com/mrdulasolutions/open-gateway.git@v0.1.0" mcp
+# one-shot: uvx open-gateway mcp
+# or: uvx "git+https://github.com/mrdulasolutions/open-gateway.git@v0.1.0" mcp
 ```
 
 Wire templates from the repo: [`configs/`](../configs/) — set `OPENGATEWAY_URL` + `OPENGATEWAY_AUTH_TOKEN` in the harness env.

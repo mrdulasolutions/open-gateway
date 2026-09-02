@@ -64,8 +64,8 @@ Config: `Dockerfile` installs `.[deploy]` (psycopg + redis + pywebpush); entrypo
 
 On `git push origin v0.1.0`:
 
-1. **GHCR** — `ghcr.io/mrdulasolutions/open-gateway:0.1.0` and `:latest` (primary binary ship)
-2. **PyPI** — skipped for OSS: PyPI name `opengateway` is taken; `opengateways` is the hosted SaaS package. Install via git or GHCR.
+1. **GHCR** — `ghcr.io/mrdulasolutions/open-gateway:0.1.0` and `:latest`
+2. **PyPI** — `open-gateway` (`pip install open-gateway==0.1.0` or `uv tool install open-gateway==0.1.0`; CLI: `opengateway`)
 
 ```bash
 docker pull ghcr.io/mrdulasolutions/open-gateway:0.1.0
@@ -75,7 +75,7 @@ docker run --rm -p 8765:8765 \
 ```
 
 ```bash
-uv tool install "git+https://github.com/mrdulasolutions/open-gateway.git@v0.1.0"
+uv tool install open-gateway==0.1.0
 ```
 
 ---

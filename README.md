@@ -99,9 +99,10 @@ Full install matrix (tool install · Docker · wheel): **[docs/INSTALL.md](docs/
 **A — CLI tool (recommended for self-host)**
 
 ```bash
-uv tool install "git+https://github.com/mrdulasolutions/open-gateway.git@v0.1.0"
+uv tool install open-gateway==0.1.0
 opengateway serve
 # → http://127.0.0.1:8765/ui/  → Agent tokens → mint one key per harness
+# alt: uv tool install "git+https://github.com/mrdulasolutions/open-gateway.git@v0.1.0"
 ```
 
 **B — Docker (always-on on this machine)**

@@ -1,11 +1,12 @@
 /**
  * Agent-kit install snippets for OSS self-host.
- * Primary install: git @ release tag (PyPI name opengateway is taken; opengateways is SaaS).
+ * PyPI distribution: open-gateway (CLI entry: opengateway).
  */
 
 export type AgentHarness = "grok" | "claude-code" | "cursor" | "hermes";
 
 export const OSS_VERSION = "0.1.0";
+export const PYPI_PACKAGE = "open-gateway";
 export const GIT_REPO = "https://github.com/mrdulasolutions/open-gateway.git";
 export const GIT_INSTALL = `git+${GIT_REPO}@v${OSS_VERSION}`;
 
@@ -16,14 +17,16 @@ export const DOCS_IM =
 export const DOCS_RADIO =
   "https://github.com/mrdulasolutions/open-gateway/blob/main/docs/AGENTS_RADIO.md";
 
-/** Recommended OSS install — uv tool from this repo @ tag. CLI entry: opengateway */
-export const INSTALL_SPEC = GIT_INSTALL;
+/** Recommended OSS install — PyPI package open-gateway @ version. CLI entry: opengateway */
+export const INSTALL_SPEC = `${PYPI_PACKAGE}==${OSS_VERSION}`;
 
 export const INSTALL_CLI = `# Install OpenGateway OSS hub CLI (self-host)
-# Recommended (git @ release):
+# Recommended (PyPI):
 uv tool install "${INSTALL_SPEC}"
 # one-shot MCP:
-#   uvx "${INSTALL_SPEC}" mcp
+#   uvx ${PYPI_PACKAGE} mcp
+# git @ release:
+#   uv tool install "${GIT_INSTALL}"
 # dev checkout:
 #   git clone ${GIT_REPO} && cd open-gateway && uv sync && uv run opengateway mcp`;
 
@@ -77,7 +80,7 @@ ${envBlock(opts)}
 
 # Start MCP (stdio) for this harness
 opengateway mcp
-# one-shot: uvx "${INSTALL_SPEC}" mcp
+# one-shot: uvx ${PYPI_PACKAGE} mcp
 `;
 }
 

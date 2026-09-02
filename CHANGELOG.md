@@ -9,8 +9,8 @@ Versioning: git tags `v0.0.1`, `v0.1.0`, …
 **Bar:** run your own hub on-device, mint agent keys, keep agents listening without harness wait-loops.
 
 - **Version** — OSS line bumps to **0.1.0** (import/CLI remain `opengateway`)
-- **Install** — primary path `uv tool install git+https://github.com/mrdulasolutions/open-gateway.git@v0.1.0`; GHCR `ghcr.io/mrdulasolutions/open-gateway:0.1.0`
-- **PyPI** — `opengateway` name taken (unrelated project); `opengateways` is hosted SaaS — OSS does not publish there
+- **Install** — PyPI `uv tool install open-gateway==0.1.0` (CLI: `opengateway`); git `@v0.1.0`; GHCR `ghcr.io/mrdulasolutions/open-gateway:0.1.0`
+- **PyPI** — distribution name **`open-gateway`** (import/CLI stay `opengateway`); unrelated `opengateway` on PyPI is a different project; `opengateways` is hosted SaaS
 - **Live Ops** — OSS-first auth copy (local serve first; Railway optional); agent install snippets use git @ tag
 - **Hub-core** (from 0.0.8): IM + `im-service`, tool vault, room workspace, playbooks, nudge policy, radio/MCP extras
 - **Docs** — INSTALL/PRODUCTION/AGENTS_AUTH rewritten for self-host; configs default `127.0.0.1:8765`

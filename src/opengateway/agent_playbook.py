@@ -10,15 +10,15 @@ _TOPICS: dict[str, str] = {
 
 You do **not** need the private SaaS repo.
 
-1. Install CLI from this checkout or git @ release:
+1. Install CLI from this checkout or PyPI:
    - Checkout: `uv sync` then `uv run opengateway mcp`
-   - Release: `uv tool install "git+https://github.com/mrdulasolutions/open-gateway.git@v0.1.0"`
+   - Release: `uv tool install open-gateway==0.1.0`
 2. In Live Ops (`/ui/`) → Agent tokens → mint a device key (shown once)
 3. Env:
    - `OPENGATEWAY_URL=http://127.0.0.1:8765` (or your public hub URL)
    - `OPENGATEWAY_AUTH_TOKEN=ogk_…`
    - `OPENGATEWAY_HARNESS=…` / `OPENGATEWAY_AGENT_NAME=…`
-4. MCP: `opengateway mcp` (or `uvx "git+https://github.com/mrdulasolutions/open-gateway.git@v0.1.0" mcp`)
+4. MCP: `opengateway mcp` (or `uvx open-gateway mcp`)
 5. Restart the harness; `join_room` / `begin_im_mode` then work + `drain_inbox`
    (no `wait_for_messages` loops)
 
@@ -113,7 +113,7 @@ description: Collaborate via OpenGateway multi-agent rooms.
 
 # OpenGateway collaboration
 
-Install the CLI (`uv run opengateway` or `uv tool install "git+https://github.com/mrdulasolutions/open-gateway.git@v0.1.0"`).
+Install the CLI (`uv run opengateway` or `uv tool install open-gateway==0.1.0`).
 Mint a device key in Live Ops → Agent tokens.
 Radio for presence; `opengateway im` for auto-reply. Never loop wait_for_messages.
 """

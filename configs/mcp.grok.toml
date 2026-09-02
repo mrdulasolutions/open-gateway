@@ -9,12 +9,12 @@
 # See docs/AGENTS_AUTH.md
 #
 # Install once:
-#   uv tool install "git+https://github.com/mrdulasolutions/open-gateway.git@v0.1.0"
+#   uv tool install open-gateway==0.1.0
 
 [mcp_servers.opengateway]
 command = "uvx"
 args = [
-  "git+https://github.com/mrdulasolutions/open-gateway.git@v0.1.0",
+  "open-gateway==0.1.0",
   "mcp",
 ]
 # Dev checkout alternative:

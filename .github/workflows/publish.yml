@@ -1,8 +1,8 @@
 name: Publish
 
-# Builds wheels, publishes to GHCR on version tags.
-# PyPI: name `opengateway` is taken (unrelated project); `opengateways` is hosted SaaS.
-# OSS primary install: git @ tag or GHCR. PyPI job is skipped until a free name is reserved.
+# Builds wheels, publishes to PyPI (open-gateway), pushes GHCR image on version tags.
+# PyPI: distribution name `open-gateway` (import/CLI remain `opengateway`).
+# Prefer Trusted Publisher on PyPI; or set PYPI_API_TOKEN in the release environment.
 
 on:
   push:
@@ -17,11 +17,23 @@ permissions:
 
 jobs:
   pypi:
-    if: false  # skipped — see header comment
     runs-on: ubuntu-latest
     environment: release
     steps:
-      - run: echo "PyPI publish disabled for OSS opengateway (name collision)"
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Sync UI into package + build
+        run: |
+          # static UI already in src/opengateway/static on main
+          uv build -o dist
+          ls -la dist/
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
 
   ghcr:
     runs-on: ubuntu-latest
