@@ -1,6 +1,6 @@
 # OpenGateway — Railway config-as-code (also see railway.json)
 # One-click: https://railway.com/deploy/open-gateway
-# Ship line: v0.1.0 — re-publish template after doc/Dockerfile changes (docs/RAILWAY.md)
+# Ship line: v0.1.2 — re-publish template after doc/Dockerfile changes (docs/RAILWAY.md)
 # Docs: docs/RAILWAY.md · docs/RAILWAY_TEMPLATE.md
 #
 # After deploy:

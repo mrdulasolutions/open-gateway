@@ -118,7 +118,7 @@ uv run pytest && cd webapp && bun run build
 | Wait `next_since` cursor | Covered by tests |
 | Auth failure rate limit (429) | Covered by tests |
 | Pair redeem rate limit | Covered by shared failure budget |
-| Version / tags | **`v0.1.0`** |
+| Version / tags | **`v0.1.2`** (PyPI `opengateways`) |
 
 ## Stale presence
 

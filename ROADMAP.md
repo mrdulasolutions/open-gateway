@@ -8,8 +8,16 @@ Status is intentionally honest. Shipped items stay listed so the arc is clear.
 
 ## Versioning
 
-- Package + tags: **`v0.1.0`** is the first production self-host line (semver `vMAJOR.MINOR.PATCH`)
-- Prior `0.0.x` tags remain for history
+- Package + tags: **`v0.1.2`** current OSS line (PyPI **`opengateways`**)
+- **`v0.1.0`** — first production self-host cut
+
+## Shipped (v0.1.2) — PyPI + CLI
+
+| Area | Capability |
+|------|------------|
+| PyPI | `uv tool install opengateways==0.1.2` |
+| CLI | **`opengateways`** primary, **`opengateway`** alias |
+| Import | `opengateway` (unchanged) |
 
 ## Shipped (v0.1.0) — production self-host
 
@@ -19,7 +27,7 @@ Status is intentionally honest. Shipped items stay listed so the arc is clear.
 | Agents | Always-on radio (no wait-loops), nudge policy, MCP vault/workspace tools |
 | UI | OSS-first Live Ops (local mint, vault + workspace panels, install snippets) |
 | Security | v0.0.7 hardening retained (WS auth, tenant IDOR, pair keys, audit) |
-| Install | `uv tool install git+…@v0.1.0`, Docker, GHCR |
+| Install | `uv tool install opengateways`, git `@v0.1.2`, Docker, GHCR |
 
 ## Shipped (v0.0.1 baseline)
 

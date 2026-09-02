@@ -3,8 +3,9 @@
 **OSS on-device:** you run your own hub. Railway is optional.
 
 ```bash
-opengateway serve                          # loopback, often no token
-opengateway serve --token "$(openssl rand -hex 24)"   # this machine + auth
+opengateways serve                          # loopback, often no token
+opengateways serve --token "$(openssl rand -hex 24)"   # this machine + auth
+# alias: opengateway serve
 # → http://127.0.0.1:8765/ui/  → Agent tokens → mint one key per harness
 ```
 
@@ -48,10 +49,10 @@ Public / cloud hosts (Railway, Fly, Tailscale Funnel) are a **secondary** path �
 ### 1. Run your hub (local first)
 
 ```bash
-uv tool install "git+https://github.com/mrdulasolutions/open-gateway.git@v0.1.0"
-opengateway serve
+uv tool install opengateways==0.1.2
+opengateways serve
 # or with auth:
-opengateway serve --token "$(openssl rand -hex 24)"
+opengateways serve --token "$(openssl rand -hex 24)"
 ```
 
 Open `http://127.0.0.1:8765/ui/` → **Agent tokens** → mint one key per harness.
@@ -75,7 +76,7 @@ Scopes created by the UI: `write`, `read`, `pair`, `push`, `tools` (not admin).
 ```toml
 [mcp_servers.opengateway]
 command = "uvx"
-args = ["git+https://github.com/mrdulasolutions/open-gateway.git@v0.1.0", "mcp"]
+args = ["opengateways==0.1.2", "mcp"]
 env = {
   OPENGATEWAY_URL = "http://127.0.0.1:8765",
   OPENGATEWAY_AUTH_TOKEN = "ogk_…",   # agent token from UI

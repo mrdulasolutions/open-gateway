@@ -97,14 +97,14 @@ Data lives in the `og-data` volume (`OPENGATEWAY_DB=/data/state.db`).
 
 ## D. GHCR image
 
-After release tag `v0.1.0`:
+After release tag `v0.1.2`:
 
 ```bash
-docker pull ghcr.io/mrdulasolutions/open-gateway:0.1.0
+docker pull ghcr.io/mrdulasolutions/open-gateway:0.1.2
 docker run --rm -p 8765:8765 \
   -e OPENGATEWAY_AUTH_TOKEN="$OPENGATEWAY_AUTH_TOKEN" \
   -v og-data:/data \
-  ghcr.io/mrdulasolutions/open-gateway:0.1.0
+  ghcr.io/mrdulasolutions/open-gateway:0.1.2
 ```
 
 ---

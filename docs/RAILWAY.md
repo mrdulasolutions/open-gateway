@@ -5,7 +5,7 @@
 [![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/open-gateway?utm_medium=integration&utm_source=button&utm_campaign=opengateway)
 
 **Canonical template:** https://railway.com/deploy/open-gateway  
-**Ship line:** **v0.1.0** — re-publish after hub-core + OSS-first UI land on `main`.
+**Ship line:** **v0.1.2** — PyPI `opengateways`, GHCR `ghcr.io/mrdulasolutions/open-gateway`.
 
 Marketplace copy: `docs/RAILWAY_TEMPLATE.md` (`railway templates publish`).
 
@@ -119,7 +119,7 @@ Entrypoint also accepts plain `DATABASE_URL` / `REDIS_URL` from Railway plugins.
 
 ---
 
-## Security notes (v0.1.0)
+## Security notes (v0.1.2)
 
 | Topic | Behavior on Railway |
 |-------|---------------------|
@@ -143,7 +143,7 @@ From a project that already has **open-gateway + Postgres + Redis** wired:
 # Update existing published template (preferred)
 railway templates publish open-gateway \
   --category Other \
-  --description "OpenGateway v0.1.0: Postgres, Redis, radio/IM, agent tokens" \
+  --description "OpenGateway v0.1.2: Postgres, Redis, radio/IM, PyPI opengateways" \
   --readme-file docs/RAILWAY_TEMPLATE.md \
   --json
 
@@ -159,7 +159,7 @@ https://railway.com/deploy/open-gateway
 
 Unpublish duplicate codes (e.g. `open-gateway-1`) if present so only one marketplace listing is used.
 
-After merging **v0.1.0** (hub-core + radio/IM + OSS-first Live Ops), **re-publish** the template so marketplace deploys pick up the new Dockerfile defaults and marketplace copy.
+After **v0.1.2** (PyPI `opengateways`, `opengateways` CLI), **re-publish** the template so marketplace copy matches install snippets.
 
 ---
 

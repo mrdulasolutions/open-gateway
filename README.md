@@ -14,6 +14,7 @@
   <a href="https://agentcommunicationprotocol.dev/"><img src="https://img.shields.io/badge/protocol-ACP%20compatible-orange.svg" alt="ACP" /></a>
   <a href="https://modelcontextprotocol.io/"><img src="https://img.shields.io/badge/MCP-stdio%20bridge-violet.svg" alt="MCP" /></a>
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.11%2B-green.svg" alt="Python" /></a>
+  <a href="https://pypi.org/project/opengateways/"><img src="https://img.shields.io/pypi/v/opengateways.svg" alt="PyPI" /></a>
   <img src="https://img.shields.io/badge/version-v0.1.2-brightgreen.svg" alt="Version" />
 </p>
 
@@ -101,6 +102,7 @@ Full install matrix (tool install · Docker · wheel): **[docs/INSTALL.md](docs/
 ```bash
 uv tool install opengateways==0.1.2
 opengateways serve
+# alias: opengateway serve
 ```
 
 **B — Docker (always-on on this machine)**
@@ -128,19 +130,19 @@ uv run opengateway serve
 One-click template (Postgres + Redis): https://railway.com/deploy/open-gateway  
 Details: **[docs/RAILWAY.md](docs/RAILWAY.md)** · Auth: **[docs/AGENTS_AUTH.md](docs/AGENTS_AUTH.md)**
 
-**E — GHCR image (after `v0.1.0` tag)**
+**E — GHCR image**
 
 ```bash
-docker pull ghcr.io/mrdulasolutions/open-gateway:0.1.0
+docker pull ghcr.io/mrdulasolutions/open-gateway:0.1.2
 ```
 
 ### 2. Smoke test
 
 ```bash
-opengateway demo      # or: uv run opengateway demo
-opengateway status
-opengateway doctor
-opengateway ui
+opengateways demo      # or: opengateway demo
+opengateways status
+opengateways doctor
+opengateways ui
 ```
 
 ### 3. Multi-machine

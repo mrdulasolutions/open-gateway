@@ -34,7 +34,7 @@ package: check
 	@echo "Install:  uv tool install dist/opengateway-*.whl"
 
 docker:
-	docker build -t opengateway:0.1.0 -t opengateway:latest .
+	docker build -t opengateway:0.1.2 -t opengateway:latest .
 
 docker-up:
 	@test -n "$$OPENGATEWAY_AUTH_TOKEN" || (echo "Set OPENGATEWAY_AUTH_TOKEN first" && exit 1)
