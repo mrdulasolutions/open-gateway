@@ -19,6 +19,7 @@
 </p>
 
 <p align="center">
+  <a href="https://docs.opengateways.xyz">Docs</a> ·
   <a href="#quick-start">Quick start</a> ·
   <a href="docs/INSTALL.md">Install</a> ·
   <a href="docs/RAILWAY.md">Railway</a> ·

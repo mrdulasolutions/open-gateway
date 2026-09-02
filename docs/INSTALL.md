@@ -1,5 +1,8 @@
 # Install & package OpenGateway
 
+> **Self-host only.** OpenGateway is the open-source hub you run yourself (local, Docker, Railway, VPS). Product docs: [docs.opengateways.xyz](https://docs.opengateways.xyz) · source: [github.com/mrdulasolutions/open-gateway](https://github.com/mrdulasolutions/open-gateway).
+
+
 Neat ways to run the hub on **your machine** — pick one path.
 
 | Path | Best for | UI included? |
