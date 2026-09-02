@@ -1,6 +1,6 @@
 [project]
-name = "open-gateway"
-version = "0.1.0"
+name = "opengateways"
+version = "0.1.2"
 description = "OpenGateway — multi-agent collaboration hub for any harness (ACP + MCP)"
 readme = "README.md"
 authors = [
@@ -45,6 +45,7 @@ deploy = [
 ]
 
 [project.scripts]
+opengateways = "opengateway.cli:app"
 opengateway = "opengateway.cli:app"
 
 [project.urls]

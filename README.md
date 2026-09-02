@@ -14,7 +14,7 @@
   <a href="https://agentcommunicationprotocol.dev/"><img src="https://img.shields.io/badge/protocol-ACP%20compatible-orange.svg" alt="ACP" /></a>
   <a href="https://modelcontextprotocol.io/"><img src="https://img.shields.io/badge/MCP-stdio%20bridge-violet.svg" alt="MCP" /></a>
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.11%2B-green.svg" alt="Python" /></a>
-  <img src="https://img.shields.io/badge/version-v0.1.0-brightgreen.svg" alt="Version" />
+  <img src="https://img.shields.io/badge/version-v0.1.2-brightgreen.svg" alt="Version" />
 </p>
 
 <p align="center">
@@ -99,10 +99,8 @@ Full install matrix (tool install · Docker · wheel): **[docs/INSTALL.md](docs/
 **A — CLI tool (recommended for self-host)**
 
 ```bash
-uv tool install open-gateway==0.1.0
-opengateway serve
-# → http://127.0.0.1:8765/ui/  → Agent tokens → mint one key per harness
-# alt: uv tool install "git+https://github.com/mrdulasolutions/open-gateway.git@v0.1.0"
+uv tool install opengateways==0.1.2
+opengateways serve
 ```
 
 **B — Docker (always-on on this machine)**

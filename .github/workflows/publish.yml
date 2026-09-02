@@ -1,9 +1,9 @@
 name: Publish OSS
 
-# OSS self-host only — PyPI `open-gateway` + GHCR `ghcr.io/mrdulasolutions/open-gateway`.
-# NOT the hosted SaaS line (`opengateways` on PyPI).
+# OSS self-host — PyPI `opengateways` + GHCR `ghcr.io/mrdulasolutions/open-gateway`.
+# Import package remains `opengateway`; CLI: `opengateways` (alias `opengateway`).
 #
-# PyPI trusted publisher (project: open-gateway):
+# PyPI trusted publisher (project: opengateways):
 #   Owner: mrdulasolutions | Repo: open-gateway | Workflow: publish.yml | Environment: oss-release
 # See docs/OSS_RELEASE.md
 
@@ -14,7 +14,7 @@ on:
   workflow_dispatch:
     inputs:
       publish_pypi:
-        description: Publish wheel to PyPI (open-gateway)
+        description: Publish wheel to PyPI (opengateways)
         type: boolean
         default: true
 
@@ -36,11 +36,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Build open-gateway wheel
+      - name: Build opengateways wheel
         run: |
           uv build -o dist
           ls -la dist/
-      - name: Publish to PyPI (open-gateway)
+      - name: Publish to PyPI (opengateways)
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: dist/

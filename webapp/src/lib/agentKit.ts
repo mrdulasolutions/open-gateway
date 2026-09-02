@@ -1,12 +1,12 @@
 /**
  * Agent-kit install snippets for OSS self-host.
- * PyPI distribution: open-gateway (CLI entry: opengateway).
+ * PyPI: opengateways (CLI: opengateways or opengateway).
  */
 
 export type AgentHarness = "grok" | "claude-code" | "cursor" | "hermes";
 
-export const OSS_VERSION = "0.1.0";
-export const PYPI_PACKAGE = "open-gateway";
+export const OSS_VERSION = "0.1.2";
+export const PYPI_PACKAGE = "opengateways";
 export const GIT_REPO = "https://github.com/mrdulasolutions/open-gateway.git";
 export const GIT_INSTALL = `git+${GIT_REPO}@v${OSS_VERSION}`;
 
@@ -17,18 +17,18 @@ export const DOCS_IM =
 export const DOCS_RADIO =
   "https://github.com/mrdulasolutions/open-gateway/blob/main/docs/AGENTS_RADIO.md";
 
-/** Recommended OSS install — PyPI package open-gateway @ version. CLI entry: opengateway */
 export const INSTALL_SPEC = `${PYPI_PACKAGE}==${OSS_VERSION}`;
 
 export const INSTALL_CLI = `# Install OpenGateway OSS hub CLI (self-host)
 # Recommended (PyPI):
 uv tool install "${INSTALL_SPEC}"
+# CLI: opengateways serve  (alias: opengateway)
 # one-shot MCP:
 #   uvx ${PYPI_PACKAGE} mcp
 # git @ release:
 #   uv tool install "${GIT_INSTALL}"
 # dev checkout:
-#   git clone ${GIT_REPO} && cd open-gateway && uv sync && uv run opengateway mcp`;
+#   git clone ${GIT_REPO} && cd open-gateway && uv sync && uv run opengateways mcp`;
 
 export const HARNESS_LABELS: Record<AgentHarness, string> = {
   grok: "Grok",
@@ -79,8 +79,8 @@ ${INSTALL_CLI}
 ${envBlock(opts)}
 
 # Start MCP (stdio) for this harness
-opengateway mcp
-# one-shot: uvx ${PYPI_PACKAGE} mcp
+opengateways mcp
+# alias: opengateway mcp
 `;
 }
 
@@ -163,16 +163,16 @@ export OPENGATEWAY_URL="${url}"
 export OPENGATEWAY_AUTH_TOKEN="${opts.token}"
 
 # Foreground (terminal):
-opengateway im ${room} \\
+opengateways im ${room} \\
   --name "${name}" \\
   --harness ${opts.harness} \\
   --wake ${wakeFlag}
 
 # Background service (macOS launchd / Linux systemd --user):
-opengateway im-service install ${room} \\
+opengateways im-service install ${room} \\
   --name "${name}" --harness ${opts.harness} --wake ${wakeFlag} \\
   --token "${opts.token}" --url "${url}"
-# opengateway im-service list
-# opengateway im-service logs <label>
+# opengateways im-service list
+# opengateways im-service logs <label>
 `;
 }

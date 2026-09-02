@@ -2,6 +2,21 @@
 
 Versioning: git tags `v0.0.1`, `v0.1.0`, …
 
+## 0.1.2 — 2026-09-02
+
+### PyPI publish (OSS on `opengateways`)
+
+- Published **`opengateways==0.1.2`** to PyPI (0.1.0/0.1.1 filenames were previously used on deleted uploads)
+- CLI: **`opengateways`** primary, **`opengateway`** alias
+
+## 0.1.1 — 2026-09-02
+
+### PyPI OSS line on `opengateways`
+
+- **PyPI** — OSS publishes as **`opengateways`** (`uv tool install opengateways`); PyPI blocks `open-gateway` as too similar to unrelated `opengateway`
+- **CLI** — primary command **`opengateways`**; **`opengateway`** kept as alias
+- Import package unchanged: `opengateway`
+
 ## 0.1.0 — 2026-09-01
 
 ### First production self-host release
