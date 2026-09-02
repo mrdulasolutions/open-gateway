@@ -60,7 +60,9 @@ Config: `Dockerfile` installs `.[deploy]` (psycopg + redis + pywebpush); entrypo
 
 ---
 
-## GHCR / PyPI (release tags)
+## GHCR / PyPI (OSS release tags)
+
+Push `v*` → workflow **Publish OSS** ([OSS_RELEASE.md](OSS_RELEASE.md)). PyPI trusted publisher: project **`open-gateway`**, environment **`oss-release`** (not SaaS `opengateways`).
 
 On `git push origin v0.1.0`:
 

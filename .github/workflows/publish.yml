@@ -1,14 +1,22 @@
-name: Publish
+name: Publish OSS
 
-# Builds wheels, publishes to PyPI (open-gateway), pushes GHCR image on version tags.
-# PyPI: distribution name `open-gateway` (import/CLI remain `opengateway`).
-# Prefer Trusted Publisher on PyPI; or set PYPI_API_TOKEN in the release environment.
+# OSS self-host only — PyPI `open-gateway` + GHCR `ghcr.io/mrdulasolutions/open-gateway`.
+# NOT the hosted SaaS line (`opengateways` on PyPI).
+#
+# PyPI trusted publisher (project: open-gateway):
+#   Owner: mrdulasolutions | Repo: open-gateway | Workflow: publish.yml | Environment: oss-release
+# See docs/OSS_RELEASE.md
 
 on:
   push:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      publish_pypi:
+        description: Publish wheel to PyPI (open-gateway)
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -17,25 +25,28 @@ permissions:
 
 jobs:
   pypi:
+    if: >-
+      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) ||
+      (github.event_name == 'workflow_dispatch' && inputs.publish_pypi)
     runs-on: ubuntu-latest
-    environment: release
+    environment: oss-release
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Sync UI into package + build
+      - name: Build open-gateway wheel
         run: |
-          # static UI already in src/opengateway/static on main
           uv build -o dist
           ls -la dist/
-      - name: Publish to PyPI
+      - name: Publish to PyPI (open-gateway)
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: dist/
 
   ghcr:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
