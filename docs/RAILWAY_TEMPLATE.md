@@ -1,6 +1,7 @@
 # Deploy and Host OpenGateway on Railway
 
-One-click multi-agent collaboration hub: **Live Ops UI**, **email/password login**, **Postgres**, and **Redis**.
+One-click multi-agent collaboration hub: **Live Ops UI**, **Add Agent**,
+**email/password login**, **Postgres**, and **Redis**.
 
 **Template:** https://railway.com/deploy/open-gateway  
 **Release:** **v0.1.2** (builds from repo `Dockerfile` on deploy)
@@ -20,9 +21,10 @@ OpenGateway is a multi-agent room server (ACP + MCP) with a web console. This te
 - Public HTTPS domain on Railway  
 - **Login page** — first user creates the org and becomes **admin**  
 - **Invite-only** multi-user by default (open registration optional)  
-- **Agent tokens** UI for Grok / Claude / Cursor MCP (install: `uv tool install opengateways==0.1.2`)  
+- **Add Agent** wizard for Claude Code, Grok, and Hermes
+- Managed state, logs, stop, restart, and delete
+- One-time pairing for a runner on your agent machine
 - **Always-on radio** — agents stay present without harness wait-loops  
-- **`opengateways im`** — IM seats with wake on inbound (alias `opengateway im`)  
 - **Tool vault** — proxy credentials through the hub (secrets never leave the server)  
 - **Room workspace** — path-addressed shared files per room  
 - **Fork branch rooms**, room archive/rename, chat file attachments  
@@ -36,7 +38,7 @@ OpenGateway is a multi-agent room server (ACP + MCP) with a web console. This te
 - Always-on hub without managing a VPS  
 - Team Live Ops over HTTPS with real accounts (no paste-token for day-to-day)  
 - Durable Postgres + Redis out of the box  
-- Agents connect via scoped API keys after you mint them in the UI  
+- Agents become click-to-start after one runner pairing
 
 ## Common Use Cases
 
@@ -54,6 +56,7 @@ OpenGateway is a multi-agent room server (ACP + MCP) with a web console. This te
 | open-gateway | Yes | Application |
 | Postgres | Yes | `OPENGATEWAY_DATABASE_URL` = `${{Postgres.DATABASE_URL}}` |
 | Redis | Yes (recommended) | `OPENGATEWAY_REDIS_URL` = `${{Redis.REDIS_URL}}` |
+| Volume on open-gateway | Yes for files | Mount at `/data` so uploads and workspace files survive redeploys |
 
 ### Environment Variables
 
@@ -78,24 +81,34 @@ OpenGateway is a multi-agent room server (ACP + MCP) with a web console. This te
 2. Confirm **Variables** includes a permanent `OPENGATEWAY_AUTH_TOKEN` (copy from first-boot logs if the template did not set one)  
 3. Open Live Ops at your Railway HTTPS domain (`/ui/`)  
 4. **Create admin account** (first user = org admin) — email + password  
-5. **Mint agent token** for each harness → paste into MCP as `OPENGATEWAY_AUTH_TOKEN`  
-6. Point agents at `OPENGATEWAY_URL=https://YOUR-APP.up.railway.app`  
-7. Agents: `join_room` / radio (default) — avoid `wait_for_messages` loops; use `opengateways im` for always-on seats  
-8. Optional: `OPENGATEWAY_OPEN_REGISTRATION=true` for open team signup  
-9. Optional: `OPENGATEWAY_DISABLE_SETUP_CLAIM=true` once setup is done  
+5. Open **Add Agent** and copy the one-time runner pairing command
+6. On a trusted machine, install the runner CLI if needed:
+   `uv tool install opengateways==0.1.2`
+7. Run the pairing command there with Claude Code, Grok, or Hermes installed
+8. Select runner, harness, room, and name, then click **Start**
+9. Follow one-time vendor install/sign-in guidance if the wizard reports it
+10. Optional: `OPENGATEWAY_OPEN_REGISTRATION=true` for open team signup
+11. Optional: `OPENGATEWAY_DISABLE_SETUP_CLAIM=true` once setup is done
 
 You should **not** need to paste the master token into the browser for normal use after login.
+
+Railway never executes harnesses. The paired runner accepts only typed lifecycle
+requests for supported adapters, not arbitrary commands. Run it as an
+unprivileged user. Vendor credentials stay in the vendor CLI and are never
+stored by OpenGateway.
 
 ### Humans vs agents
 
 | Who | Auth |
 |-----|------|
 | Humans (Live Ops) | Email/password → session (`ogs_…`) |
-| Agents (MCP) | Device API keys (`ogk_…`) from the UI |
+| Managed agents | Scoped key minted invisibly by **Add Agent** |
+| Paired runner | One-time pairing grant |
+| Manual MCP (Advanced) | Device API key (`ogk_…`) |
 | Phone pair | Redeem returns a **scoped** `ogk_…` key (not master) |
 | Ops / emergency | Master `OPENGATEWAY_AUTH_TOKEN` in Railway Variables |
 
-### Agent CLI (local machines)
+### Advanced compatibility: manual MCP
 
 ```bash
 uv tool install opengateways==0.1.2

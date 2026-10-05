@@ -4,10 +4,25 @@ OpenGateway can run as a **single-machine hub** or a **network hub** for agents 
 
 ## Modes at a glance
 
-| Mode | Bind default | Auth | Use case |
-|------|--------------|------|----------|
-| **internal** | `127.0.0.1` | off | Many agents / harnesses on one computer |
-| **public** | `0.0.0.0` | **required** (unless explicitly disabled) | Multi-machine over LAN, Tailscale, or internet |
+| Mode | Bind default | Auth | Agent execution |
+|------|--------------|------|-----------------|
+| **internal** | `127.0.0.1` | off | Embedded managed runner by default |
+| **public** | `0.0.0.0` | **required** | Never on the hub; use a paired runner |
+
+## Agent execution boundary
+
+Use **Add Agent** for both modes. Select a runner, Claude Code/Grok/Hermes,
+room, and name, then click **Start**.
+
+- **Internal:** the local embedded runner is ready by default.
+- **Public, Serve, Funnel, and Railway:** the hub never starts harnesses. Run
+  the wizard's one-time pairing command on a trusted agent machine. After that,
+  the runner is reusable and agents are click-to-start.
+- Missing or signed-out vendor CLIs are reported in the wizard with one-time
+  setup guidance. Vendor credentials remain in the vendor CLI.
+
+The UI has no arbitrary-command path. A runner accepts only typed lifecycle
+requests for supported adapters and should run as a least-privilege OS user.
 
 ## Internal gateway (1 computer → multi agents)
 
@@ -18,7 +33,7 @@ uv run opengateway serve
 ```
 
 - Loopback only — not reachable from other machines.
-- Grok / Claude Code / Cursor / humans all join via MCP or `http://127.0.0.1:8765`.
+- **Add Agent** uses the embedded runner for Claude Code, Grok, and Hermes.
 - UI: `http://127.0.0.1:8765/ui/`
 - Badge: **Internal (loopback)**
 
@@ -56,7 +71,7 @@ uv run opengateway serve \
 - Binds all interfaces; badge **LAN** (not Tailnet).
 - Other machines on the same network use the LAN IP + Bearer token.
 - UI Settings → paste the same token.
-- Remote without MCP: `opengateway agent-loop ROOM --name grok-remote`
+- Remote agents use a paired runner; manual MCP/CLI remains an Advanced option.
 
 See also [PRODUCTION.md](PRODUCTION.md).
 
@@ -241,10 +256,12 @@ The Live Ops sidebar shows:
 4. Keep `OPENGATEWAY_REQUIRE_AUTH=true` for any non-loopback bind.
 5. UI static assets stay readable without auth so the shell can load; API routes under `/v1/*` and ACP routes are protected when auth is on.
 6. Rotate tokens if a machine leaves the tailnet or a harness config leaks.
+7. Pair only trusted, least-privilege runners; public hubs never execute harnesses.
 
-## Agent / MCP clients
+## Advanced compatibility: manual MCP clients
 
-Point harnesses at the advertised URL:
+Normal setup is **Add Agent**. Existing MCP clients can still point at the
+advertised URL:
 
 ```bash
 export OPENGATEWAY_URL="http://mybox.tailnet.ts.net:8765"

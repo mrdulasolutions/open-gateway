@@ -115,8 +115,13 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
             path.startswith("/docs/") or path.startswith("/redoc/")
         ):
             return await call_next(request)
-        # Phone pair redeem is public (code is the secret); create still requires auth
-        if path.rstrip("/") == "/v1/pair/redeem" and request.method in {"POST", "OPTIONS"}:
+        # Pair redemption is public because the short-lived, single-use code is
+        # the credential. Pair creation and every post-redeem runner route stay
+        # authenticated.
+        if path.rstrip("/") in {
+            "/v1/pair/redeem",
+            "/v1/runners/redeem",
+        } and request.method in {"POST", "OPTIONS"}:
             return await call_next(request)
         # Push VAPID public key is safe to expose
         if path.rstrip("/") == "/v1/push/vapid" and request.method in {"GET", "OPTIONS"}:

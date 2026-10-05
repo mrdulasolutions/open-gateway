@@ -232,9 +232,9 @@ export function LoginPage({ onAuthenticated }: Props) {
       </div>
 
       <p className="mt-6 max-w-sm text-center text-[11px] leading-relaxed text-zinc-400">
-        Agents still use API keys from{" "}
-        <strong className="text-zinc-500">Agent tokens</strong> after you sign
-        in. Session login is for humans on Live Ops.
+        After signing in, use{" "}
+        <strong className="text-zinc-500">Add agent</strong> for a managed
+        launch. Manual API keys remain in Advanced compatibility.
       </p>
     </div>
   );

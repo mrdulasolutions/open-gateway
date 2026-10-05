@@ -13,11 +13,39 @@ One click provisions:
 
 | Service | Role |
 |---------|------|
-| **open-gateway** | API + Live Ops UI (login + agent tokens) |
+| **open-gateway** | API + Live Ops UI (login + Add Agent) |
 | **Postgres** | Multi-writer system of record (`OPENGATEWAY_DATABASE_URL`) |
 | **Redis** | Event fan-out + shared pair codes (`OPENGATEWAY_REDIS_URL`) |
 
-Post-deploy: create **admin** on the login page → mint **agent tokens** for MCP.
+Post-deploy: create an **admin**, open **Add Agent**, and pair the machine that
+will run your vendor CLIs.
+
+## Add agents from Railway
+
+Railway hosts the hub only. It **never executes Claude Code, Grok, Hermes, shell
+commands, or other harnesses**.
+
+1. Open **Add Agent** and select **Pair runner**.
+2. Copy the one-time command shown by the wizard.
+3. On a trusted local/worker machine, install `opengateways` if needed:
+   `uv tool install opengateways==0.1.2`.
+4. Run the pairing command there, with the vendor CLI installed.
+5. Select that runner, harness, room, and name, then click **Start**.
+
+```bash
+# Copy the exact URL and short-lived code from Add Agent.
+opengateways runner connect --url 'https://your-app.up.railway.app' --code '…' --name 'Mac Studio'
+```
+
+Pairing is one-time and starts an always-on launchd (macOS) or systemd user
+service (Linux), so the terminal may close. Later agents on that runner are
+click-to-start. The hub
+mints a scoped credential per agent without exposing it to the user. Managed
+agents expose state, logs, **Stop**, **Restart**, and **Delete**.
+
+If a vendor CLI is missing or unauthenticated, the wizard shows its install or
+sign-in guidance. Vendor credentials remain on the runner machine; OpenGateway
+never stores them.
 
 ---
 
@@ -37,14 +65,16 @@ Post-deploy: create **admin** on the login page → mint **agent tokens** for MC
 | Public HTTPS | Railway domain |
 | Healthcheck | `GET /ping` |
 | UI | `/ui/` baked into image |
+| **Agent execution** | Never on Railway; use a paired, least-privilege runner |
 | Pair flow | Phone redeem mints a **scoped device key** (never the master token) |
-| Files | Disk under the container (+ optional R2 via `OPENGATEWAY_FILES_URL`) |
+| Files | Volume at `/data/files` (entrypoint uses `RAILWAY_VOLUME_MOUNT_PATH`). Optional R2 via `OPENGATEWAY_FILES_URL` |
 | Forks / archive | Branch rooms + room lifecycle APIs |
-| **Radio / IM** | Always-on presence; `opengateway im` + optional `im-service` |
+| **Managed agents** | Runner state/logs/lifecycle in Live Ops |
+| **Radio / IM compatibility** | Manual `opengateway im` / `im-service` remains available |
 | **Tool vault** | `PUT/GET /v1/tools/credentials` + proxied tool calls |
 | **Room workspace** | Shared path-addressed files per room |
 
-No Railway Volume required when Postgres is linked. SQLite `/data` is only a fallback.
+Postgres holds rooms, users, keys, and messages. **Attach a volume mounted at `/data`** so uploads and room workspace files survive redeploys. The entrypoint stores blobs under `$OPENGATEWAY_DATA_DIR/files` (defaults to `RAILWAY_VOLUME_MOUNT_PATH` or `/data`). Without a volume it logs a warning and those files are ephemeral. SQLite is only the fallback when Postgres is not linked.
 
 ---
 
@@ -103,6 +133,7 @@ On the **open-gateway** service:
 | `OPENGATEWAY_OPEN_REGISTRATION` | `false` (invite-only after first admin) |
 | `OPENGATEWAY_PUBLIC_URL` | auto from Railway domain, or set explicitly |
 | `OPENGATEWAY_DB` | `none` when using Postgres |
+| `OPENGATEWAY_DATA_DIR` | `/data` when a volume is mounted there (blobs; entrypoint defaults to `RAILWAY_VOLUME_MOUNT_PATH`) |
 | `OPENGATEWAY_TRUST_PROXY` | `true` on Railway (entrypoint default when `RAILWAY_*` present) |
 | `OPENGATEWAY_PUBLIC_DOCS` | `false` — keep `/docs` private under auth |
 | `OPENGATEWAY_DISABLE_SETUP_CLAIM` | `true` after first-run UI bootstrap (optional) |
@@ -130,6 +161,9 @@ Entrypoint also accepts plain `DATABASE_URL` / `REDIS_URL` from Railway plugins.
 | **DMs** | Unscoped message list / search exclude private DMs. |
 | **Audit** | `GET /v1/audit` is admin/master only. |
 | **Setup claim** | One-time UI bootstrap of master token; disable after first use. |
+| **Runner commands** | UI sends typed lifecycle requests only; arbitrary commands are rejected. |
+| **Runner privilege** | Run under an unprivileged OS account with minimal project access. |
+| **Vendor auth** | Owned by the vendor CLI on the runner; never stored by OpenGateway. |
 
 Full policy: [SECURITY.md](../SECURITY.md).
 
@@ -193,7 +227,9 @@ BASE=https://<domain> TOKEN=$TOKEN ./scripts/railway-smoke.sh
 | Pair QR wrong host | Ensure domain exists; entrypoint sets PUBLIC_URL from `RAILWAY_PUBLIC_DOMAIN` |
 | “Registration closed” after admin | Expected — set `OPENGATEWAY_OPEN_REGISTRATION=true` or use invite codes |
 | `backend` not postgres | Wire `OPENGATEWAY_DATABASE_URL=${{Postgres.DATABASE_URL}}` and redeploy |
-| Agents 401 | Mint device key in UI; put in MCP env (not only hub Variables) |
+| No runner available | Run the one-time pairing command shown by **Add Agent** on a trusted machine |
+| Vendor CLI unavailable | Follow the wizard's one-time install/sign-in guidance on the runner |
+| Manual MCP agent gets 401 | In Advanced, mint a device key and put it in MCP env |
 | Rate limit weirdness behind proxy | Ensure `OPENGATEWAY_TRUST_PROXY=true` (Railway default) |
 | Setup already claimed | Use master from Variables or mint session via login |
 | WS / pair fail without token | Pair redeem gives `auth_token` (device key); pass it as Bearer |

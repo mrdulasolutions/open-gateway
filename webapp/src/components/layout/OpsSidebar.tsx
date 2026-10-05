@@ -3,6 +3,7 @@
  */
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
+  Bot,
   ChevronDown,
   ChevronRight,
   Copy,
@@ -15,18 +16,29 @@ import {
   Network,
   Plus,
   QrCode,
+  Archive,
+  ArchiveRestore,
   RefreshCw,
   Settings2,
   Shield,
   Trash2,
-  Users,
+  UserPlus,
   X,
 } from "lucide-react";
 import QRCode from "qrcode";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
-import type { DmThread, Fork, Participant, Ping, Room } from "@/lib/types";
+import type {
+  AuthInvite,
+  DmThread,
+  Fork,
+  Participant,
+  Ping,
+  Room,
+} from "@/lib/types";
+import { AddAgentWizard } from "@/components/AddAgentWizard";
 import { AgentInstallPanel } from "@/components/AgentInstallPanel";
+import { ManagedAgentsPanel } from "@/components/ManagedAgentsPanel";
 
 export type GatewayCard = {
   id: string;
@@ -76,6 +88,10 @@ type Props = {
   onSelectFork: (forkId: string) => void;
   onRefresh: () => void;
   onNewRoom: () => void;
+  showArchivedRooms: boolean;
+  onShowArchivedRoomsChange: (value: boolean) => void;
+  onArchiveRoom: (roomId: string) => void;
+  onUnarchiveRoom: (roomId: string) => void;
   onNameChange: (name: string) => void;
   onNameCommit: (name: string) => void;
   onRoleChange: (role: string) => void;
@@ -219,6 +235,10 @@ export function OpsSidebar({
   onSelectFork,
   onRefresh,
   onNewRoom,
+  showArchivedRooms,
+  onShowArchivedRoomsChange,
+  onArchiveRoom,
+  onUnarchiveRoom,
   onNameChange,
   onNameCommit,
   onRoleChange,
@@ -234,10 +254,19 @@ export function OpsSidebar({
   const [openSettings, setOpenSettings] = useState(
     () => Boolean(authToken) || Boolean(ping?.require_auth)
   );
-  const [openTokens, setOpenTokens] = useState(true);
+  const [openManagedAgents, setOpenManagedAgents] = useState(true);
+  const [openAdvancedKeys, setOpenAdvancedKeys] = useState(false);
   const [openVault, setOpenVault] = useState(false);
   const [openWorkspace, setOpenWorkspace] = useState(false);
   const [pairGateway, setPairGateway] = useState<GatewayCard | null>(null);
+  const [showAddAgent, setShowAddAgent] = useState(false);
+  const [managedRefreshKey, setManagedRefreshKey] = useState(0);
+  const [managedAgentCount, setManagedAgentCount] = useState(0);
+
+  const managedChanged = () => {
+    setManagedRefreshKey((value) => value + 1);
+    onRefresh();
+  };
 
   const internalGws = gateways.filter(
     (g) => g.mode === "internal" || g.network === "loopback"
@@ -308,34 +337,105 @@ export function OpsSidebar({
     });
   }, [dmThreads, participants, participantId]);
 
+  const dmThreadRows = useMemo(
+    () => dmRows.filter((row) => row.has_thread),
+    [dmRows]
+  );
+  const dmStartPeers = useMemo(
+    () => dmRows.filter((row) => !row.has_thread),
+    [dmRows]
+  );
+
+  const renderDmRow = (t: DmRow) => {
+    const isOn = t.peer_status === "online" || t.peer_presence === "listening";
+    const label =
+      t.peer_presence === "listening"
+        ? "listening"
+        : t.peer_presence === "joined" || isOn
+          ? "joined"
+          : "offline";
+    return (
+      <button
+        key={t.peer_id}
+        type="button"
+        onClick={() => {
+          onSection("dms");
+          onSelectDm(t.peer_id);
+        }}
+        className={cn(
+          "mb-1 flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm transition",
+          activeDmPeerId === t.peer_id
+            ? "bg-violet-500/12 text-violet-900 dark:text-violet-100"
+            : "hover:bg-zinc-100 dark:hover:bg-white/5"
+        )}
+      >
+        <OnlineDot online={isOn} presence={t.peer_presence} />
+        <span className="min-w-0 flex-1">
+          <span className="block truncate font-medium">{t.peer_name}</span>
+          <span className="block truncate text-[10px] text-zinc-500">
+            {label}
+            {t.peer_role ? ` · ${t.peer_role}` : ""}
+            {t.has_thread ? "" : " · new"}
+          </span>
+        </span>
+        <span className="shrink-0 text-[10px] text-zinc-400">{t.peer_harness}</span>
+      </button>
+    );
+  };
+
   if (collapsed) {
     return (
-      <aside className="flex w-12 shrink-0 flex-col items-center gap-3 border-r border-zinc-200 bg-white py-3 dark:border-white/[0.06] dark:bg-zinc-950">
-        <img
-          src={`${import.meta.env.BASE_URL}og-logo.png`}
-          alt="OG"
-          className="og-logo h-9 w-9 rounded-lg"
-        />
-        <button
-          type="button"
-          onClick={onToggleCollapsed}
-          className="rounded-lg border border-zinc-200 p-2 text-zinc-500 dark:border-white/10"
-          title="Expand sidebar"
-        >
-          <ChevronRight className="h-4 w-4" />
-        </button>
-        <button type="button" onClick={onRefresh} className="p-2 text-zinc-500" title="Refresh">
-          <RefreshCw className="h-4 w-4" />
-        </button>
-        <button
-          type="button"
-          onClick={onNewRoom}
-          className="p-2 text-orange-600"
-          title="New room"
-        >
-          <Plus className="h-4 w-4" />
-        </button>
-      </aside>
+      <>
+        <aside className="flex w-12 shrink-0 flex-col items-center gap-3 border-r border-zinc-200 bg-white py-3 dark:border-white/[0.06] dark:bg-zinc-950">
+          <img
+            src={`${import.meta.env.BASE_URL}og-logo.png`}
+            alt="OG"
+            className="og-logo h-9 w-9 rounded-lg"
+          />
+          <button
+            type="button"
+            onClick={onToggleCollapsed}
+            className="rounded-lg border border-zinc-200 p-2 text-zinc-500 dark:border-white/10"
+            title="Expand sidebar"
+          >
+            <ChevronRight className="h-4 w-4" />
+          </button>
+          <button
+            type="button"
+            onClick={onRefresh}
+            className="p-2 text-zinc-500"
+            title="Refresh"
+          >
+            <RefreshCw className="h-4 w-4" />
+          </button>
+          <button
+            type="button"
+            onClick={() => setShowAddAgent(true)}
+            className="rounded-lg bg-orange-500/15 p-2 text-orange-700 dark:text-orange-200"
+            title="Add agent"
+          >
+            <Bot className="h-4 w-4" />
+          </button>
+          <button
+            type="button"
+            onClick={onNewRoom}
+            className="p-2 text-orange-600"
+            title="New room"
+          >
+            <Plus className="h-4 w-4" />
+          </button>
+        </aside>
+        {showAddAgent && (
+          <AddAgentWizard
+            rooms={rooms}
+            currentRoomId={activeRoomId}
+            participants={participants}
+            onClose={() => setShowAddAgent(false)}
+            onChanged={managedChanged}
+            onSelectRoom={onSelectRoom}
+          />
+        )}
+      </>
     );
   }
 
@@ -382,36 +482,50 @@ export function OpsSidebar({
         </button>
       </div>
 
-      {/* Always-visible entry: mint agent tokens (was easy to miss under collapsed Settings) */}
+      {/* Primary agent path: runner-managed launch, no token handling. */}
       <button
         type="button"
-        onClick={() => {
-          setOpenTokens(true);
-          setOpenSettings(true);
-          onSection("settings");
-          document.getElementById("og-agent-tokens")?.scrollIntoView({
-            behavior: "smooth",
-            block: "nearest",
-          });
-        }}
-        className="flex w-full items-center justify-center gap-2 rounded-xl border border-orange-500/40 bg-orange-500/10 px-3 py-2.5 text-sm font-semibold text-orange-950 dark:text-orange-100"
+        onClick={() => setShowAddAgent(true)}
+        className="flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-b from-orange-400 to-orange-600 px-3 py-2.5 text-sm font-semibold text-orange-950 shadow-sm shadow-orange-500/20"
       >
-        <Shield className="h-4 w-4" />
-        Mint agent token
+        <Bot className="h-4 w-4" />
+        Add agent
       </button>
 
       <div className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-0.5">
         <Accordion
-          title="Agent tokens"
-          icon={<Shield className="h-4 w-4" />}
-          open={openTokens}
-          onToggle={() => setOpenTokens((v) => !v)}
+          title="Managed agents"
+          icon={<Bot className="h-4 w-4" />}
+          open={openManagedAgents}
+          onToggle={() => setOpenManagedAgents((value) => !value)}
+          count={managedAgentCount}
         >
-          <div id="og-agent-tokens" className="px-1 pb-1">
+          <ManagedAgentsPanel
+            rooms={rooms}
+            currentRoomId={activeRoomId}
+            participants={participants}
+            refreshKey={managedRefreshKey}
+            onAddAgent={() => setShowAddAgent(true)}
+            onChanged={managedChanged}
+            onSelectRoom={onSelectRoom}
+            onCountChange={setManagedAgentCount}
+          />
+        </Accordion>
+
+        <Accordion
+          title="Advanced / API keys compatibility"
+          icon={<Shield className="h-4 w-4" />}
+          open={openAdvancedKeys}
+          onToggle={() => setOpenAdvancedKeys((value) => !value)}
+        >
+          <div id="og-api-keys" className="px-1 pb-1">
             <AgentTokensPanel
               gatewayBase={ping?.base_url || window.location.origin}
               hasAuthToken={Boolean(authToken?.trim())}
               requireAuth={Boolean(ping?.require_auth)}
+              roomHint={
+                rooms.find((room) => room.id === activeRoomId)?.name || "main"
+              }
             />
           </div>
         </Accordion>
@@ -449,6 +563,15 @@ export function OpsSidebar({
           onToggle={() => setOpenRooms((v) => !v)}
           count={rooms.length}
         >
+          <label className="mb-2 flex cursor-pointer items-center gap-2 px-1 text-[11px] text-zinc-500">
+            <input
+              type="checkbox"
+              className="rounded border-zinc-300"
+              checked={showArchivedRooms}
+              onChange={(e) => onShowArchivedRoomsChange(e.target.checked)}
+            />
+            Show archived
+          </label>
           {rooms.length === 0 && (
             <div className="px-2 py-3 text-center text-xs text-zinc-500">
               No rooms yet
@@ -458,29 +581,58 @@ export function OpsSidebar({
             const active =
               r.id === activeRoomId && section === "rooms" && !activeDmPeerId;
             const n = r.participant_ids?.length ?? 0;
+            const archived = r.status === "archived";
             return (
-              <button
+              <div
                 key={r.id}
-                type="button"
-                onClick={() => {
-                  onSection("rooms");
-                  onSelectDm(null);
-                  onSelectRoom(r.id);
-                }}
                 className={cn(
-                  "mb-1 w-full rounded-lg border px-2.5 py-2 text-left transition",
+                  "mb-1 flex items-stretch gap-0.5 rounded-lg border transition",
                   active
                     ? "border-orange-500/35 bg-orange-500/10"
-                    : "border-transparent hover:bg-zinc-100 dark:hover:bg-white/5"
+                    : "border-transparent hover:bg-zinc-100 dark:hover:bg-white/5",
+                  archived && "opacity-70"
                 )}
               >
-                <div className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
-                  {r.name}
-                </div>
-                <div className="mt-0.5 line-clamp-1 text-xs text-zinc-500">
-                  {r.goal || "No goal"} · {n} agents
-                </div>
-              </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (archived) return;
+                    onSection("rooms");
+                    onSelectDm(null);
+                    onSelectRoom(r.id);
+                  }}
+                  disabled={archived}
+                  className="min-w-0 flex-1 rounded-lg px-2.5 py-2 text-left"
+                >
+                  <div className="flex items-center gap-1.5 text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+                    {r.name}
+                    {archived && (
+                      <span className="rounded bg-zinc-200 px-1 py-0.5 text-[10px] font-medium uppercase text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400">
+                        archived
+                      </span>
+                    )}
+                  </div>
+                  <div className="mt-0.5 line-clamp-1 text-xs text-zinc-500">
+                    {r.goal || "No goal"} · {n} agents
+                  </div>
+                </button>
+                <button
+                  type="button"
+                  title={archived ? "Restore room" : "Archive room"}
+                  className="shrink-0 self-center rounded-md p-2 text-zinc-400 hover:bg-zinc-200/80 hover:text-zinc-700 dark:hover:bg-white/10 dark:hover:text-zinc-200"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (archived) onUnarchiveRoom(r.id);
+                    else onArchiveRoom(r.id);
+                  }}
+                >
+                  {archived ? (
+                    <ArchiveRestore className="h-4 w-4" />
+                  ) : (
+                    <Archive className="h-4 w-4" />
+                  )}
+                </button>
+              </div>
             );
           })}
         </Accordion>
@@ -490,7 +642,7 @@ export function OpsSidebar({
           icon={<MessageSquare className="h-4 w-4" />}
           open={openDms}
           onToggle={() => setOpenDms((v) => !v)}
-          count={dmRows.length}
+          count={dmThreadRows.length}
         >
           {!participantId && (
             <div className="px-2 py-2 text-xs text-zinc-500">
@@ -502,44 +654,20 @@ export function OpsSidebar({
               No peers yet. Agents appear here when they join.
             </div>
           )}
-          {dmRows.map((t) => {
-            const isOn = t.peer_status === "online" || t.peer_presence === "listening";
-            const label =
-              t.peer_presence === "listening"
-                ? "listening"
-                : t.peer_presence === "joined" || isOn
-                  ? "joined"
-                  : "offline";
-            return (
-              <button
-                key={t.peer_id}
-                type="button"
-                onClick={() => {
-                  onSection("dms");
-                  onSelectDm(t.peer_id);
-                }}
-                className={cn(
-                  "mb-1 flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm transition",
-                  activeDmPeerId === t.peer_id
-                    ? "bg-violet-500/12 text-violet-900 dark:text-violet-100"
-                    : "hover:bg-zinc-100 dark:hover:bg-white/5"
-                )}
-              >
-                <OnlineDot online={isOn} presence={t.peer_presence} />
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate font-medium">{t.peer_name}</span>
-                  <span className="block truncate text-[10px] text-zinc-500">
-                    {label}
-                    {t.peer_role ? ` · ${t.peer_role}` : ""}
-                    {t.has_thread ? " · thread" : " · start chat"}
-                  </span>
-                </span>
-                <span className="shrink-0 text-[10px] text-zinc-400">
-                  {t.peer_harness}
-                </span>
-              </button>
-            );
-          })}
+          {participantId && dmThreadRows.length === 0 && dmStartPeers.length > 0 && (
+            <div className="px-2 py-1.5 text-[10px] text-zinc-500">
+              @ someone in the room or pick a peer below to start a private thread.
+            </div>
+          )}
+          {dmThreadRows.map((t) => renderDmRow(t))}
+          {dmStartPeers.length > 0 && (
+            <div className="mt-2 border-t border-zinc-100 pt-2 dark:border-white/5">
+              <p className="px-2 pb-1 text-[10px] font-semibold uppercase tracking-wide text-zinc-400">
+                Start a DM
+              </p>
+              {dmStartPeers.map((t) => renderDmRow(t))}
+            </div>
+          )}
         </Accordion>
 
         <Accordion
@@ -729,12 +857,14 @@ export function OpsSidebar({
                 This is your hub. If you started it with{" "}
                 <code className="text-[9px]">--token</code> /{" "}
                 <code className="text-[9px]">OPENGATEWAY_AUTH_TOKEN</code>, paste
-                that same value so this browser can mint agent keys. Loopback
-                with no token: leave empty. Railway / other cloud is optional —
-                only paste a remote host&apos;s master token if this UI is that
-                host.
+                that same value so this browser can manage runners and agents.
+                Loopback with no token: leave empty. Railway / other cloud is
+                optional — only paste a remote host&apos;s hub token if this UI
+                is that host.
               </span>
             </label>
+
+            <TeamInvitesPanel hasAuthToken={Boolean(authToken?.trim())} />
 
             <PushEnableButton participantId={participantId} />
             <p className="text-[11px] leading-relaxed text-zinc-500">
@@ -744,6 +874,17 @@ export function OpsSidebar({
           </div>
         </Accordion>
       </div>
+
+      {showAddAgent && (
+        <AddAgentWizard
+          rooms={rooms}
+          currentRoomId={activeRoomId}
+          participants={participants}
+          onClose={() => setShowAddAgent(false)}
+          onChanged={managedChanged}
+          onSelectRoom={onSelectRoom}
+        />
+      )}
 
       {pairGateway && (
         <PairQrModal
@@ -1045,6 +1186,180 @@ function PairQrModal({
   );
 }
 
+function TeamInvitesPanel({ hasAuthToken }: { hasAuthToken: boolean }) {
+  const [invites, setInvites] = useState<AuthInvite[]>([]);
+  const [openRegistration, setOpenRegistration] = useState(false);
+  const [canManage, setCanManage] = useState(false);
+  const [role, setRole] = useState<"member" | "admin">("member");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [freshCode, setFreshCode] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+  const [hasUsers, setHasUsers] = useState(false);
+
+  const load = async () => {
+    if (!hasAuthToken) {
+      setCanManage(false);
+      setInvites([]);
+      return;
+    }
+    try {
+      const [status, me] = await Promise.all([
+        api.authStatus(),
+        api.authMe(),
+      ]);
+      setHasUsers(Boolean(status.has_users));
+      const admin =
+        me.user?.role === "admin" || me.auth_kind === "master";
+      setCanManage(Boolean(status.has_users) && admin);
+      if (!admin || !status.has_users) {
+        setInvites([]);
+        return;
+      }
+      const listed = await api.listAuthInvites();
+      setInvites(listed.invites);
+      setOpenRegistration(listed.open_registration);
+      setErr("");
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+      setCanManage(false);
+    }
+  };
+
+  useEffect(() => {
+    void load();
+  }, [hasAuthToken]);
+
+  const create = async () => {
+    setBusy(true);
+    setErr("");
+    setFreshCode(null);
+    try {
+      const inv = await api.authInvite({ role });
+      setFreshCode(inv.code);
+      await load();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const copyCode = async (code: string) => {
+    await navigator.clipboard.writeText(code);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1500);
+  };
+
+  if (!hasUsers || !canManage) {
+    return null;
+  }
+
+  const hubUrl = `${window.location.origin}${import.meta.env.BASE_URL}`;
+
+  return (
+    <div className="rounded-lg border border-zinc-200 bg-white p-3 dark:border-white/10 dark:bg-zinc-950/40">
+      <div className="flex items-center gap-2 text-sm font-semibold text-zinc-800 dark:text-zinc-100">
+        <UserPlus className="h-4 w-4 text-zinc-500" />
+        Team invites
+      </div>
+      <p className="mt-1 text-[10px] leading-relaxed text-zinc-500">
+        {openRegistration
+          ? "Open registration is on — invite codes are optional."
+          : "Registration is invite-only after the first admin."}
+        Teammates open{" "}
+        <span className="font-mono text-[9px]">{hubUrl}</span> and choose{" "}
+        <strong>Join organization</strong>.
+      </p>
+      {err && (
+        <p className="mt-2 text-[10px] text-rose-600 dark:text-rose-300">
+          {err}
+        </p>
+      )}
+      <div className="mt-2 flex flex-wrap items-end gap-2">
+        <label className="text-[10px] font-medium text-zinc-500">
+          Role
+          <select
+            value={role}
+            onChange={(e) =>
+              setRole(e.target.value === "admin" ? "admin" : "member")
+            }
+            className="field-input mt-0.5 py-1 text-xs"
+            disabled={busy}
+          >
+            <option value="member">Member</option>
+            <option value="admin">Admin</option>
+          </select>
+        </label>
+        <button
+          type="button"
+          onClick={() => void create()}
+          disabled={busy}
+          className="rounded-lg bg-orange-500/15 px-2.5 py-1.5 text-[10px] font-semibold text-orange-900 disabled:opacity-50 dark:text-orange-100"
+        >
+          {busy ? "Creating…" : "Create invite"}
+        </button>
+        <button
+          type="button"
+          onClick={() => void load()}
+          disabled={busy}
+          className="rounded-lg border border-zinc-200 px-2 py-1.5 text-[10px] font-semibold dark:border-white/10"
+        >
+          Refresh
+        </button>
+      </div>
+      {freshCode && (
+        <div className="mt-2 flex items-center justify-between gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-2 py-1.5">
+          <span className="font-mono text-xs font-bold tracking-wider">
+            {freshCode}
+          </span>
+          <button
+            type="button"
+            onClick={() => void copyCode(freshCode)}
+            className="inline-flex items-center gap-1 text-[10px] font-semibold"
+          >
+            <Copy className="h-3 w-3" />
+            {copied ? "Copied" : "Copy"}
+          </button>
+        </div>
+      )}
+      {invites.length > 0 && (
+        <ul className="mt-2 max-h-36 space-y-1 overflow-y-auto text-[10px]">
+          {invites.map((inv) => {
+            const exhausted = inv.uses >= inv.max_uses;
+            return (
+              <li
+                key={inv.code}
+                className={cn(
+                  "flex items-center justify-between gap-2 rounded-md px-1.5 py-1",
+                  exhausted
+                    ? "bg-zinc-100 text-zinc-400 dark:bg-white/5"
+                    : "bg-zinc-50 dark:bg-white/5"
+                )}
+              >
+                <span className="font-mono font-semibold">{inv.code}</span>
+                <span className="shrink-0 text-zinc-500">
+                  {inv.role} · {inv.uses}/{inv.max_uses}
+                </span>
+                {!exhausted && (
+                  <button
+                    type="button"
+                    onClick={() => void copyCode(inv.code)}
+                    className="shrink-0 text-orange-700 dark:text-orange-200"
+                    aria-label={`Copy invite ${inv.code}`}
+                  >
+                    <Copy className="h-3 w-3" />
+                  </button>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 /**
  * Create / list / revoke agent & device API keys (production auth).
  * Master token in Settings can mint keys; scoped keys cannot.
@@ -1053,10 +1368,12 @@ function AgentTokensPanel({
   gatewayBase,
   hasAuthToken,
   requireAuth,
+  roomHint,
 }: {
   gatewayBase: string;
   hasAuthToken: boolean;
   requireAuth: boolean;
+  roomHint: string;
 }) {
   const [keys, setKeys] = useState<
     {
@@ -1066,6 +1383,7 @@ function AgentTokensPanel({
       scopes: string[];
       role: string;
       device_label: string;
+      metadata?: Record<string, unknown>;
     }[]
   >([]);
   const [name, setName] = useState("grok-agent");
@@ -1082,7 +1400,14 @@ function AgentTokensPanel({
     }
     try {
       const res = await api.listKeys();
-      setKeys(res.keys || []);
+      setKeys(
+        (res.keys || []).filter(
+          (key) =>
+            !["runner", "managed_agent"].includes(
+              String(key.metadata?.identity_type || "")
+            )
+        )
+      );
       setErr("");
     } catch (e) {
       setErr(
@@ -1157,13 +1482,13 @@ function AgentTokensPanel({
     <div className="space-y-2 rounded-xl border border-zinc-200 p-3 dark:border-white/10">
       <div className="flex items-center gap-1.5 text-xs font-semibold text-zinc-700 dark:text-zinc-200">
         <Shield className="h-3.5 w-3.5 text-orange-500" />
-        Agent &amp; device tokens
+        Compatibility API keys
       </div>
       <p className="text-[10px] leading-relaxed text-zinc-500">
         {requireAuth
-          ? "Mint a scoped token per agent or phone. Paste it into MCP as OPENGATEWAY_AUTH_TOKEN. Shown once."
-          : "This hub is yours on this machine — mint a key per agent here. No Railway token. Shown once."}{" "}
-        Agents use the minted key, not the hub master token.
+          ? "For older manual MCP and device setups. New managed agents do not need keys copied through the browser."
+          : "For older manual MCP and device setups. Prefer Add Agent for runner-managed launches."}{" "}
+        Raw keys are never rendered; a ready-to-use snippet can be copied once.
       </p>
 
       <div className="grid grid-cols-2 gap-2">
@@ -1208,6 +1533,7 @@ function AgentTokensPanel({
           hubUrl={gatewayBase}
           token={freshToken}
           defaultName={name.trim() || undefined}
+          roomHint={roomHint}
         />
       )}
 

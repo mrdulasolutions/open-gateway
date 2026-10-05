@@ -53,16 +53,31 @@ if [ -z "$OPENGATEWAY_PUBLIC_URL" ]; then
   fi
 fi
 
-# SQLite fallback only when no Postgres URL (ephemeral on Railway without Postgres)
+# One durable root for SQLite (when used) and upload/workspace bytes.
+# Compose and Fly mount /data. Railway injects RAILWAY_VOLUME_MOUNT_PATH when a volume is attached.
+if [ -n "${RAILWAY_VOLUME_MOUNT_PATH:-}" ]; then
+  export OPENGATEWAY_DATA_DIR="${OPENGATEWAY_DATA_DIR:-$RAILWAY_VOLUME_MOUNT_PATH}"
+else
+  export OPENGATEWAY_DATA_DIR="${OPENGATEWAY_DATA_DIR:-/data}"
+fi
+mkdir -p "$OPENGATEWAY_DATA_DIR/files" 2>/dev/null || true
+
+# SQLite fallback only when no Postgres URL
 if [ -z "$OPENGATEWAY_DATABASE_URL" ]; then
-  export OPENGATEWAY_DB="${OPENGATEWAY_DB:-/data/state.db}"
+  export OPENGATEWAY_DB="${OPENGATEWAY_DB:-$OPENGATEWAY_DATA_DIR/state.db}"
   mkdir -p "$(dirname "$OPENGATEWAY_DB")" 2>/dev/null || true
-  echo "OpenGateway persistence: SQLite at $OPENGATEWAY_DB (link Postgres for production)"
+  echo "OpenGateway persistence: SQLite at $OPENGATEWAY_DB"
+  echo "OpenGateway files: $OPENGATEWAY_DATA_DIR/files"
 else
   echo "OpenGateway persistence: Postgres (${OPENGATEWAY_DATABASE_URL%%\?*})"
+  echo "OpenGateway files: $OPENGATEWAY_DATA_DIR/files (mount this path; Postgres does not store blobs)"
   # Prefer explicit none when using Postgres so dual-path is clear
-  if [ -z "$OPENGATEWAY_DB" ] || [ "$OPENGATEWAY_DB" = "/data/state.db" ]; then
+  if [ -z "$OPENGATEWAY_DB" ] || [ "$OPENGATEWAY_DB" = "/data/state.db" ] || [ "$OPENGATEWAY_DB" = "$OPENGATEWAY_DATA_DIR/state.db" ]; then
     export OPENGATEWAY_DB=none
+  fi
+  if [ -n "${RAILWAY_ENVIRONMENT:-}${RAILWAY_PROJECT_ID:-}${RAILWAY_PUBLIC_DOMAIN:-}" ] && [ -z "${RAILWAY_VOLUME_MOUNT_PATH:-}" ]; then
+    echo "WARNING: Railway has no volume. Uploads and workspace files under $OPENGATEWAY_DATA_DIR are lost on redeploy."
+    echo "Attach a volume mounted at /data (or set OPENGATEWAY_DATA_DIR to RAILWAY_VOLUME_MOUNT_PATH)."
   fi
 fi
 

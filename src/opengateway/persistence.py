@@ -14,17 +14,55 @@ from opengateway.models import (
     Bookmark,
     Fork,
     GatewayRecord,
+    ManagedAgent,
     Participant,
     ParticipantStatus,
     RegisteredAgent,
     Room,
     RoomMessage,
+    Runner,
+    RunnerJob,
+    RunnerLogEntry,
+    RunnerPairCode,
     Task,
 )
 
 
 DEFAULT_DB_ENV = "OPENGATEWAY_DB"
 DATABASE_URL_ENV = "OPENGATEWAY_DATABASE_URL"
+DATA_DIR_ENV = "OPENGATEWAY_DATA_DIR"
+FILES_DIR_ENV = "OPENGATEWAY_FILES_DIR"
+
+_DB_DISABLED = {"none", "off", "false", "0", ":memory:"}
+
+
+def _db_disabled(raw: str) -> bool:
+    return raw.lower() in _DB_DISABLED
+
+
+def data_dir() -> Path:
+    """Durable root for SQLite and on-disk blobs.
+
+    - ``OPENGATEWAY_DATA_DIR`` wins (Docker/Fly/Railway mount this, usually ``/data``)
+    - else the parent of a filesystem ``OPENGATEWAY_DB`` path
+    - else ``~/.opengateway``
+    """
+    explicit = os.environ.get(DATA_DIR_ENV, "").strip()
+    if explicit:
+        return Path(explicit).expanduser()
+    raw = os.environ.get(DEFAULT_DB_ENV, "").strip()
+    if raw and not _db_disabled(raw) and not is_postgres_url(raw):
+        return Path(raw).expanduser().parent
+    return Path.home() / ".opengateway"
+
+
+def files_dir(*, create: bool = True) -> Path:
+    """Uploads and room workspace bytes. Same volume as SQLite when using ``/data``."""
+    explicit = os.environ.get(FILES_DIR_ENV, "").strip()
+    path = Path(explicit).expanduser() if explicit else data_dir() / "files"
+    if create:
+        path.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 def default_db_path() -> Optional[Path | str]:
@@ -33,23 +71,22 @@ def default_db_path() -> Optional[Path | str]:
     - ``OPENGATEWAY_DATABASE_URL=postgresql://…`` → multi-writer Postgres
     - ``OPENGATEWAY_DB=postgresql://…`` → same
     - ``OPENGATEWAY_DB=/path/state.db`` → SQLite file
-    - empty → ``~/.opengateway/state.db``
+    - empty → ``{OPENGATEWAY_DATA_DIR or ~/.opengateway}/state.db``
     - ``none`` / ``:memory:`` → no disk
     """
     url = os.environ.get(DATABASE_URL_ENV, "").strip()
     if url:
         return url
     raw = os.environ.get(DEFAULT_DB_ENV, "").strip()
-    if raw.lower() in {"none", "off", "false", "0", ":memory:"}:
+    if _db_disabled(raw):
         return None
     if raw:
-        if raw.startswith("postgres://") or raw.startswith("postgresql://"):
-            # normalize postgres:// → postgresql:// for psycopg
+        if is_postgres_url(raw):
             if raw.startswith("postgres://"):
                 raw = "postgresql://" + raw[len("postgres://") :]
             return raw
         return Path(raw).expanduser()
-    return Path.home() / ".opengateway" / "state.db"
+    return data_dir() / "state.db"
 
 
 def is_postgres_url(spec: Any) -> bool:
@@ -183,6 +220,43 @@ class SqlitePersistence:
                 CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_log(created_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_log(action);
                 CREATE INDEX IF NOT EXISTS idx_audit_room ON audit_log(room_id);
+                CREATE TABLE IF NOT EXISTS runners (
+                    id TEXT PRIMARY KEY,
+                    data TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS runner_pair_codes (
+                    code_hash TEXT PRIMARY KEY,
+                    expires_at TEXT NOT NULL,
+                    data TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_runner_pair_expiry
+                    ON runner_pair_codes(expires_at);
+                CREATE TABLE IF NOT EXISTS managed_agents (
+                    id TEXT PRIMARY KEY,
+                    runner_id TEXT NOT NULL,
+                    room_id TEXT NOT NULL,
+                    data TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_managed_agents_runner
+                    ON managed_agents(runner_id);
+                CREATE TABLE IF NOT EXISTS runner_jobs (
+                    id TEXT PRIMARY KEY,
+                    runner_id TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    data TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_runner_jobs_wait
+                    ON runner_jobs(runner_id, status, created_at);
+                CREATE TABLE IF NOT EXISTS runner_logs (
+                    id TEXT PRIMARY KEY,
+                    runner_id TEXT NOT NULL,
+                    managed_agent_id TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    data TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_runner_logs_agent
+                    ON runner_logs(managed_agent_id, created_at);
                 """
             )
             self._conn.commit()
@@ -373,6 +447,16 @@ class SqlitePersistence:
             ).fetchone()
         return json.loads(row["data"]) if row else None
 
+    def list_invites(self, tenant_id: str) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT data FROM invites WHERE tenant_id = ?",
+                (tenant_id,),
+            ).fetchall()
+        items = [json.loads(row["data"]) for row in rows]
+        items.sort(key=lambda item: item.get("created_at") or "", reverse=True)
+        return items
+
     def get_meta(self, key: str) -> Optional[str]:
         with self._lock:
             row = self._conn.execute(
@@ -415,6 +499,191 @@ class SqlitePersistence:
         with self._lock:
             rows = self._conn.execute("SELECT data FROM api_keys").fetchall()
         return [json.loads(r["data"]) for r in rows]
+
+    # ── Managed runners / agents ──────────────────────────────────────────
+
+    def save_runner(self, runner: Runner) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO runners (id, data) VALUES (?, ?)",
+                (runner.id, self._dump(runner)),
+            )
+            self._conn.commit()
+
+    def save_runner_pair_code(self, pair: RunnerPairCode) -> None:
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT OR REPLACE INTO runner_pair_codes
+                  (code_hash, expires_at, data) VALUES (?, ?, ?)
+                """,
+                (pair.code_hash, pair.expires_at.isoformat(), self._dump(pair)),
+            )
+            self._conn.commit()
+
+    def consume_runner_pair_code(
+        self, code_hash: str, used_at: Any
+    ) -> Optional[RunnerPairCode]:
+        """Atomically mark a pairing digest used and return it once."""
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                row = self._conn.execute(
+                    "SELECT data FROM runner_pair_codes WHERE code_hash = ?",
+                    (code_hash,),
+                ).fetchone()
+                if not row:
+                    self._conn.rollback()
+                    return None
+                pair = RunnerPairCode.model_validate_json(row["data"])
+                if pair.used_at is not None or pair.expires_at <= used_at:
+                    self._conn.execute(
+                        "DELETE FROM runner_pair_codes WHERE code_hash = ?",
+                        (code_hash,),
+                    )
+                    self._conn.commit()
+                    return None
+                pair.used_at = used_at
+                self._conn.execute(
+                    "UPDATE runner_pair_codes SET data = ? WHERE code_hash = ?",
+                    (self._dump(pair), code_hash),
+                )
+                self._conn.commit()
+                return pair
+            except Exception:
+                self._conn.rollback()
+                raise
+
+    def save_managed_agent(self, agent: ManagedAgent) -> None:
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT OR REPLACE INTO managed_agents
+                  (id, runner_id, room_id, data) VALUES (?, ?, ?, ?)
+                """,
+                (agent.id, agent.runner_id, agent.room_id, self._dump(agent)),
+            )
+            self._conn.commit()
+
+    def save_runner_job(self, job: RunnerJob) -> None:
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT OR REPLACE INTO runner_jobs
+                  (id, runner_id, status, created_at, data)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    job.id,
+                    job.runner_id,
+                    job.status.value,
+                    job.created_at.isoformat(),
+                    self._dump(job),
+                ),
+            )
+            self._conn.commit()
+
+    def claim_runner_job(
+        self,
+        job: RunnerJob,
+        *,
+        key_record: Optional[dict[str, Any]] = None,
+        agent: Optional[ManagedAgent] = None,
+    ) -> bool:
+        """Commit queued->claimed and its one-time key in one transaction."""
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                row = self._conn.execute(
+                    "SELECT runner_id, status FROM runner_jobs WHERE id = ?",
+                    (job.id,),
+                ).fetchone()
+                if (
+                    not row
+                    or row["runner_id"] != job.runner_id
+                    or row["status"] != "queued"
+                ):
+                    self._conn.rollback()
+                    return False
+                if key_record is not None:
+                    self._conn.execute(
+                        "INSERT INTO api_keys (id, key_hash, data) VALUES (?, ?, ?)",
+                        (
+                            key_record["id"],
+                            key_record["key_hash"],
+                            json.dumps(key_record),
+                        ),
+                    )
+                self._conn.execute(
+                    "UPDATE runner_jobs SET status = ?, data = ? WHERE id = ?",
+                    (job.status.value, self._dump(job), job.id),
+                )
+                if agent is not None:
+                    self._conn.execute(
+                        """
+                        INSERT OR REPLACE INTO managed_agents
+                          (id, runner_id, room_id, data) VALUES (?, ?, ?, ?)
+                        """,
+                        (
+                            agent.id,
+                            agent.runner_id,
+                            agent.room_id,
+                            self._dump(agent),
+                        ),
+                    )
+                self._conn.commit()
+                return True
+            except Exception:
+                self._conn.rollback()
+                raise
+
+    def save_runner_log(self, entry: RunnerLogEntry, *, keep: int = 500) -> None:
+        keep = max(1, min(int(keep), 5000))
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT OR REPLACE INTO runner_logs
+                  (id, runner_id, managed_agent_id, created_at, data)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    entry.id,
+                    entry.runner_id,
+                    entry.managed_agent_id,
+                    entry.created_at.isoformat(),
+                    self._dump(entry),
+                ),
+            )
+            self._conn.execute(
+                """
+                DELETE FROM runner_logs
+                WHERE managed_agent_id = ? AND id NOT IN (
+                    SELECT id FROM runner_logs
+                    WHERE managed_agent_id = ?
+                    ORDER BY created_at DESC LIMIT ?
+                )
+                """,
+                (entry.managed_agent_id, entry.managed_agent_id, keep),
+            )
+            self._conn.commit()
+
+    def list_runner_logs(
+        self, managed_agent_id: str, *, limit: int = 200
+    ) -> list[RunnerLogEntry]:
+        limit = max(1, min(int(limit), 1000))
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT data FROM runner_logs
+                WHERE managed_agent_id = ?
+                ORDER BY created_at DESC LIMIT ?
+                """,
+                (managed_agent_id, limit),
+            ).fetchall()
+        return [
+            RunnerLogEntry.model_validate_json(row["data"])
+            for row in reversed(rows)
+        ]
 
     def save_push_sub(self, sub: dict[str, Any]) -> None:
         with self._lock:
@@ -589,6 +858,26 @@ class SqlitePersistence:
                 row["id"]: GatewayRecord.model_validate_json(row["data"])
                 for row in self._conn.execute("SELECT id, data FROM gateways")
             }
+            runners = {
+                row["id"]: Runner.model_validate_json(row["data"])
+                for row in self._conn.execute("SELECT id, data FROM runners")
+            }
+            runner_pair_codes = {
+                row["code_hash"]: RunnerPairCode.model_validate_json(row["data"])
+                for row in self._conn.execute(
+                    "SELECT code_hash, data FROM runner_pair_codes"
+                )
+            }
+            managed_agents = {
+                row["id"]: ManagedAgent.model_validate_json(row["data"])
+                for row in self._conn.execute("SELECT id, data FROM managed_agents")
+            }
+            runner_jobs = {
+                row["id"]: RunnerJob.model_validate_json(row["data"])
+                for row in self._conn.execute(
+                    "SELECT id, data FROM runner_jobs ORDER BY created_at ASC"
+                )
+            }
 
         return {
             "rooms": rooms,
@@ -600,4 +889,8 @@ class SqlitePersistence:
             "bookmarks": bookmarks,
             "forks": forks,
             "gateways": gateways,
+            "runners": runners,
+            "runner_pair_codes": runner_pair_codes,
+            "managed_agents": managed_agents,
+            "runner_jobs": runner_jobs,
         }

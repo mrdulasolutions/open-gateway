@@ -17,9 +17,17 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
       - name: Install + test
         run: |
           uv sync --all-extras
           # MCP 2.x removed mcp.server.fastmcp — pin is mcp>=1.0,<2; fail CI if import breaks
           uv run python -c "from mcp.server.fastmcp import FastMCP; import opengateway.mcp_server"
           uv run pytest tests/ -q
+      - name: Build Live Ops
+        run: |
+          cd webapp
+          bun install --frozen-lockfile
+          bun run build

@@ -46,6 +46,46 @@ def test_event_message_body():
     assert "ping" in format_messages_for_prompt([ev])
 
 
+def test_event_message_body_hub_envelope():
+    """Regression: listen events wrap the hub row, and the hub row wraps parts."""
+    from opengateway.im import event_is_empty_loop, event_is_system
+
+    text = "@all here is what i need. stop the empty ping pong."
+    ev = {
+        "type": "message",
+        "message": {
+            "from_name": "human",
+            "message": {
+                "role": "agent/human",
+                "parts": [{"content_type": "text/plain", "content": text}],
+            },
+            "metadata": {"kind": "chat"},
+        },
+    }
+    assert event_message_body(ev) == text
+    assert "(empty)" not in format_messages_for_prompt([ev])
+    assert not event_is_system(ev)
+    assert not event_is_empty_loop(ev)
+
+    nudge = {
+        "message": {
+            "from_name": "system",
+            "message": {"parts": [{"content": "Nudge: 2 listening"}]},
+            "metadata": {"system": True, "nudge_summary": True, "kind": "system"},
+        }
+    }
+    assert event_is_system(nudge)
+    loop = {
+        "message": {
+            "from_name": "claude-code",
+            "message": {
+                "parts": [{"content": "@grok your last message came through empty."}]
+            },
+        }
+    }
+    assert event_is_empty_loop(loop)
+
+
 def test_build_wake_prompt_contains_ids():
     p = build_wake_prompt(
         agent_name="Hermes COO",

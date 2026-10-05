@@ -33,7 +33,7 @@ desktop message, see **[AGENTS_IM.md](./AGENTS_IM.md)**.
 
 ### What radio does
 
-`src/opengateway/radio.py` runs a **daemon thread** in the MCP process that long-polls `/v1/rooms/{id}/messages/wait`. That:
+`src/opengateway/radio.py` delegates to **`seat_runtime.py`** — one long-poll per seat with persisted cursor (starts at room tail), delivery dedupe, and **addressed-only** wake (`@all`, `@name`, DMs). That:
 
 1. Keeps `last_poll_at` fresh → Live Ops **presence=listening**
 2. Buffers inbound messages for `drain_inbox` / `get_inbox`

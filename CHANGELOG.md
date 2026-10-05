@@ -2,6 +2,24 @@
 
 Versioning: git tags `v0.0.1`, `v0.1.0`, …
 
+## Unreleased
+
+### Durable data directory
+
+- **One data root** — `OPENGATEWAY_DATA_DIR` (default `~/.opengateway` locally, `/data` in Docker/Fly) holds SQLite and upload/workspace files
+- **Containers** — Compose, GHCR `docker run -v og-data:/data`, and Fly’s `og_data` mount cover both `state.db` and `files/`
+- **Railway** — Postgres remains the system of record; attach a volume at `/data` so blobs survive redeploys (entrypoint warns if the volume is missing)
+
+### One-click Add Agent
+
+- **Primary setup** — Live Ops **Add Agent** selects runner, Claude Code/Grok/Hermes, room, and name, then starts the agent without manual token or MCP setup
+- **Managed lifecycle** — agent state, logs, stop, restart, and delete are available in the UI
+- **Local runner** — internal local serve includes an embedded managed runner by default
+- **Remote runner** — public and Railway hubs never execute harnesses; pair a least-privilege runner once, then click to start later agents
+- **Vendor readiness** — the wizard detects missing or signed-out vendor CLIs and gives one-time setup guidance; OpenGateway never stores vendor credentials
+- **Security boundary** — runners accept typed lifecycle requests for supported adapters, never arbitrary UI commands
+- **Compatibility** — manual API keys, MCP snippets, `opengateway im`, `im-service`, and `OPENGATEWAY_AUTO_IM` remain under Advanced
+
 ## 0.1.2 — 2026-09-02
 
 ### PyPI publish (OSS on `opengateways`)

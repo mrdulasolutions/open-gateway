@@ -11,11 +11,16 @@ from opengateway.models import (
     Bookmark,
     Fork,
     GatewayRecord,
+    ManagedAgent,
     Participant,
     ParticipantStatus,
     RegisteredAgent,
     Room,
     RoomMessage,
+    Runner,
+    RunnerJob,
+    RunnerLogEntry,
+    RunnerPairCode,
     Task,
 )
 
@@ -139,6 +144,43 @@ class PostgresPersistence:
         CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_log(created_at DESC);
         CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_log(action);
         CREATE INDEX IF NOT EXISTS idx_audit_room ON audit_log(room_id);
+        CREATE TABLE IF NOT EXISTS runners (
+            id TEXT PRIMARY KEY,
+            data TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS runner_pair_codes (
+            code_hash TEXT PRIMARY KEY,
+            expires_at TEXT NOT NULL,
+            data TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_runner_pair_expiry
+            ON runner_pair_codes(expires_at);
+        CREATE TABLE IF NOT EXISTS managed_agents (
+            id TEXT PRIMARY KEY,
+            runner_id TEXT NOT NULL,
+            room_id TEXT NOT NULL,
+            data TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_managed_agents_runner
+            ON managed_agents(runner_id);
+        CREATE TABLE IF NOT EXISTS runner_jobs (
+            id TEXT PRIMARY KEY,
+            runner_id TEXT NOT NULL,
+            status TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            data TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_runner_jobs_wait
+            ON runner_jobs(runner_id, status, created_at);
+        CREATE TABLE IF NOT EXISTS runner_logs (
+            id TEXT PRIMARY KEY,
+            runner_id TEXT NOT NULL,
+            managed_agent_id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            data TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_runner_logs_agent
+            ON runner_logs(managed_agent_id, created_at);
         """
         with self._lock:
             with self._conn.cursor() as cur:
@@ -333,6 +375,18 @@ class PostgresPersistence:
                 row = cur.fetchone()
         return json.loads(row["data"]) if row else None
 
+    def list_invites(self, tenant_id: str) -> list[dict[str, Any]]:
+        with self._lock:
+            with self._conn.cursor() as cur:
+                cur.execute(
+                    "SELECT data FROM invites WHERE tenant_id = %s",
+                    (tenant_id,),
+                )
+                rows = cur.fetchall()
+        items = [json.loads(row["data"]) for row in rows]
+        items.sort(key=lambda item: item.get("created_at") or "", reverse=True)
+        return items
+
     def get_meta(self, key: str) -> Optional[str]:
         with self._lock:
             with self._conn.cursor() as cur:
@@ -375,6 +429,203 @@ class PostgresPersistence:
                 cur.execute("SELECT data FROM api_keys")
                 rows = cur.fetchall()
         return [json.loads(r["data"]) for r in rows]
+
+    # ── Managed runners / agents ──────────────────────────────────────────
+
+    def save_runner(self, runner: Runner) -> None:
+        self._upsert("runners", ["id", "data"], (runner.id, self._dump(runner)))
+
+    def save_runner_pair_code(self, pair: RunnerPairCode) -> None:
+        self._upsert(
+            "runner_pair_codes",
+            ["code_hash", "expires_at", "data"],
+            (pair.code_hash, pair.expires_at.isoformat(), self._dump(pair)),
+        )
+
+    def consume_runner_pair_code(
+        self, code_hash: str, used_at: Any
+    ) -> Optional[RunnerPairCode]:
+        """Atomically mark a pairing digest used and return it once."""
+        with self._lock:
+            try:
+                with self._conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT data FROM runner_pair_codes
+                        WHERE code_hash = %s FOR UPDATE
+                        """,
+                        (code_hash,),
+                    )
+                    row = cur.fetchone()
+                    if not row:
+                        self._conn.rollback()
+                        return None
+                    pair = RunnerPairCode.model_validate_json(row["data"])
+                    if pair.used_at is not None or pair.expires_at <= used_at:
+                        cur.execute(
+                            "DELETE FROM runner_pair_codes WHERE code_hash = %s",
+                            (code_hash,),
+                        )
+                        self._conn.commit()
+                        return None
+                    pair.used_at = used_at
+                    cur.execute(
+                        """
+                        UPDATE runner_pair_codes SET data = %s
+                        WHERE code_hash = %s
+                        """,
+                        (self._dump(pair), code_hash),
+                    )
+                self._conn.commit()
+                return pair
+            except Exception:
+                self._conn.rollback()
+                raise
+
+    def save_managed_agent(self, agent: ManagedAgent) -> None:
+        self._upsert(
+            "managed_agents",
+            ["id", "runner_id", "room_id", "data"],
+            (agent.id, agent.runner_id, agent.room_id, self._dump(agent)),
+        )
+
+    def save_runner_job(self, job: RunnerJob) -> None:
+        self._upsert(
+            "runner_jobs",
+            ["id", "runner_id", "status", "created_at", "data"],
+            (
+                job.id,
+                job.runner_id,
+                job.status.value,
+                job.created_at.isoformat(),
+                self._dump(job),
+            ),
+        )
+
+    def claim_runner_job(
+        self,
+        job: RunnerJob,
+        *,
+        key_record: Optional[dict[str, Any]] = None,
+        agent: Optional[ManagedAgent] = None,
+    ) -> bool:
+        """Commit queued->claimed and its one-time key in one transaction."""
+        with self._lock:
+            try:
+                with self._conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT runner_id, status FROM runner_jobs
+                        WHERE id = %s FOR UPDATE
+                        """,
+                        (job.id,),
+                    )
+                    row = cur.fetchone()
+                    if (
+                        not row
+                        or row["runner_id"] != job.runner_id
+                        or row["status"] != "queued"
+                    ):
+                        self._conn.rollback()
+                        return False
+                    if key_record is not None:
+                        cur.execute(
+                            """
+                            INSERT INTO api_keys (id, key_hash, data)
+                            VALUES (%s, %s, %s)
+                            """,
+                            (
+                                key_record["id"],
+                                key_record["key_hash"],
+                                json.dumps(key_record),
+                            ),
+                        )
+                    cur.execute(
+                        """
+                        UPDATE runner_jobs SET status = %s, data = %s
+                        WHERE id = %s
+                        """,
+                        (job.status.value, self._dump(job), job.id),
+                    )
+                    if agent is not None:
+                        cur.execute(
+                            """
+                            INSERT INTO managed_agents
+                              (id, runner_id, room_id, data)
+                            VALUES (%s, %s, %s, %s)
+                            ON CONFLICT (id) DO UPDATE SET
+                              runner_id = EXCLUDED.runner_id,
+                              room_id = EXCLUDED.room_id,
+                              data = EXCLUDED.data
+                            """,
+                            (
+                                agent.id,
+                                agent.runner_id,
+                                agent.room_id,
+                                self._dump(agent),
+                            ),
+                        )
+                self._conn.commit()
+                return True
+            except Exception:
+                self._conn.rollback()
+                raise
+
+    def save_runner_log(self, entry: RunnerLogEntry, *, keep: int = 500) -> None:
+        keep = max(1, min(int(keep), 5000))
+        with self._lock:
+            with self._conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO runner_logs
+                      (id, runner_id, managed_agent_id, created_at, data)
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (id) DO UPDATE SET
+                      runner_id = EXCLUDED.runner_id,
+                      managed_agent_id = EXCLUDED.managed_agent_id,
+                      created_at = EXCLUDED.created_at,
+                      data = EXCLUDED.data
+                    """,
+                    (
+                        entry.id,
+                        entry.runner_id,
+                        entry.managed_agent_id,
+                        entry.created_at.isoformat(),
+                        self._dump(entry),
+                    ),
+                )
+                cur.execute(
+                    """
+                    DELETE FROM runner_logs
+                    WHERE managed_agent_id = %s AND id NOT IN (
+                        SELECT id FROM runner_logs
+                        WHERE managed_agent_id = %s
+                        ORDER BY created_at DESC LIMIT %s
+                    )
+                    """,
+                    (entry.managed_agent_id, entry.managed_agent_id, keep),
+                )
+            self._conn.commit()
+
+    def list_runner_logs(
+        self, managed_agent_id: str, *, limit: int = 200
+    ) -> list[RunnerLogEntry]:
+        limit = max(1, min(int(limit), 1000))
+        with self._lock:
+            with self._conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT data FROM runner_logs
+                    WHERE managed_agent_id = %s
+                    ORDER BY created_at DESC LIMIT %s
+                    """,
+                    (managed_agent_id, limit),
+                )
+                rows = cur.fetchall()
+        return [
+            RunnerLogEntry.model_validate_json(row["data"])
+            for row in reversed(rows)
+        ]
 
     def save_push_sub(self, sub: dict[str, Any]) -> None:
         self._upsert(
@@ -563,6 +814,28 @@ class PostgresPersistence:
                     row["id"]: GatewayRecord.model_validate_json(row["data"])
                     for row in cur.fetchall()
                 }
+                cur.execute("SELECT id, data FROM runners")
+                runners = {
+                    row["id"]: Runner.model_validate_json(row["data"])
+                    for row in cur.fetchall()
+                }
+                cur.execute("SELECT code_hash, data FROM runner_pair_codes")
+                runner_pair_codes = {
+                    row["code_hash"]: RunnerPairCode.model_validate_json(row["data"])
+                    for row in cur.fetchall()
+                }
+                cur.execute("SELECT id, data FROM managed_agents")
+                managed_agents = {
+                    row["id"]: ManagedAgent.model_validate_json(row["data"])
+                    for row in cur.fetchall()
+                }
+                cur.execute(
+                    "SELECT id, data FROM runner_jobs ORDER BY created_at ASC"
+                )
+                runner_jobs = {
+                    row["id"]: RunnerJob.model_validate_json(row["data"])
+                    for row in cur.fetchall()
+                }
 
         return {
             "rooms": rooms,
@@ -574,4 +847,8 @@ class PostgresPersistence:
             "bookmarks": bookmarks,
             "forks": forks,
             "gateways": gateways,
+            "runners": runners,
+            "runner_pair_codes": runner_pair_codes,
+            "managed_agents": managed_agents,
+            "runner_jobs": runner_jobs,
         }

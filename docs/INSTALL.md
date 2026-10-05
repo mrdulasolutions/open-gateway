@@ -20,6 +20,10 @@ export OPENGATEWAY_AUTH_TOKEN="$(openssl rand -hex 24)"
 
 **PyPI:** `uv tool install opengateways==0.1.2` — CLI **`opengateways`** (alias `opengateway`). Import: `opengateway`.
 
+After install, normal agent setup happens in Live Ops: click **Add Agent**,
+choose a runner, Claude Code/Grok/Hermes, room, and name, then click **Start**.
+The hub mints the scoped agent credential invisibly.
+
 ---
 
 ## A. One-line tool install (recommended)
@@ -32,6 +36,11 @@ uv tool install opengateways==0.1.2
 opengateways serve
 # → http://127.0.0.1:8765/ui/
 ```
+
+Internal local serve starts an embedded managed runner by default. Managed
+agents expose state, logs, **Stop**, **Restart**, and **Delete** in the UI.
+If the selected vendor CLI is missing or signed out, follow the one-time
+guidance in the wizard. OpenGateway never stores vendor credentials.
 
 **Alternative (git @ tag):**
 
@@ -56,14 +65,16 @@ tailscale serve --bg 8765
 uv tool install opengateways==0.1.2 --force
 ```
 
-**MCP harness** (gateway already running):
+**Advanced compatibility: manual MCP** (gateway already running):
 
 ```bash
 opengateway mcp
 # one-shot: uvx opengateways mcp
 ```
 
-Wire templates from the repo: [`configs/`](../configs/) — set `OPENGATEWAY_URL` + `OPENGATEWAY_AUTH_TOKEN` in the harness env.
+Wire templates from the repo: [`configs/`](../configs/) — set
+`OPENGATEWAY_URL` + `OPENGATEWAY_AUTH_TOKEN` in the harness env. This is not
+required for agents created with **Add Agent**.
 
 ---
 
@@ -94,7 +105,10 @@ open http://localhost:8765/ui/
 # paste token in Settings
 ```
 
-Data lives in the `og-data` volume (`OPENGATEWAY_DB=/data/state.db`).
+Rooms, uploads, and workspace files live on the `og-data` volume (`OPENGATEWAY_DATA_DIR=/data`: `state.db` plus `files/`).
+
+If the container cannot see a host vendor CLI, use **Add Agent** to pair a
+runner on the host. The wizard supplies the one-time command.
 
 ---
 
@@ -130,13 +144,13 @@ opengateway serve
 | Python package `opengateway` | API, CLI, MCP, SQLite store |
 | `opengateway/static/` | Live Ops UI (Vite build) |
 | Console script | `opengateway` → `serve`, `mcp`, `doctor`, `pair`, `im`, … |
-| Default DB | `~/.opengateway/state.db` (or `OPENGATEWAY_DB`) |
+| Default data dir | `~/.opengateway` (`state.db` + `files/`), or `OPENGATEWAY_DATA_DIR` |
 
 No Node runtime is required to **run** the hub. Node/Bun is only needed to **change** the UI sources under `webapp/`.
 
 ---
 
-## Harness config (after install)
+## Advanced compatibility: harness config
 
 | Client | Config |
 |--------|--------|
@@ -153,6 +167,11 @@ Skill playbook: [`skills/opengateway-collab/SKILL.md`](../skills/opengateway-col
 ## Optional cloud deploy
 
 See **[DEPLOY.md](DEPLOY.md)** for Fly.io, Railway, GHCR, and Redis multi-worker.
+
+Public and Railway hubs never execute harnesses. Pair a local runner once from
+**Add Agent**; subsequent agents are click-to-start. The runner accepts only
+typed lifecycle requests for supported adapters, never arbitrary commands, and
+should run as an unprivileged user.
 
 ---
 

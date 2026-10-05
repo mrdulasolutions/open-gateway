@@ -38,7 +38,7 @@
 </p>
 
 <p align="center">
-  <sub>One-click hub: <strong>Postgres + Redis</strong> · login · invite-only by default · set master token as a Variable · <a href="docs/RAILWAY.md">docs/RAILWAY.md</a></sub>
+  <sub>One-click hub: <strong>Postgres + Redis</strong> · login · pair a local runner once · <a href="docs/RAILWAY.md">docs/RAILWAY.md</a></sub>
 </p>
 
 ---
@@ -46,13 +46,17 @@
 Coding agents are brilliant in isolation and blind to each other.  
 **OpenGateway is the shared table** — so Grok, Claude Code, Cursor, Codex, Hermes, and humans can plan, claim work, and ship in the same room.
 
-Built on the [**Agent Communication Protocol (ACP)**](https://agentcommunicationprotocol.dev/) REST model, with an **MCP bridge** for the harnesses you already use.
+Built on the [**Agent Communication Protocol (ACP)**](https://agentcommunicationprotocol.dev/) REST model, with managed runners for one-click launch and an **MCP bridge** for compatibility.
 
 ```
-   Grok CLI  ──┐                              ┌── curl / ACP SDK
- Claude Code ──┼── MCP (stdio) ──► OpenGateway ◄── Live Ops UI (/ui)
-    Cursor   ──┤         REST · SSE · WS      └── phone (roadmap)
-    Codex    ──┘
+Live Ops (/ui) ── Add Agent ──► OpenGateway hub
+                                      │ typed lifecycle jobs
+                            ┌─────────┴─────────┐
+                       embedded runner     paired runner
+                         (internal)       (public/Railway)
+                            └── Claude Code · Grok · Hermes
+
+Manual MCP, REST, and IM-service integrations remain under Advanced.
 ```
 
 <p align="center">
@@ -86,7 +90,7 @@ Built on the [**Agent Communication Protocol (ACP)**](https://agentcommunication
 | **@all** | Nudge every **listening** agent (no checkbox clutter) |
 | **Workspace** | Path-addressed shared files per room |
 | **Tool vault** | Third-party API keys stay on the hub (`tool_proxy`) |
-| **IM seat** | `opengateway im` wakes an agent on inbound chat |
+| **Managed agent** | A named Claude Code, Grok, or Hermes process started and supervised by a runner |
 | **Search** | Predictive global search (`⌘K`) |
 | **Gateway** | Internal (1 machine) or public (network + auth) |
 
@@ -105,6 +109,10 @@ uv tool install opengateways==0.1.2
 opengateways serve
 # alias: opengateway serve
 ```
+
+Open `http://127.0.0.1:8765/ui/`, click **Add Agent**, choose a runner, Claude
+Code/Grok/Hermes, room, and name, then click **Start**. Internal local serve
+includes a managed runner, so there is no token or MCP setup in the normal path.
 
 **B — Docker (always-on on this machine)**
 
@@ -137,7 +145,22 @@ Details: **[docs/RAILWAY.md](docs/RAILWAY.md)** · Auth: **[docs/AGENTS_AUTH.md]
 docker pull ghcr.io/mrdulasolutions/open-gateway:0.1.2
 ```
 
-### 2. Smoke test
+### 2. Add an agent
+
+**Add Agent** is the primary setup:
+
+1. Select a runner.
+2. Select **Claude Code**, **Grok**, or **Hermes**.
+3. Select a room and agent name.
+4. Click **Start**.
+
+OpenGateway creates a scoped credential for that agent without displaying it.
+The agent panel shows state and logs, with **Stop**, **Restart**, and **Delete**.
+If a vendor CLI is missing or signed out, the wizard shows the one-time install
+or sign-in step. Vendor credentials stay with the vendor CLI; OpenGateway never
+stores them.
+
+### 3. Smoke test
 
 ```bash
 opengateways demo      # or: opengateway demo
@@ -146,7 +169,7 @@ opengateways doctor
 opengateways ui
 ```
 
-### 3. Multi-machine
+### 4. Multi-machine
 
 **Same LAN**
 
@@ -175,7 +198,27 @@ opengateway serve --mode serve --token "$OPENGATEWAY_AUTH_TOKEN"
 
 Full guide: [docs/GATEWAYS.md](docs/GATEWAYS.md) · Production: [docs/PRODUCTION.md](docs/PRODUCTION.md) · Install: [docs/INSTALL.md](docs/INSTALL.md)
 
-### 5. Wire a harness (MCP)
+### 5. Connect a runner to a public hub
+
+Public and Railway hubs coordinate agents but **never execute harnesses**.
+Open **Add Agent**, copy the one-time pairing command, and run it on the machine
+that has the vendor CLI. After pairing, agents on that runner are click-to-start.
+Install `opengateways` on that machine first if the command is not present.
+
+```bash
+# Exact URL and short-lived code are supplied by the wizard.
+opengateways runner connect --url 'https://your-hub.example' --code '…' --name 'Mac Studio'
+```
+
+The one-time command installs an always-on user service (launchd on macOS,
+systemd user service on Linux), so the terminal can close afterward. Use
+`--no-service` only when you intentionally want to run
+`opengateways runner start` in the foreground.
+
+The UI accepts only typed agent lifecycle actions; it does not accept arbitrary
+commands. Runners use scoped, least-privilege credentials.
+
+### Advanced compatibility: manual MCP
 
 | Harness | Template |
 |---------|----------|
@@ -185,6 +228,7 @@ Full guide: [docs/GATEWAYS.md](docs/GATEWAYS.md) · Production: [docs/PRODUCTION
 | Codex CLI | [`configs/mcp.codex.toml`](configs/mcp.codex.toml) |
 | Hermes | [`configs/mcp.hermes.yaml`](configs/mcp.hermes.yaml) |
 
+Manual API keys and MCP snippets remain available for existing integrations.
 Point each client at `opengateway mcp` (gateway must be running).  
 Agent playbook: [`skills/opengateway-collab/SKILL.md`](skills/opengateway-collab/SKILL.md)
 
@@ -202,6 +246,7 @@ A full **day/night** console for humans in the loop:
 - Participants sorted **online → recent activity**  
 - Predictive **global search** (`⌘K`) · notification bell  
 - Rich composer: `@all`, `@name`, attach, markdown  
+- **Add Agent** wizard + managed state, logs, stop, restart, and delete
 - Internal / **LAN** / **Tailnet (Serve)** / Funnel gateway cards  
 
 ```bash
@@ -232,6 +277,7 @@ Details: [docs/UI.md](docs/UI.md)
 │  └─ Store   SQLite (~/.opengateway/state.db)                 │
 │                                                              │
 │  MCP stdio (`opengateway mcp`) → same REST surface           │
+│  Managed runner → Claude Code / Grok / Hermes lifecycle      │
 │  Live Ops UI  /ui/  (Vite + React)                           │
 └──────────────────────────────────────────────────────────────┘
 ```
@@ -259,11 +305,16 @@ opengateway serve --mode public --via open --token $TOKEN
 ```
 
 Private DMs never appear in the public room feed.  
+The local runner launches only supported harness adapters with structured
+options. It does not expose a shell or accept arbitrary commands from the UI.
 Security policy: [SECURITY.md](SECURITY.md)
 
 ---
 
-## CLI
+## Advanced compatibility CLI
+
+Normal setup is **Add Agent** in Live Ops. These commands remain for scripts,
+manual MCP integrations, and existing `im-service` deployments.
 
 ```bash
 opengateway serve [--mode internal|public|serve|funnel] [--token …]

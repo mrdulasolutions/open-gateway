@@ -36,8 +36,16 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
       - name: Build opengateways wheel
         run: |
+          cd webapp
+          bun install --frozen-lockfile
+          bun run build
+          cd ..
+          make sync-static
           uv build -o dist
           ls -la dist/
       - name: Publish to PyPI (opengateways)

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import secrets
 from collections import defaultdict, deque
+from datetime import timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional, Union
 
@@ -13,6 +15,9 @@ from opengateway.models import (
     Fork,
     GatewayEvent,
     GatewayRecord,
+    Harness,
+    ManagedAgent,
+    ManagedAgentStatus,
     Participant,
     ParticipantStatus,
     RegisteredAgent,
@@ -20,15 +25,28 @@ from opengateway.models import (
     RoomMessage,
     RoomStatus,
     Run,
+    Runner,
+    RunnerJob,
+    RunnerJobAction,
+    RunnerJobStatus,
+    RunnerLogEntry,
+    RunnerPairCode,
+    RunnerStatus,
     Task,
     TaskStatus,
     utcnow,
 )
 from opengateway.api_keys import (
+    SCOPE_READ,
+    SCOPE_RUNNER,
+    SCOPE_TOOLS,
+    SCOPE_WRITE,
     generate_secret,
     hash_secret,
     normalize_scopes,
     prefix_of,
+    scrub_secret_text,
+    scrub_secrets,
 )
 from opengateway.audit import audit_enabled, build_audit_entry
 from opengateway.models import new_id
@@ -48,6 +66,12 @@ from opengateway.users import (
 class Store:
     """In-process store. When db_path is set, rooms and history survive restarts."""
 
+    RUNNER_STALE_SECONDS = 90.0
+    RUNNER_PAIR_TTL_SECONDS = 600
+    RUNNER_LOG_LIMIT = 500
+    RUNNER_LOG_RATE_LIMIT = 600
+    RUNNER_LOG_RATE_WINDOW_SECONDS = 60.0
+
     def __init__(
         self,
         event_history: int = 2000,
@@ -66,6 +90,13 @@ class Store:
         self.gateways: dict[str, GatewayRecord] = {}
         self.agents: dict[str, RegisteredAgent] = {}
         self.runs: dict[str, Run] = {}
+        self.runners: dict[str, Runner] = {}
+        self.runner_pair_codes: dict[str, RunnerPairCode] = {}
+        self.managed_agents: dict[str, ManagedAgent] = {}
+        self.runner_jobs: dict[str, RunnerJob] = {}
+        self.runner_logs: dict[str, list[RunnerLogEntry]] = defaultdict(list)
+        self._runner_log_windows: dict[str, deque[float]] = defaultdict(deque)
+        self._runner_job_events: dict[str, asyncio.Event] = {}
         # Short-lived phone/mobile pair codes (in-memory only; Redis optional)
         self.pair_codes: dict[str, dict[str, Any]] = {}
         self._events: deque[GatewayEvent] = deque(maxlen=event_history)
@@ -81,6 +112,11 @@ class Store:
         from opengateway.nudge_policy import NudgeRateLimiter
 
         self.nudge_limiter = NudgeRateLimiter()
+        from opengateway.delivery_guard import DeliveryGuard
+        from opengateway.room_floor import RoomSpeakingFloor
+
+        self.delivery_guard = DeliveryGuard()
+        self.speaking_floor = RoomSpeakingFloor()
 
         # db_path=... means "use default from env"; None means memory-only
         if db_path is ...:
@@ -117,6 +153,10 @@ class Store:
         self.forks = defaultdict(list, data.get("forks") or {})
         self.gateways = data.get("gateways") or {}
         self.agents = data["agents"]
+        self.runners = data.get("runners") or {}
+        self.runner_pair_codes = data.get("runner_pair_codes") or {}
+        self.managed_agents = data.get("managed_agents") or {}
+        self.runner_jobs = data.get("runner_jobs") or {}
         # API keys / push live only in DB (or memory maps); loaded on demand
 
     def _persist_room(self, room: Room) -> None:
@@ -142,6 +182,18 @@ class Store:
     def _persist_agent(self, agent: RegisteredAgent) -> None:
         if self._db:
             self._db.save_agent(agent)
+
+    def _persist_runner(self, runner: Runner) -> None:
+        if self._db:
+            self._db.save_runner(runner)
+
+    def _persist_managed_agent(self, agent: ManagedAgent) -> None:
+        if self._db:
+            self._db.save_managed_agent(agent)
+
+    def _persist_runner_job(self, job: RunnerJob) -> None:
+        if self._db:
+            self._db.save_runner_job(job)
 
     def enable_audit(self, enabled: bool = True) -> None:
         self._audit_enabled = enabled
@@ -415,7 +467,60 @@ class Store:
         else:
             self._memory_invites = getattr(self, "_memory_invites", {})
             self._memory_invites[code] = rec
-        return {"code": code, "role": rec["role"], "max_uses": 20}
+        return self._public_invite(rec)
+
+    def _public_invite(self, rec: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "code": rec["code"],
+            "role": rec.get("role") or "member",
+            "max_uses": int(rec.get("max_uses") or 20),
+            "uses": int(rec.get("uses") or 0),
+            "created_at": rec.get("created_at"),
+            "created_by": rec.get("created_by"),
+        }
+
+    async def list_invites(self, tenant_id: str) -> list[dict[str, Any]]:
+        tid = (tenant_id or "").strip()
+        if not tid:
+            raise ValueError("tenant_id is required")
+        if self._db and hasattr(self._db, "list_invites"):
+            items = self._db.list_invites(tid)
+        else:
+            mem = getattr(self, "_memory_invites", {}) or {}
+            items = [
+                value
+                for value in mem.values()
+                if str(value.get("tenant_id") or "") == tid
+            ]
+            items.sort(key=lambda item: item.get("created_at") or "", reverse=True)
+        return [self._public_invite(item) for item in items]
+
+    async def resolve_invite_tenant_id(
+        self,
+        *,
+        explicit: Optional[str] = None,
+        session_tenant_id: Optional[str] = None,
+    ) -> str:
+        if session_tenant_id:
+            return session_tenant_id
+        tid = (explicit or "").strip()
+        if tid:
+            if self._db and hasattr(self._db, "get_tenant"):
+                if not self._db.get_tenant(tid):
+                    raise ValueError("Unknown tenant_id")
+            else:
+                tenants = getattr(self, "_memory_tenants", {}) or {}
+                if tenants and tid not in tenants:
+                    raise ValueError("Unknown tenant_id")
+            return tid
+        tenants = (
+            self._db.list_tenants()
+            if self._db and hasattr(self._db, "list_tenants")
+            else list(getattr(self, "_memory_tenants", {}).values())
+        )
+        if len(tenants) == 1:
+            return str(tenants[0]["id"])
+        raise ValueError("tenant_id required")
 
     async def claim_setup(self) -> bool:
         """Atomic one-time setup claim. Returns True if this caller won the claim."""
@@ -1069,7 +1174,7 @@ class Store:
             )
         }
 
-    async def create_api_key(
+    def _new_api_key_record(
         self,
         *,
         name: str,
@@ -1077,9 +1182,9 @@ class Store:
         role: str = "contributor",
         device_label: str = "",
         metadata: Optional[dict[str, Any]] = None,
-    ) -> dict[str, Any]:
+    ) -> tuple[str, dict[str, Any]]:
         secret = generate_secret()
-        rec = {
+        return secret, {
             "id": new_id(),
             "name": (name or "device").strip() or "device",
             "key_prefix": prefix_of(secret),
@@ -1092,13 +1197,31 @@ class Store:
             "revoked_at": None,
             "metadata": metadata or {},
         }
+
+    def _save_api_key_record(self, rec: dict[str, Any]) -> None:
         if self._db:
             self._db.save_api_key(rec)
         else:
             self._memory_api_keys[rec["id"]] = rec
             self._memory_api_by_hash[rec["key_hash"]] = rec["id"]
-        if metadata and metadata.get("tenant_id"):
-            rec["metadata"] = {**rec.get("metadata", {}), "tenant_id": metadata["tenant_id"]}
+
+    async def create_api_key(
+        self,
+        *,
+        name: str,
+        scopes: Optional[list[str]] = None,
+        role: str = "contributor",
+        device_label: str = "",
+        metadata: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        secret, rec = self._new_api_key_record(
+            name=name,
+            scopes=scopes,
+            role=role,
+            device_label=device_label,
+            metadata=metadata,
+        )
+        self._save_api_key_record(rec)
         await self.audit(
             "api_key.create",
             actor=name,
@@ -1170,6 +1293,793 @@ class Store:
         if self._db:
             self._db.save_api_key(rec)
         return self._public_key(rec)
+
+    # ── Managed runners / agents ──────────────────────────────────────────
+
+    @staticmethod
+    def _normalize_runner_pair_code(code: str) -> str:
+        return "".join(ch for ch in (code or "").upper() if ch.isalnum())
+
+    async def create_runner_pair_code(
+        self,
+        *,
+        name: str,
+        tenant_id: Optional[str] = None,
+        created_by: str = "admin",
+        ttl_seconds: int | None = None,
+    ) -> tuple[str, RunnerPairCode]:
+        """Create a hashed, single-use runner bootstrap code."""
+        ttl = max(
+            60,
+            min(
+                int(ttl_seconds or self.RUNNER_PAIR_TTL_SECONDS),
+                3600,
+            ),
+        )
+        alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+        async with self._lock:
+            while True:
+                compact = "".join(secrets.choice(alphabet) for _ in range(12))
+                digest = hash_secret(compact)
+                if digest not in self.runner_pair_codes:
+                    break
+            raw_code = "-".join(compact[i : i + 4] for i in range(0, 12, 4))
+            pair = RunnerPairCode(
+                code_hash=digest,
+                name=(
+                    scrub_secret_text(name or "runner", max_length=120).strip()
+                    or "runner"
+                ),
+                tenant_id=tenant_id,
+                created_by=created_by or "admin",
+                expires_at=utcnow() + timedelta(seconds=ttl),
+            )
+            self.runner_pair_codes[digest] = pair
+            if self._db:
+                self._db.save_runner_pair_code(pair)
+        await self.audit(
+            "runner.pair.create",
+            actor=created_by,
+            resource_type="runner_pair",
+            resource_id=pair.id,
+            detail={"name": pair.name, "expires_at": pair.expires_at.isoformat()},
+        )
+        return raw_code, pair
+
+    async def redeem_runner_pair_code(
+        self,
+        *,
+        code: str,
+        name: str = "",
+        hostname: str = "",
+        platform: str = "",
+        version: str = "",
+        capabilities: Optional[dict[str, Any]] = None,
+    ) -> Optional[tuple[Runner, str]]:
+        """Consume a pairing code and mint a runner-only bearer identity."""
+        compact = self._normalize_runner_pair_code(code)
+        if len(compact) != 12:
+            return None
+        digest = hash_secret(compact)
+        now = utcnow()
+        async with self._lock:
+            if self._db and hasattr(self._db, "consume_runner_pair_code"):
+                pair = self._db.consume_runner_pair_code(digest, now)
+                if pair is not None:
+                    self.runner_pair_codes[digest] = pair
+            else:
+                pair = self.runner_pair_codes.get(digest)
+                if (
+                    pair is None
+                    or pair.used_at is not None
+                    or pair.expires_at <= now
+                ):
+                    pair = None
+                else:
+                    pair.used_at = now
+                    self.runner_pair_codes[digest] = pair
+            if pair is None:
+                return None
+
+            requested_name = (name or pair.name or "runner").strip()
+            if (
+                requested_name.casefold() == "runner"
+                and (hostname or "").strip()
+            ):
+                requested_name = hostname.strip()
+            runner = Runner(
+                name=(
+                    scrub_secret_text(
+                        requested_name, max_length=120
+                    ).strip()
+                    or "runner"
+                ),
+                hostname=scrub_secret_text(
+                    hostname or "", max_length=255
+                ).strip(),
+                platform=scrub_secret_text(
+                    platform or "", max_length=120
+                ).strip(),
+                version=scrub_secret_text(
+                    version or "", max_length=80
+                ).strip(),
+                capabilities=scrub_secrets(capabilities or {}),
+                tenant_id=pair.tenant_id,
+                status=RunnerStatus.STALE,
+                metadata={"paired_by": pair.created_by},
+            )
+            token, key_record = self._new_api_key_record(
+                name=f"runner:{runner.name}",
+                scopes=[SCOPE_RUNNER],
+                role="runner",
+                device_label=runner.hostname or runner.name,
+                metadata={
+                    "runner_id": runner.id,
+                    "tenant_id": runner.tenant_id,
+                    "identity_type": "runner",
+                },
+            )
+            runner.api_key_id = key_record["id"]
+            self.runners[runner.id] = runner
+            self._persist_runner(runner)
+            self._save_api_key_record(key_record)
+
+        await self.audit(
+            "runner.pair.redeem",
+            actor=runner.name,
+            resource_type="runner",
+            resource_id=runner.id,
+            detail={"hostname": runner.hostname, "platform": runner.platform},
+        )
+        return runner, token
+
+    def _runner_stale(self, runner: Runner) -> bool:
+        seen = runner.last_seen_at
+        if seen.tzinfo is None:
+            seen = seen.replace(tzinfo=timezone.utc)
+        return (utcnow() - seen).total_seconds() > self.RUNNER_STALE_SECONDS
+
+    async def get_runner(self, runner_id: str) -> Optional[Runner]:
+        runner = self.runners.get(runner_id)
+        if (
+            runner
+            and runner.status != RunnerStatus.REVOKED
+            and self._runner_stale(runner)
+            and runner.status != RunnerStatus.STALE
+        ):
+            runner.status = RunnerStatus.STALE
+            self._persist_runner(runner)
+        return runner
+
+    async def list_runners(
+        self, *, tenant_id: Optional[str] = None
+    ) -> list[Runner]:
+        items: list[Runner] = []
+        for runner_id in list(self.runners):
+            runner = await self.get_runner(runner_id)
+            if not runner:
+                continue
+            if tenant_id is not None and runner.tenant_id != tenant_id:
+                continue
+            items.append(runner)
+        return sorted(items, key=lambda item: item.created_at)
+
+    async def heartbeat_runner(
+        self,
+        runner_id: str,
+        *,
+        version: Optional[str] = None,
+        capabilities: Optional[dict[str, Any]] = None,
+        agent_statuses: Optional[dict[str, ManagedAgentStatus]] = None,
+    ) -> Runner:
+        async with self._lock:
+            runner = self.runners.get(runner_id)
+            if not runner or runner.status == RunnerStatus.REVOKED:
+                raise KeyError("Runner not found")
+            runner.status = RunnerStatus.ONLINE
+            runner.last_seen_at = utcnow()
+            if version is not None:
+                runner.version = scrub_secret_text(version, max_length=80)
+            if capabilities is not None:
+                runner.capabilities = scrub_secrets(capabilities)
+            self._persist_runner(runner)
+            for agent_id, reported in (agent_statuses or {}).items():
+                agent = self.managed_agents.get(agent_id)
+                if not agent or agent.runner_id != runner_id or agent.deleted_at:
+                    continue
+                if reported in {
+                    ManagedAgentStatus.STARTING,
+                    ManagedAgentStatus.RUNNING,
+                    ManagedAgentStatus.STOPPED,
+                    ManagedAgentStatus.ERROR,
+                }:
+                    agent.status = reported
+                    agent.updated_at = utcnow()
+                    self._persist_managed_agent(agent)
+        return runner
+
+    async def revoke_runner(self, runner_id: str) -> bool:
+        key_ids: list[str] = []
+        async with self._lock:
+            runner = self.runners.get(runner_id)
+            if not runner:
+                return False
+            if runner.status == RunnerStatus.REVOKED:
+                return True
+            runner.status = RunnerStatus.REVOKED
+            runner.revoked_at = utcnow()
+            runner.last_seen_at = runner.revoked_at
+            self._persist_runner(runner)
+            if runner.api_key_id:
+                key_ids.append(runner.api_key_id)
+            for agent in self.managed_agents.values():
+                if agent.runner_id != runner_id or agent.deleted_at:
+                    continue
+                if agent.active_key_id:
+                    key_ids.append(agent.active_key_id)
+                    agent.active_key_id = None
+                key_ids.extend(agent.retiring_key_ids)
+                agent.retiring_key_ids = []
+                agent.status = ManagedAgentStatus.ERROR
+                agent.last_error = "Runner revoked"
+                agent.updated_at = utcnow()
+                self._persist_managed_agent(agent)
+            for job in self.runner_jobs.values():
+                if (
+                    job.runner_id == runner_id
+                    and job.status
+                    in {RunnerJobStatus.QUEUED, RunnerJobStatus.CLAIMED}
+                ):
+                    job.status = RunnerJobStatus.CANCELLED
+                    job.completed_at = utcnow()
+                    job.error = "Runner revoked"
+                    self._persist_runner_job(job)
+        for key_id in set(key_ids):
+            await self.revoke_api_key(key_id)
+        await self.audit(
+            "runner.revoke",
+            resource_type="runner",
+            resource_id=runner_id,
+        )
+        return True
+
+    def _pending_runner_job(
+        self, agent_id: str, action: RunnerJobAction
+    ) -> Optional[RunnerJob]:
+        for job in self.runner_jobs.values():
+            if (
+                job.managed_agent_id == agent_id
+                and job.action == action
+                and job.status
+                in {RunnerJobStatus.QUEUED, RunnerJobStatus.CLAIMED}
+            ):
+                return job
+        return None
+
+    def _enqueue_runner_job_locked(
+        self,
+        agent: ManagedAgent,
+        action: RunnerJobAction,
+        *,
+        target_room_id: Optional[str] = None,
+    ) -> RunnerJob:
+        pending = self._pending_runner_job(agent.id, action)
+        if pending is not None:
+            return pending
+        job = RunnerJob(
+            runner_id=agent.runner_id,
+            managed_agent_id=agent.id,
+            action=action,
+            agent_name=agent.name,
+            harness=agent.harness,
+            room_id=agent.room_id,
+            target_room_id=target_room_id,
+        )
+        self.runner_jobs[job.id] = job
+        self._persist_runner_job(job)
+        self._runner_job_events.setdefault(agent.runner_id, asyncio.Event()).set()
+        return job
+
+    async def create_managed_agent(
+        self,
+        *,
+        name: str,
+        harness: Harness,
+        room_id: str,
+        runner_id: str,
+        tenant_id: Optional[str] = None,
+    ) -> tuple[ManagedAgent, RunnerJob]:
+        async with self._lock:
+            runner = self.runners.get(runner_id)
+            if not runner or runner.status == RunnerStatus.REVOKED:
+                raise ValueError("Runner not found or revoked")
+            if (
+                runner.status != RunnerStatus.ONLINE
+                or self._runner_stale(runner)
+            ):
+                runner.status = RunnerStatus.STALE
+                self._persist_runner(runner)
+                raise ValueError("Runner is not online")
+            room = self.rooms.get(room_id)
+            if not room:
+                raise ValueError("Room not found")
+            if tenant_id is not None and runner.tenant_id != tenant_id:
+                raise ValueError("Runner is not in this organization")
+            if (
+                runner.tenant_id is not None
+                and room.tenant_id is not None
+                and runner.tenant_id != room.tenant_id
+            ):
+                raise ValueError("Runner and room belong to different organizations")
+            normalized_name = (name or "").strip().casefold()
+            if any(
+                existing.deleted_at is None
+                and existing.room_id == room_id
+                and existing.name.strip().casefold() == normalized_name
+                for existing in self.managed_agents.values()
+            ):
+                raise ValueError(
+                    "A managed agent with this name already exists in the room"
+                )
+            agent = ManagedAgent(
+                name=scrub_secret_text(name or "", max_length=120).strip(),
+                harness=harness,
+                room_id=room_id,
+                runner_id=runner_id,
+                tenant_id=tenant_id or runner.tenant_id or room.tenant_id,
+            )
+            self.managed_agents[agent.id] = agent
+            self._persist_managed_agent(agent)
+            job = self._enqueue_runner_job_locked(agent, RunnerJobAction.START)
+        await self.audit(
+            "managed_agent.create",
+            actor=agent.name,
+            room_id=room_id,
+            resource_type="managed_agent",
+            resource_id=agent.id,
+            detail={
+                "runner_id": runner_id,
+                "harness": agent.harness.value,
+                "job_id": job.id,
+            },
+        )
+        return agent, job
+
+    async def get_managed_agent(
+        self, agent_id: str, *, include_deleted: bool = True
+    ) -> Optional[ManagedAgent]:
+        agent = self.managed_agents.get(agent_id)
+        if agent and not include_deleted and agent.deleted_at is not None:
+            return None
+        return agent
+
+    async def list_managed_agents(
+        self,
+        *,
+        tenant_id: Optional[str] = None,
+        include_deleted: bool = False,
+    ) -> list[ManagedAgent]:
+        items = list(self.managed_agents.values())
+        if tenant_id is not None:
+            items = [item for item in items if item.tenant_id == tenant_id]
+        if not include_deleted:
+            items = [item for item in items if item.deleted_at is None]
+        return sorted(items, key=lambda item: item.created_at)
+
+    async def action_managed_agent(
+        self,
+        agent_id: str,
+        action: RunnerJobAction,
+        *,
+        target_room_id: Optional[str] = None,
+    ) -> tuple[ManagedAgent, Optional[RunnerJob]]:
+        async with self._lock:
+            agent = self.managed_agents.get(agent_id)
+            if not agent:
+                raise KeyError("Managed agent not found")
+            if agent.deleted_at is not None and action != RunnerJobAction.DELETE:
+                raise ValueError("Managed agent is deleted")
+            pending = self._pending_runner_job(agent.id, action)
+            if pending is not None:
+                return agent, pending
+
+            if action == RunnerJobAction.START:
+                if agent.status == ManagedAgentStatus.RUNNING:
+                    return agent, None
+                agent.status = ManagedAgentStatus.STARTING
+            elif action == RunnerJobAction.STOP:
+                if agent.status == ManagedAgentStatus.STOPPED:
+                    return agent, None
+                agent.status = ManagedAgentStatus.STOPPING
+            elif action == RunnerJobAction.RESTART:
+                agent.status = ManagedAgentStatus.RESTARTING
+            elif action == RunnerJobAction.MOVE:
+                if not (target_room_id or "").strip():
+                    raise ValueError("target_room_id is required for move")
+                agent.status = ManagedAgentStatus.RESTARTING
+            elif action == RunnerJobAction.DELETE:
+                agent.status = ManagedAgentStatus.DELETING
+            else:  # pragma: no cover - enum protects this boundary
+                raise ValueError("Unsupported managed-agent action")
+
+            # A newer lifecycle intent supersedes any job that has not already
+            # completed. A runner completing an old claim then receives the
+            # cancellation idempotently instead of resurrecting the seat.
+            for existing in self.runner_jobs.values():
+                if (
+                    existing.managed_agent_id == agent.id
+                    and existing.status
+                    in {RunnerJobStatus.QUEUED, RunnerJobStatus.CLAIMED}
+                ):
+                    existing.status = RunnerJobStatus.CANCELLED
+                    existing.completed_at = utcnow()
+                    existing.error = f"Superseded by {action.value}"
+                    self._persist_runner_job(existing)
+
+            agent.last_error = None
+            agent.updated_at = utcnow()
+            self._persist_managed_agent(agent)
+            job = self._enqueue_runner_job_locked(
+                agent,
+                action,
+                target_room_id=(target_room_id or "").strip() or None,
+            )
+
+        await self.audit(
+            f"managed_agent.{action.value}",
+            actor=agent.name,
+            room_id=agent.room_id,
+            resource_type="managed_agent",
+            resource_id=agent.id,
+            detail={
+                "runner_id": agent.runner_id,
+                "job_id": job.id,
+                "target_room_id": target_room_id,
+            },
+        )
+        return agent, job
+
+    async def move_managed_agent(
+        self, agent_id: str, room_id: str
+    ) -> tuple[ManagedAgent, Optional[RunnerJob]]:
+        target = (room_id or "").strip()
+        if not target:
+            raise ValueError("room_id is required")
+        async with self._lock:
+            agent = self.managed_agents.get(agent_id)
+            if not agent:
+                raise KeyError("Managed agent not found")
+            if agent.deleted_at is not None:
+                raise ValueError("Managed agent is deleted")
+            if agent.room_id == target:
+                raise ValueError("Agent is already in that room")
+            room = self.rooms.get(target)
+            if not room:
+                raise ValueError("Room not found")
+            if room.status == RoomStatus.ARCHIVED:
+                raise ValueError("Cannot move an agent into an archived room")
+            normalized_name = (agent.name or "").strip().casefold()
+            if any(
+                existing.deleted_at is None
+                and existing.id != agent.id
+                and existing.room_id == target
+                and existing.name.strip().casefold() == normalized_name
+                for existing in self.managed_agents.values()
+            ):
+                raise ValueError(
+                    "A managed agent with this name already exists in the room"
+                )
+        agent, job = await self.action_managed_agent(
+            agent_id, RunnerJobAction.MOVE, target_room_id=target
+        )
+        return agent, job
+
+    async def list_runner_jobs(
+        self,
+        runner_id: str,
+        *,
+        status: Optional[RunnerJobStatus] = None,
+    ) -> list[RunnerJob]:
+        jobs = [
+            job for job in self.runner_jobs.values() if job.runner_id == runner_id
+        ]
+        if status is not None:
+            jobs = [job for job in jobs if job.status == status]
+        return sorted(jobs, key=lambda item: item.created_at)
+
+    async def wait_for_runner_job(
+        self, runner_id: str, *, timeout: float = 25.0
+    ) -> Optional[RunnerJob]:
+        await self.heartbeat_runner(runner_id)
+        timeout = max(0.0, min(float(timeout), 30.0))
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        event = self._runner_job_events.setdefault(runner_id, asyncio.Event())
+        while True:
+            queued = await self.list_runner_jobs(
+                runner_id, status=RunnerJobStatus.QUEUED
+            )
+            if queued:
+                return queued[0]
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                return None
+            event.clear()
+            # Re-check after clear to avoid dropping a set between list and clear.
+            queued = await self.list_runner_jobs(
+                runner_id, status=RunnerJobStatus.QUEUED
+            )
+            if queued:
+                return queued[0]
+            try:
+                await asyncio.wait_for(event.wait(), timeout=remaining)
+            except asyncio.TimeoutError:
+                return None
+
+    async def claim_runner_job(
+        self, runner_id: str, job_id: str
+    ) -> tuple[RunnerJob, Optional[str]]:
+        """Atomically claim one job and return a launch token at most once."""
+        token: Optional[str] = None
+        key_record: Optional[dict[str, Any]] = None
+        async with self._lock:
+            current = self.runner_jobs.get(job_id)
+            if not current or current.runner_id != runner_id:
+                raise KeyError("Runner job not found")
+            if current.status != RunnerJobStatus.QUEUED:
+                return current, None
+            agent = self.managed_agents.get(current.managed_agent_id)
+            if not agent or agent.runner_id != runner_id:
+                raise KeyError("Managed agent not found")
+
+            claimed = current.model_copy(deep=True)
+            claimed.status = RunnerJobStatus.CLAIMED
+            claimed.claimed_at = utcnow()
+            updated_agent = agent.model_copy(deep=True)
+            if claimed.action in {
+                RunnerJobAction.START,
+                RunnerJobAction.RESTART,
+                RunnerJobAction.MOVE,
+            }:
+                key_room_id = agent.room_id
+                if (
+                    claimed.action == RunnerJobAction.MOVE
+                    and (claimed.target_room_id or "").strip()
+                ):
+                    key_room_id = str(claimed.target_room_id).strip()
+                token, key_record = self._new_api_key_record(
+                    name=agent.name,
+                    scopes=[SCOPE_READ, SCOPE_WRITE, SCOPE_TOOLS],
+                    role="contributor",
+                    device_label=f"managed:{agent.harness.value}",
+                    metadata={
+                        "managed_agent_id": agent.id,
+                        "room_id": key_room_id,
+                        "runner_id": runner_id,
+                        "tenant_id": agent.tenant_id,
+                        "identity_type": "managed_agent",
+                        "identity": {
+                            "name": agent.name,
+                            "harness": agent.harness.value,
+                            "room_id": key_room_id,
+                            "managed_agent_id": agent.id,
+                        },
+                    },
+                )
+                if (
+                    updated_agent.active_key_id
+                    and updated_agent.active_key_id
+                    not in updated_agent.retiring_key_ids
+                ):
+                    updated_agent.retiring_key_ids.append(
+                        updated_agent.active_key_id
+                    )
+                updated_agent.active_key_id = key_record["id"]
+                updated_agent.updated_at = utcnow()
+
+            if self._db and hasattr(self._db, "claim_runner_job"):
+                won = self._db.claim_runner_job(
+                    claimed,
+                    key_record=key_record,
+                    agent=updated_agent,
+                )
+                if not won:
+                    loaded = self._db.load_all()
+                    stored = (loaded.get("runner_jobs") or {}).get(job_id)
+                    if stored is not None:
+                        self.runner_jobs[job_id] = stored
+                    refreshed_agent = (loaded.get("managed_agents") or {}).get(
+                        agent.id
+                    )
+                    if refreshed_agent is not None:
+                        self.managed_agents[agent.id] = refreshed_agent
+                    return stored or current, None
+            else:
+                if key_record is not None:
+                    self._save_api_key_record(key_record)
+                self._persist_runner_job(claimed)
+                self._persist_managed_agent(updated_agent)
+
+            self.runner_jobs[job_id] = claimed
+            self.managed_agents[agent.id] = updated_agent
+
+        if key_record is not None:
+            await self.audit(
+                "api_key.create",
+                actor=updated_agent.name,
+                room_id=updated_agent.room_id,
+                resource_type="api_key",
+                resource_id=key_record["id"],
+                detail={
+                    "scopes": key_record["scopes"],
+                    "managed_agent_id": updated_agent.id,
+                },
+            )
+        await self.audit(
+            "runner_job.claim",
+            actor=runner_id,
+            room_id=updated_agent.room_id,
+            resource_type="runner_job",
+            resource_id=claimed.id,
+            detail={
+                "action": claimed.action.value,
+                "managed_agent_id": claimed.managed_agent_id,
+            },
+        )
+        return claimed, token
+
+    async def complete_runner_job(
+        self,
+        runner_id: str,
+        job_id: str,
+        *,
+        success: bool,
+        result: Optional[dict[str, Any]] = None,
+        error: Optional[str] = None,
+    ) -> RunnerJob:
+        revoke_key_ids: list[str] = []
+        async with self._lock:
+            job = self.runner_jobs.get(job_id)
+            if not job or job.runner_id != runner_id:
+                raise KeyError("Runner job not found")
+            if job.status in {
+                RunnerJobStatus.COMPLETED,
+                RunnerJobStatus.FAILED,
+                RunnerJobStatus.CANCELLED,
+            }:
+                return job
+            if job.status != RunnerJobStatus.CLAIMED:
+                raise ValueError("Runner job must be claimed before completion")
+            agent = self.managed_agents.get(job.managed_agent_id)
+            if not agent:
+                raise KeyError("Managed agent not found")
+
+            job.status = (
+                RunnerJobStatus.COMPLETED if success else RunnerJobStatus.FAILED
+            )
+            job.completed_at = utcnow()
+            job.result = scrub_secrets(result or {})
+            job.error = (
+                scrub_secret_text(error or "", max_length=1000) or None
+            )
+
+            if success:
+                if job.action in {
+                    RunnerJobAction.START,
+                    RunnerJobAction.RESTART,
+                    RunnerJobAction.MOVE,
+                }:
+                    agent.status = ManagedAgentStatus.RUNNING
+                    participant_id = (result or {}).get("participant_id")
+                    if isinstance(participant_id, str) and participant_id.strip():
+                        agent.participant_id = participant_id.strip()[:128]
+                    if job.action == RunnerJobAction.MOVE:
+                        new_room = (job.target_room_id or "").strip() or (
+                            (result or {}).get("room_id")
+                        )
+                        if isinstance(new_room, str) and new_room.strip():
+                            agent.room_id = new_room.strip()[:128]
+                    revoke_key_ids.extend(agent.retiring_key_ids)
+                    agent.retiring_key_ids = []
+                elif job.action == RunnerJobAction.STOP:
+                    agent.status = ManagedAgentStatus.STOPPED
+                    if agent.active_key_id:
+                        revoke_key_ids.append(agent.active_key_id)
+                    revoke_key_ids.extend(agent.retiring_key_ids)
+                    agent.active_key_id = None
+                    agent.retiring_key_ids = []
+                elif job.action == RunnerJobAction.DELETE:
+                    agent.status = ManagedAgentStatus.DELETED
+                    agent.deleted_at = agent.deleted_at or utcnow()
+                    if agent.active_key_id:
+                        revoke_key_ids.append(agent.active_key_id)
+                    revoke_key_ids.extend(agent.retiring_key_ids)
+                    agent.active_key_id = None
+                    agent.retiring_key_ids = []
+                agent.last_error = None
+            else:
+                agent.status = ManagedAgentStatus.ERROR
+                agent.last_error = job.error or "Runner job failed"
+                if job.action in {
+                    RunnerJobAction.START,
+                    RunnerJobAction.RESTART,
+                    RunnerJobAction.MOVE,
+                    RunnerJobAction.DELETE,
+                }:
+                    if agent.active_key_id:
+                        revoke_key_ids.append(agent.active_key_id)
+                    revoke_key_ids.extend(agent.retiring_key_ids)
+                    agent.active_key_id = None
+                    agent.retiring_key_ids = []
+                if job.action == RunnerJobAction.DELETE:
+                    agent.deleted_at = None
+            agent.updated_at = utcnow()
+            self._persist_runner_job(job)
+            self._persist_managed_agent(agent)
+
+        for key_id in set(revoke_key_ids):
+            await self.revoke_api_key(key_id)
+        await self.audit(
+            "runner_job.complete",
+            actor=runner_id,
+            room_id=agent.room_id,
+            resource_type="runner_job",
+            resource_id=job.id,
+            outcome="ok" if success else "error",
+            detail={
+                "action": job.action.value,
+                "managed_agent_id": agent.id,
+                "success": success,
+                "error": job.error,
+            },
+        )
+        return job
+
+    async def append_runner_log(
+        self,
+        *,
+        runner_id: str,
+        managed_agent_id: str,
+        level: str,
+        message: str,
+    ) -> RunnerLogEntry:
+        agent = self.managed_agents.get(managed_agent_id)
+        if not agent or agent.runner_id != runner_id:
+            raise KeyError("Managed agent not found")
+        normalized_level = (
+            level if level in {"debug", "info", "warning", "error"} else "info"
+        )
+        entry = RunnerLogEntry(
+            runner_id=runner_id,
+            managed_agent_id=managed_agent_id,
+            level=normalized_level,  # type: ignore[arg-type]
+            message=scrub_secret_text(message, max_length=4000),
+        )
+        async with self._lock:
+            now = utcnow().timestamp()
+            window = self._runner_log_windows[runner_id]
+            cutoff = now - self.RUNNER_LOG_RATE_WINDOW_SECONDS
+            while window and window[0] <= cutoff:
+                window.popleft()
+            if len(window) >= self.RUNNER_LOG_RATE_LIMIT:
+                raise ValueError("Runner log rate limit exceeded")
+            window.append(now)
+            if self._db and hasattr(self._db, "save_runner_log"):
+                self._db.save_runner_log(entry, keep=self.RUNNER_LOG_LIMIT)
+            else:
+                rows = self.runner_logs[managed_agent_id]
+                rows.append(entry)
+                if len(rows) > self.RUNNER_LOG_LIMIT:
+                    del rows[: len(rows) - self.RUNNER_LOG_LIMIT]
+        return entry
+
+    async def list_runner_logs(
+        self, managed_agent_id: str, *, limit: int = 200
+    ) -> list[RunnerLogEntry]:
+        limit = max(1, min(int(limit), self.RUNNER_LOG_LIMIT))
+        if self._db and hasattr(self._db, "list_runner_logs"):
+            return self._db.list_runner_logs(managed_agent_id, limit=limit)
+        return list(self.runner_logs.get(managed_agent_id, []))[-limit:]
 
     # ── Web Push subscriptions ─────────────────────────────────────────────
 
@@ -1316,7 +2226,8 @@ class Store:
                 idx = next(i for i, m in enumerate(items) if m.id == since)
                 items = items[idx + 1 :]
             except StopIteration:
-                pass
+                # Stale/unknown cursor — do not replay full transcript
+                items = []
         if for_participant:
             items = [
                 m

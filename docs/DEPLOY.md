@@ -73,8 +73,11 @@ On `git push origin v0.1.2`:
 docker pull ghcr.io/mrdulasolutions/open-gateway:0.1.2
 docker run --rm -p 8765:8765 \
   -e OPENGATEWAY_AUTH_TOKEN="$OPENGATEWAY_AUTH_TOKEN" \
+  -v og-data:/data \
   ghcr.io/mrdulasolutions/open-gateway:0.1.2
 ```
+
+The named volume keeps SQLite (`/data/state.db`) and uploads (`/data/files`) across container replacement. `--rm` removes the container, not `og-data`.
 
 ```bash
 uv tool install opengateways==0.1.2
@@ -119,5 +122,5 @@ Sensitive fields (`token`, `password`, …) are redacted. See [SECURITY.md](../S
 - [ ] Strong `OPENGATEWAY_AUTH_TOKEN`
 - [ ] `OPENGATEWAY_AUDIT=true` (or public mode)
 - [ ] HTTPS (Fly/Railway terminate TLS)
-- [ ] Volume for `/data` if you care about history
+- [ ] Volume mounted at `/data` (SQLite and file blobs). Postgres deploys still need that volume for uploads and workspace files
 - [ ] Prefer Tailscale / private network over open Funnel when possible

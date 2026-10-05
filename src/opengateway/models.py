@@ -7,7 +7,7 @@ from enum import Enum
 from typing import Any, Literal, Optional
 from uuid import uuid4
 
-from pydantic import BaseModel, Field, computed_field
+from pydantic import BaseModel, ConfigDict, Field, computed_field
 
 
 def utcnow() -> datetime:
@@ -86,6 +86,127 @@ class Harness(str, Enum):
     MCP = "mcp"
     HUMAN = "human"
     OTHER = "other"
+
+
+class RunnerStatus(str, Enum):
+    ONLINE = "online"
+    STALE = "stale"
+    REVOKED = "revoked"
+
+
+class ManagedAgentStatus(str, Enum):
+    STARTING = "starting"
+    RUNNING = "running"
+    STOPPING = "stopping"
+    STOPPED = "stopped"
+    RESTARTING = "restarting"
+    DELETING = "deleting"
+    DELETED = "deleted"
+    ERROR = "error"
+
+
+class RunnerJobAction(str, Enum):
+    START = "start"
+    STOP = "stop"
+    RESTART = "restart"
+    MOVE = "move"
+    DELETE = "delete"
+
+
+class RunnerJobStatus(str, Enum):
+    QUEUED = "queued"
+    CLAIMED = "claimed"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class RunnerCapability(BaseModel):
+    """One advertised runner feature.
+
+    The wire API also accepts a capability dictionary so newer runners can add
+    feature flags without making older gateways reject their heartbeat.
+    """
+
+    name: str = Field(min_length=1, max_length=80)
+    available: bool = True
+    version: Optional[str] = Field(default=None, max_length=80)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class Runner(BaseModel):
+    id: str = Field(default_factory=new_id)
+    name: str = Field(min_length=1, max_length=120)
+    hostname: str = Field(default="", max_length=255)
+    platform: str = Field(default="", max_length=120)
+    version: str = Field(default="", max_length=80)
+    capabilities: dict[str, Any] = Field(default_factory=dict)
+    status: RunnerStatus = RunnerStatus.ONLINE
+    tenant_id: Optional[str] = None
+    api_key_id: Optional[str] = None
+    created_at: datetime = Field(default_factory=utcnow)
+    last_seen_at: datetime = Field(default_factory=utcnow)
+    revoked_at: Optional[datetime] = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ManagedAgent(BaseModel):
+    id: str = Field(default_factory=new_id)
+    name: str = Field(min_length=1, max_length=120)
+    harness: Harness
+    room_id: str
+    runner_id: str
+    status: ManagedAgentStatus = ManagedAgentStatus.STARTING
+    tenant_id: Optional[str] = None
+    participant_id: Optional[str] = None
+    active_key_id: Optional[str] = None
+    retiring_key_ids: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=utcnow)
+    updated_at: datetime = Field(default_factory=utcnow)
+    deleted_at: Optional[datetime] = None
+    last_error: Optional[str] = Field(default=None, max_length=1000)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class RunnerJob(BaseModel):
+    """A typed runner instruction. It intentionally has no shell-like fields."""
+
+    id: str = Field(default_factory=new_id)
+    runner_id: str
+    managed_agent_id: str
+    action: RunnerJobAction
+    status: RunnerJobStatus = RunnerJobStatus.QUEUED
+    agent_name: str
+    harness: Harness
+    room_id: str
+    target_room_id: Optional[str] = None
+    created_at: datetime = Field(default_factory=utcnow)
+    claimed_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    result: dict[str, Any] = Field(default_factory=dict)
+    error: Optional[str] = Field(default=None, max_length=1000)
+
+
+class RunnerPairCode(BaseModel):
+    """Persisted pairing record. Only the digest, never the raw code, is stored."""
+
+    id: str = Field(default_factory=new_id)
+    code_hash: str
+    name: str
+    tenant_id: Optional[str] = None
+    created_by: str = "admin"
+    created_at: datetime = Field(default_factory=utcnow)
+    expires_at: datetime
+    used_at: Optional[datetime] = None
+
+
+class RunnerLogEntry(BaseModel):
+    id: str = Field(default_factory=new_id)
+    runner_id: str
+    managed_agent_id: str
+    level: Literal["debug", "info", "warning", "error"] = "info"
+    message: str = Field(max_length=4000)
+    created_at: datetime = Field(default_factory=utcnow)
 
 
 class ParticipantStatus(str, Enum):
@@ -354,6 +475,62 @@ class CreateForkRequest(BaseModel):
     # Auto-join creator into the forked room
     join_creator: bool = True
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class PairRunnerRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(default="runner", min_length=1, max_length=120)
+
+
+class RedeemRunnerRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    code: str = Field(min_length=6, max_length=64)
+    name: str = Field(default="", max_length=120)
+    hostname: str = Field(default="", max_length=255)
+    platform: str = Field(default="", max_length=120)
+    version: str = Field(default="", max_length=80)
+    capabilities: dict[str, Any] = Field(default_factory=dict)
+
+
+class RunnerHeartbeatRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    version: Optional[str] = Field(default=None, max_length=80)
+    capabilities: Optional[dict[str, Any]] = None
+    agent_statuses: dict[str, ManagedAgentStatus] = Field(default_factory=dict)
+
+
+class CreateManagedAgentRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=120)
+    harness: Literal["claude-code", "grok", "hermes"]
+    room_id: str = Field(min_length=1, max_length=128)
+    runner_id: str = Field(min_length=1, max_length=128)
+
+
+class MoveManagedAgentRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    room_id: str = Field(min_length=1, max_length=128)
+
+
+class CompleteRunnerJobRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    success: bool = True
+    result: dict[str, Any] = Field(default_factory=dict)
+    error: Optional[str] = Field(default=None, max_length=4000)
+
+
+class RunnerLogInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    managed_agent_id: str = Field(min_length=1, max_length=128)
+    level: Literal["debug", "info", "warning", "error"] = "info"
+    message: str = Field(min_length=1, max_length=16000)
 
 
 class GatewayRecord(BaseModel):

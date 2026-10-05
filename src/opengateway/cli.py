@@ -20,6 +20,12 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 console = Console()
+runner_app = typer.Typer(
+    name="runner",
+    help="Connect and run a local managed-agent worker.",
+    no_args_is_help=True,
+)
+app.add_typer(runner_app, name="runner")
 
 
 def _base_url(url: Optional[str] = None) -> str:
@@ -84,6 +90,11 @@ def serve(
         None,
         help="SQLite path for room persistence (default: ~/.opengateway/state.db). "
         "Use 'none' for memory-only.",
+    ),
+    no_runner: bool = typer.Option(
+        False,
+        "--no-runner",
+        help="Do not start the embedded managed-agent runner on loopback.",
     ),
 ) -> None:
     """Start the OpenGateway HTTP server (ACP + collaboration API).
@@ -188,6 +199,35 @@ def serve(
     console.print(f"  Web UI:      {cfg.base_url}/ui/")
     console.print("  Gateways:   GET /v1/gateways")
     console.print("  Search:     GET /v1/search?q=")
+    from opengateway.runner import embedded_runner_allowed
+
+    local_execution = embedded_runner_allowed(cfg)
+    if local_execution:
+        try:
+            from opengateway.seat_runtime import start_seat_supervisor
+
+            start_seat_supervisor(base_url=cfg.base_url, auth_token=cfg.auth_token or "")
+            console.print("  [dim]Seat supervisor: restored registered IM seats (if any)[/]")
+        except Exception:
+            pass
+        if not no_runner:
+            try:
+                from opengateway.runner import start_embedded_runner
+
+                start_embedded_runner(
+                    hub_url=cfg.base_url,
+                    auth_token=cfg.auth_token or "",
+                )
+                console.print("  [dim]Runner: embedded local worker enabled[/]")
+            except Exception as exc:
+                console.print(f"  [yellow]Runner could not start:[/] {exc}")
+        else:
+            console.print("  [dim]Runner: disabled by --no-runner[/]")
+    elif cfg.mode.value == "public":
+        console.print(
+            "  [dim]Runner: hub-only mode; connect a worker with "
+            "`opengateways runner connect`[/]"
+        )
     uvicorn.run(
         "opengateway.server:build_app",
         factory=True,
@@ -1236,6 +1276,128 @@ def im_cmd(
     code = run_im(cfg)
     if code:
         raise typer.Exit(code)
+
+
+@runner_app.command("connect")
+def runner_connect(
+    url: str = typer.Option(..., "--url", help="Public or local hub URL"),
+    code: str = typer.Option(..., "--code", help="One-time runner pairing code"),
+    name: str = typer.Option(..., "--name", help="Name shown for this runner"),
+    no_service: bool = typer.Option(
+        False,
+        "--no-service",
+        help="Save the pairing only; run `opengateways runner start` yourself",
+    ),
+) -> None:
+    """Pair this computer and start its managed runner in the background."""
+    from opengateway.runner import RunnerError, connect_runner
+
+    try:
+        result = connect_runner(url=url, code=code, name=name)
+    except (RunnerError, httpx.HTTPError) as exc:
+        console.print(f"[red]runner connect failed:[/] {exc}")
+        raise typer.Exit(1) from exc
+    console.print(
+        f"[green]Runner connected[/] {result.get('name')} "
+        f"({result.get('runner_id')}) · {result.get('hub_url')}"
+    )
+    if no_service:
+        console.print(
+            "[dim]Credentials saved privately. Start with: "
+            "opengateways runner start[/]"
+        )
+        return
+    from opengateway.runner_service import install_runner_service
+
+    try:
+        service = install_runner_service()
+    except (RuntimeError, OSError) as exc:
+        console.print(f"[red]Background runner install failed:[/] {exc}")
+        console.print(
+            "[yellow]Pairing is saved. Run `opengateways runner start` now, "
+            "or reconnect with `--no-service` for foreground mode.[/]"
+        )
+        raise typer.Exit(1) from exc
+    console.print(
+        f"[green]Runner is active in the background[/] · logs: {service.get('logs')}"
+    )
+
+
+@runner_app.command("start")
+def runner_start() -> None:
+    """Run the connected worker in the foreground until Ctrl-C."""
+    from opengateway.runner import RunnerError, start_connected_runner
+
+    try:
+        console.print("[green]Managed runner starting[/] · Ctrl-C to stop")
+        code = start_connected_runner()
+    except KeyboardInterrupt:
+        code = 0
+    except RunnerError as exc:
+        console.print(f"[red]runner start failed:[/] {exc}")
+        raise typer.Exit(1) from exc
+    if code:
+        raise typer.Exit(code)
+
+
+@runner_app.command("status")
+def runner_status_cmd(
+    json_out: bool = typer.Option(False, "--json", help="Print machine-readable JSON"),
+) -> None:
+    """Show local runner connectivity, process state, and harness readiness."""
+    from opengateway.runner import runner_status
+
+    from opengateway.runner_service import runner_service_status
+
+    result = runner_status(include_probes=True)
+    result["service"] = runner_service_status()
+    if json_out:
+        console.print_json(data=result)
+        return
+    if not result.get("connected"):
+        console.print("[yellow]Runner is not connected[/]")
+        console.print(
+            "[dim]Use: opengateways runner connect --url HUB --code CODE --name NAME[/]"
+        )
+        return
+    alive = bool(result.get("process_alive"))
+    service_running = bool((result.get("service") or {}).get("running"))
+    marker = (
+        "[green]running[/]"
+        if alive or service_running
+        else f"[yellow]{result.get('state', 'stopped')}[/]"
+    )
+    console.print(
+        f"[bold]Runner[/] {result.get('name')} ({result.get('runner_id')}) · {marker}"
+    )
+    console.print(f"  Hub: {result.get('hub_url')}")
+    service = result.get("service") or {}
+    console.print(
+        f"  Background service: "
+        f"{'[green]active[/]' if service_running else '[yellow]inactive[/]'}"
+    )
+    for probe in result.get("harnesses") or []:
+        color = "green" if probe.get("status") == "ready" else "yellow"
+        console.print(
+            f"  [{color}]{probe.get('harness')}[/]: {probe.get('detail')}"
+        )
+        if probe.get("status") != "ready":
+            console.print(f"    [dim]{probe.get('setup_instructions')}[/]")
+
+
+@runner_app.command("disconnect")
+def runner_disconnect() -> None:
+    """Remove the local runner identity and all saved runner credentials."""
+    from opengateway.runner import RunnerError, disconnect_runner
+    from opengateway.runner_service import uninstall_runner_service
+
+    try:
+        uninstall_runner_service()
+        disconnect_runner()
+    except (RunnerError, httpx.HTTPError, RuntimeError, OSError) as exc:
+        console.print(f"[red]runner disconnect failed:[/] {exc}")
+        raise typer.Exit(1) from exc
+    console.print("[green]Runner disconnected; local credentials removed[/]")
 
 
 im_svc_app = typer.Typer(

@@ -9,6 +9,7 @@ import {
   defaultAgentName,
   envBlock,
   harnessConfigSnippet,
+  hideRawToken,
   imSeatSnippet,
   mcpEnvSnippet,
   DOCS_CONNECT,
@@ -34,12 +35,16 @@ export function AgentInstallPanel({
   const [copied, setCopied] = useState<string | null>(null);
 
   const name = defaultName || defaultAgentName(harness);
-  const text = useMemo(() => {
+  const secretText = useMemo(() => {
     const opts = { hubUrl, token, harness, name, room: roomHint };
     if (tab === "env") return mcpEnvSnippet(opts);
     if (tab === "im") return imSeatSnippet(opts);
     return harnessConfigSnippet(opts);
   }, [hubUrl, token, harness, name, roomHint, tab]);
+  const visibleText = useMemo(
+    () => hideRawToken(secretText, token),
+    [secretText, token]
+  );
 
   const copy = async (key: string, value: string) => {
     await navigator.clipboard.writeText(value);
@@ -48,12 +53,13 @@ export function AgentInstallPanel({
   };
 
   return (
-    <div className="space-y-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-2">
-      <p className="text-[10px] font-semibold text-emerald-900 dark:text-emerald-100">
-        Install for agent — public CLI (no private git)
+    <div className="space-y-2 rounded-lg border border-zinc-200 bg-zinc-50 p-2.5 dark:border-white/10 dark:bg-zinc-950">
+      <p className="text-[10px] font-semibold text-zinc-800 dark:text-zinc-100">
+        Manual compatibility setup
       </p>
       <p className="text-[9px] leading-relaxed text-zinc-600 dark:text-zinc-400">
-        Token shown once. Docs:{" "}
+        The raw key is never rendered. Copy a ready-to-use snippet while this
+        panel is open. Docs:{" "}
         <a
           href={DOCS_CONNECT}
           target="_blank"
@@ -104,25 +110,18 @@ export function AgentInstallPanel({
       </div>
 
       <pre className="max-h-40 overflow-auto rounded bg-zinc-900/90 p-2 font-mono text-[9px] text-zinc-200">
-        {text}
+        {visibleText}
       </pre>
 
       <div className="flex flex-wrap gap-1.5">
         <button
           type="button"
           className="flex flex-1 items-center justify-center gap-1 rounded-lg border border-zinc-200 bg-white px-2 py-1.5 text-[10px] font-semibold dark:border-white/10 dark:bg-zinc-900"
-          onClick={() => void copy("snippet", text)}
+          onClick={() => void copy("snippet", secretText)}
+          aria-label="Copy compatibility snippet including the one-time API key"
         >
           <Copy className="h-3 w-3" />
           {copied === "snippet" ? "Copied" : "Copy snippet"}
-        </button>
-        <button
-          type="button"
-          className="flex flex-1 items-center justify-center gap-1 rounded-lg border border-zinc-200 bg-white px-2 py-1.5 text-[10px] font-semibold dark:border-white/10 dark:bg-zinc-900"
-          onClick={() => void copy("token", token)}
-        >
-          <Shield className="h-3 w-3" />
-          {copied === "token" ? "Copied" : "Copy token only"}
         </button>
         <button
           type="button"
@@ -138,6 +137,15 @@ export function AgentInstallPanel({
           {copied === "env" ? "Copied" : "Copy env only"}
         </button>
       </div>
+      <p
+        className="flex items-center gap-1 text-[9px] text-zinc-500"
+        aria-live="polite"
+      >
+        <Shield className="h-3 w-3" />
+        {copied
+          ? "Copied to your clipboard. It will not be shown again here."
+          : "Compatibility only. Prefer Add Agent for managed launches."}
+      </p>
     </div>
   );
 }

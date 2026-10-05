@@ -6,6 +6,7 @@ import asyncio
 import base64
 import json
 import re
+import shlex
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -28,7 +29,9 @@ from fastapi.staticfiles import StaticFiles
 from sse_starlette.sse import EventSourceResponse
 
 from opengateway import __version__
+from opengateway.dm_visibility import dm_visible_to_participant
 from opengateway.acp_handlers import BUILTIN_AGENTS, dispatch_acp_run
+from opengateway.api_keys import SCOPE_RUNNER
 from opengateway.audit import audit_enabled
 from opengateway.auth import (
     BearerAuthMiddleware,
@@ -38,6 +41,7 @@ from opengateway.auth import (
     record_auth_failure,
 )
 from opengateway.config import GatewayConfig, load_gateway_config, local_ips, network_ui_label
+from opengateway.persistence import files_dir
 from opengateway.redis_bus import try_create_bus
 from opengateway.security import (
     cors_credentials_for_origins,
@@ -47,6 +51,7 @@ from opengateway.security import (
     room_visible_to,
     safe_upload_filename,
     tenant_must_isolate,
+    token_from_request,
     token_from_websocket,
 )
 from opengateway.models import (
@@ -54,8 +59,11 @@ from opengateway.models import (
     AgentsListResponse,
     Artifact,
     Bookmark,
+    CompleteRunnerJobRequest,
     CreateBookmarkRequest,
     CreateForkRequest,
+    CreateManagedAgentRequest,
+    MoveManagedAgentRequest,
     CreateRoomRequest,
     CreateTaskRequest,
     Fork,
@@ -67,7 +75,9 @@ from opengateway.models import (
     MessagePart,
     Participant,
     ParticipantStatus,
+    PairRunnerRequest,
     PostMessageRequest,
+    RedeemRunnerRequest,
     RegisterAgentRequest,
     RegisterGatewayRequest,
     RegisteredAgent,
@@ -77,6 +87,9 @@ from opengateway.models import (
     Run,
     RunCreateRequest,
     RunStatus,
+    RunnerHeartbeatRequest,
+    RunnerJobAction,
+    RunnerLogInput,
     ShareArtifactRequest,
     Task,
     TaskStatus,
@@ -216,6 +229,14 @@ def create_app(
         room = await st.get_room(room_id)
         if not room or not room_visible_to(room, _auth_ctx(request)):
             raise HTTPException(status_code=404, detail="Room not found")
+        api_key = getattr(request.state, "api_key", None)
+        key_meta = api_key.get("metadata") if isinstance(api_key, dict) else {}
+        if not isinstance(key_meta, dict):
+            key_meta = {}
+        bound_room_id = key_meta.get("room_id")
+        if key_meta.get("managed_agent_id") and bound_room_id != room_id:
+            # Hide the existence of rooms outside this managed identity.
+            raise HTTPException(status_code=404, detail="Room not found")
         return room
 
     def _require_admin(request: Request) -> None:
@@ -233,6 +254,97 @@ def create_app(
             if not cfg.require_auth:
                 return
             raise HTTPException(status_code=403, detail="Admin only")
+
+    async def _require_control_admin(request: Request) -> None:
+        """Require an admin and never reinterpret a runner token as open admin."""
+        raw = token_from_request(request)
+        if raw:
+            api_key = getattr(request.state, "api_key", None)
+            if not isinstance(api_key, dict):
+                api_key = await st.verify_api_key(raw)
+            if isinstance(api_key, dict) and SCOPE_RUNNER in (
+                api_key.get("scopes") or []
+            ):
+                raise HTTPException(status_code=403, detail="Admin only")
+        _require_admin(request)
+
+    def _control_tenant_id(request: Request) -> Optional[str]:
+        auth = _auth_ctx(request)
+        return (
+            auth.get("tenant_id")
+            if tenant_must_isolate(auth) or auth.get("tenant_id")
+            else None
+        )
+
+    async def _require_runner(request: Request, runner_id: str) -> dict[str, Any]:
+        """Authenticate a runner token even when normal hub auth is disabled."""
+        raw = token_from_request(request)
+        if not raw:
+            raise HTTPException(
+                status_code=401,
+                detail="Runner bearer token required",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        key = await st.verify_api_key(raw)
+        scopes = key.get("scopes") if isinstance(key, dict) else []
+        metadata = key.get("metadata") if isinstance(key, dict) else {}
+        if not key or SCOPE_RUNNER not in (scopes or []):
+            raise HTTPException(
+                status_code=401,
+                detail="Invalid runner bearer token",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        if not isinstance(metadata, dict) or metadata.get("runner_id") != runner_id:
+            raise HTTPException(
+                status_code=403,
+                detail="Runner token is not bound to this runner_id",
+            )
+        runner = await st.get_runner(runner_id)
+        if not runner or runner.revoked_at is not None:
+            raise HTTPException(status_code=401, detail="Runner is revoked")
+        return key
+
+    def _public_runner(runner: Any) -> dict[str, Any]:
+        out = runner.model_dump(mode="json")
+        out.pop("api_key_id", None)
+        return out
+
+    def _public_managed_agent(agent: Any) -> dict[str, Any]:
+        out = agent.model_dump(mode="json")
+        out.pop("active_key_id", None)
+        out.pop("retiring_key_ids", None)
+        room = st.rooms.get(agent.room_id)
+        if room is not None:
+            out["room_name"] = room.name
+        runner = st.runners.get(agent.runner_id)
+        if runner is not None:
+            out["runner_name"] = runner.name
+        participant = (
+            st.participants.get(agent.participant_id)
+            if agent.participant_id
+            else None
+        )
+        if participant is not None:
+            out["presence"] = getattr(participant, "presence", None)
+            out["last_poll_at"] = (
+                participant.last_poll_at.isoformat()
+                if getattr(participant, "last_poll_at", None)
+                else None
+            )
+        return out
+
+    async def _managed_agent_for_admin(
+        request: Request, agent_id: str, *, include_deleted: bool = True
+    ) -> Any:
+        agent = await st.get_managed_agent(
+            agent_id, include_deleted=include_deleted
+        )
+        tenant_id = _control_tenant_id(request)
+        if not agent or (
+            tenant_id is not None and agent.tenant_id != tenant_id
+        ):
+            raise HTTPException(status_code=404, detail="Managed agent not found")
+        return agent
 
     # ── Health / meta ──────────────────────────────────────────────────────
 
@@ -353,29 +465,68 @@ def create_app(
             "tenant_id": user.get("tenant_id"),
         }
 
+    def _can_manage_invites(request: Request) -> bool:
+        user = getattr(request.state, "user", None)
+        if user and user.get("role") == "admin":
+            return True
+        return getattr(request.state, "auth_kind", None) == "master"
+
+    async def _resolve_invite_tenant(
+        request: Request, explicit: Optional[str]
+    ) -> str:
+        user = getattr(request.state, "user", None)
+        session_tid = user.get("tenant_id") if user else None
+        if (
+            user
+            and user.get("role") == "admin"
+            and explicit
+            and explicit != session_tid
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot manage invites for another tenant",
+            )
+        try:
+            return await st.resolve_invite_tenant_id(
+                explicit=(explicit or "").strip() or None,
+                session_tenant_id=session_tid if user and user.get("role") == "admin" else None,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/v1/auth/invites")
+    async def auth_list_invites(
+        request: Request,
+        tenant_id: Optional[str] = Query(None),
+    ) -> dict[str, Any]:
+        if not _can_manage_invites(request):
+            raise HTTPException(status_code=403, detail="Admin only")
+        tid = await _resolve_invite_tenant(request, tenant_id)
+        invites = await st.list_invites(tid)
+        status = await st.auth_status()
+        return {
+            "invites": invites,
+            "open_registration": bool(status.get("open_registration")),
+        }
+
     @app.post("/v1/auth/invite")
     async def auth_invite(request: Request) -> dict[str, Any]:
-        user = getattr(request.state, "user", None)
-        if not user or user.get("role") != "admin":
-            # Also allow master
-            if getattr(request.state, "auth_kind", None) != "master":
-                raise HTTPException(status_code=403, detail="Admin only")
+        if not _can_manage_invites(request):
+            raise HTTPException(status_code=403, detail="Admin only")
         try:
             body = await request.json()
         except Exception:
             body = {}
         if not isinstance(body, dict):
             body = {}
-        # Session admins may only invite into their own tenant
-        if user and user.get("tenant_id"):
-            tenant_id = user["tenant_id"]
-        else:
-            tenant_id = body.get("tenant_id")
-        if not tenant_id:
-            raise HTTPException(status_code=400, detail="tenant_id required")
+        user = getattr(request.state, "user", None)
+        explicit = body.get("tenant_id")
+        if explicit is not None:
+            explicit = str(explicit)
+        tid = await _resolve_invite_tenant(request, explicit)
         try:
             inv = await st.create_invite(
-                tenant_id=str(tenant_id),
+                tenant_id=tid,
                 created_by=(user or {}).get("email") or "admin",
                 role=str(body.get("role") or "member"),
             )
@@ -559,6 +710,323 @@ def create_app(
             raise HTTPException(status_code=404, detail="Key not found")
         return {"status": "deleted", "id": key_id}
 
+    # ── Managed runners / agents ──────────────────────────────────────────
+
+    @app.get("/v1/runners")
+    async def list_runners(request: Request) -> dict[str, Any]:
+        await _require_control_admin(request)
+        runners = await st.list_runners(tenant_id=_control_tenant_id(request))
+        return {"runners": [_public_runner(runner) for runner in runners]}
+
+    @app.post("/v1/runners/pair")
+    async def pair_runner(
+        request: Request, body: PairRunnerRequest
+    ) -> dict[str, Any]:
+        await _require_control_admin(request)
+        user = getattr(request.state, "user", None) or {}
+        actor = (
+            user.get("email")
+            or user.get("display_name")
+            or getattr(request.state, "auth_kind", None)
+            or "admin"
+        )
+        code, pair = await st.create_runner_pair_code(
+            name=body.name,
+            tenant_id=_control_tenant_id(request),
+            created_by=str(actor),
+        )
+        hub_url = _advertised_hub_url(request)
+        command = (
+            f"opengateways runner connect --url {shlex.quote(hub_url)} "
+            f"--code {shlex.quote(code)} --name {shlex.quote(pair.name)}"
+        )
+        return {
+            "code": code,
+            "expires_at": pair.expires_at.isoformat(),
+            "command": command,
+        }
+
+    @app.delete("/v1/runners/{runner_id}")
+    async def revoke_runner(request: Request, runner_id: str) -> dict[str, str]:
+        await _require_control_admin(request)
+        tenant_id = _control_tenant_id(request)
+        runner = await st.get_runner(runner_id)
+        if not runner or (
+            tenant_id is not None and runner.tenant_id != tenant_id
+        ):
+            raise HTTPException(status_code=404, detail="Runner not found")
+        await st.revoke_runner(runner_id)
+        return {"status": "revoked", "id": runner_id}
+
+    @app.post("/v1/runners/redeem")
+    async def redeem_runner(
+        request: Request, body: RedeemRunnerRequest
+    ) -> dict[str, Any]:
+        ip = client_ip(request)
+        if auth_failures_blocked(ip):
+            raise HTTPException(
+                status_code=429,
+                detail="Too many attempts — wait and retry",
+                headers={"Retry-After": "60"},
+            )
+        redeemed = await st.redeem_runner_pair_code(
+            code=body.code,
+            name=body.name,
+            hostname=body.hostname,
+            platform=body.platform,
+            version=body.version,
+            capabilities=body.capabilities,
+        )
+        if redeemed is None:
+            record_auth_failure(ip)
+            raise HTTPException(
+                status_code=404, detail="Invalid or expired runner pairing code"
+            )
+        clear_auth_failures(ip)
+        runner, token = redeemed
+        return {
+            "runner": _public_runner(runner),
+            "token": token,
+            "hub_url": _advertised_hub_url(request),
+        }
+
+    @app.post("/v1/runners/{runner_id}/heartbeat")
+    async def runner_heartbeat(
+        request: Request,
+        runner_id: str,
+        body: Optional[RunnerHeartbeatRequest] = None,
+    ) -> dict[str, Any]:
+        await _require_runner(request, runner_id)
+        heartbeat = body or RunnerHeartbeatRequest()
+        try:
+            runner = await st.heartbeat_runner(
+                runner_id,
+                version=heartbeat.version,
+                capabilities=heartbeat.capabilities,
+                agent_statuses=heartbeat.agent_statuses,
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {"runner": _public_runner(runner)}
+
+    @app.post("/v1/runners/{runner_id}/disconnect")
+    async def runner_disconnect(
+        request: Request, runner_id: str
+    ) -> dict[str, str]:
+        await _require_runner(request, runner_id)
+        await st.revoke_runner(runner_id)
+        return {"status": "revoked", "id": runner_id}
+
+    @app.get("/v1/runners/{runner_id}/jobs/wait")
+    async def wait_runner_jobs(
+        request: Request,
+        runner_id: str,
+        timeout: float = Query(25.0, ge=0.0, le=30.0),
+    ) -> dict[str, Any]:
+        await _require_runner(request, runner_id)
+        try:
+            job = await st.wait_for_runner_job(runner_id, timeout=timeout)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        job_json = job.model_dump(mode="json") if job else None
+        return {
+            "job": job_json,
+            "jobs": [job_json] if job_json else [],
+            "timed_out": job is None,
+        }
+
+    @app.post("/v1/runners/{runner_id}/jobs/{job_id}/claim")
+    async def claim_runner_job(
+        request: Request, runner_id: str, job_id: str
+    ) -> dict[str, Any]:
+        await _require_runner(request, runner_id)
+        try:
+            job, agent_token = await st.claim_runner_job(runner_id, job_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        response: dict[str, Any] = {
+            "job": job.model_dump(mode="json"),
+            "hub_url": _advertised_hub_url(request),
+        }
+        # Deliberately omit the field on idempotent re-claim. The plaintext
+        # exists only in this first successful claim response.
+        if agent_token:
+            response["agent_token"] = agent_token
+        return response
+
+    @app.post("/v1/runners/{runner_id}/jobs/{job_id}/complete")
+    async def complete_runner_job(
+        request: Request,
+        runner_id: str,
+        job_id: str,
+        body: Optional[CompleteRunnerJobRequest] = None,
+    ) -> dict[str, Any]:
+        await _require_runner(request, runner_id)
+        completion = body or CompleteRunnerJobRequest()
+        try:
+            job = await st.complete_runner_job(
+                runner_id,
+                job_id,
+                success=completion.success,
+                result=completion.result,
+                error=completion.error,
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {"job": job.model_dump(mode="json")}
+
+    @app.post("/v1/runners/{runner_id}/logs")
+    async def append_runner_logs(
+        request: Request, runner_id: str
+    ) -> dict[str, Any]:
+        await _require_runner(request, runner_id)
+        try:
+            raw = await request.json()
+        except Exception:
+            raw = {}
+        candidates: list[Any]
+        if isinstance(raw, list):
+            candidates = raw
+        elif isinstance(raw, dict) and isinstance(raw.get("entries"), list):
+            candidates = raw["entries"]
+        elif isinstance(raw, dict):
+            candidates = [raw]
+        else:
+            candidates = []
+        if not candidates:
+            raise HTTPException(status_code=422, detail="At least one log entry required")
+        if len(candidates) > 100:
+            raise HTTPException(status_code=413, detail="At most 100 log entries per request")
+        saved: list[dict[str, Any]] = []
+        for candidate in candidates:
+            try:
+                entry_in = RunnerLogInput.model_validate(candidate)
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=422, detail="Invalid runner log entry"
+                ) from exc
+            try:
+                entry = await st.append_runner_log(
+                    runner_id=runner_id,
+                    managed_agent_id=entry_in.managed_agent_id,
+                    level=entry_in.level,
+                    message=entry_in.message,
+                )
+            except KeyError as exc:
+                raise HTTPException(status_code=404, detail=str(exc)) from exc
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=429,
+                    detail=str(exc),
+                    headers={"Retry-After": "60"},
+                ) from exc
+            saved.append(entry.model_dump(mode="json"))
+        return {"accepted": len(saved), "logs": saved}
+
+    @app.get("/v1/managed-agents")
+    async def list_managed_agents(request: Request) -> dict[str, Any]:
+        await _require_control_admin(request)
+        agents = await st.list_managed_agents(
+            tenant_id=_control_tenant_id(request)
+        )
+        return {
+            "agents": [_public_managed_agent(agent) for agent in agents]
+        }
+
+    @app.post("/v1/managed-agents")
+    async def create_managed_agent(
+        request: Request, body: CreateManagedAgentRequest
+    ) -> dict[str, Any]:
+        await _require_control_admin(request)
+        await _require_room(request, body.room_id)
+        try:
+            agent, job = await st.create_managed_agent(
+                name=body.name,
+                harness=body.harness,
+                room_id=body.room_id,
+                runner_id=body.runner_id,
+                tenant_id=_control_tenant_id(request),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {
+            "agent": _public_managed_agent(agent),
+            "job": job.model_dump(mode="json"),
+        }
+
+    @app.post("/v1/managed-agents/{agent_id}/actions/move")
+    async def move_managed_agent(
+        request: Request, agent_id: str, body: MoveManagedAgentRequest
+    ) -> dict[str, Any]:
+        await _require_control_admin(request)
+        await _managed_agent_for_admin(request, agent_id, include_deleted=False)
+        try:
+            agent, job = await st.move_managed_agent(agent_id, body.room_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {
+            "agent": _public_managed_agent(agent),
+            "job": job.model_dump(mode="json") if job else None,
+        }
+
+    @app.post("/v1/managed-agents/{agent_id}/actions/{action}")
+    async def managed_agent_action(
+        request: Request,
+        agent_id: str,
+        action: RunnerJobAction,
+    ) -> dict[str, Any]:
+        await _require_control_admin(request)
+        await _managed_agent_for_admin(request, agent_id, include_deleted=False)
+        if action not in {
+            RunnerJobAction.START,
+            RunnerJobAction.STOP,
+            RunnerJobAction.RESTART,
+        }:
+            raise HTTPException(status_code=404, detail="Managed-agent action not found")
+        try:
+            agent, job = await st.action_managed_agent(agent_id, action)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {
+            "agent": _public_managed_agent(agent),
+            "job": job.model_dump(mode="json") if job else None,
+        }
+
+    @app.delete("/v1/managed-agents/{agent_id}")
+    async def delete_managed_agent(
+        request: Request, agent_id: str
+    ) -> dict[str, Any]:
+        await _require_control_admin(request)
+        await _managed_agent_for_admin(request, agent_id)
+        try:
+            agent, job = await st.action_managed_agent(
+                agent_id, RunnerJobAction.DELETE
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {
+            "status": "deleting",
+            "agent": _public_managed_agent(agent),
+            "job": job.model_dump(mode="json") if job else None,
+        }
+
+    @app.get("/v1/managed-agents/{agent_id}/logs")
+    async def managed_agent_logs(
+        request: Request,
+        agent_id: str,
+        limit: int = Query(200, ge=1, le=500),
+    ) -> dict[str, Any]:
+        await _require_control_admin(request)
+        await _managed_agent_for_admin(request, agent_id)
+        logs = await st.list_runner_logs(agent_id, limit=limit)
+        return {"logs": [entry.model_dump(mode="json") for entry in logs]}
+
     # ── Web Push ──────────────────────────────────────────────────────────
 
     @app.get("/v1/push/vapid")
@@ -709,6 +1177,25 @@ def create_app(
                         return a.rstrip("/")
             except Exception:
                 pass
+        return cfg.base_url.rstrip("/")
+
+    def _advertised_hub_url(request: Request) -> str:
+        """Prefer the URL the browser or runner actually used over loopback."""
+        origin = (request.headers.get("origin") or "").strip()
+        if origin:
+            return _resolve_pair_base(origin)
+        host = (
+            request.headers.get("x-forwarded-host")
+            or request.headers.get("host")
+            or ""
+        ).split(",")[0].strip()
+        if host:
+            proto = (
+                request.headers.get("x-forwarded-proto")
+                or request.url.scheme
+                or "http"
+            ).split(",")[0].strip()
+            return _resolve_pair_base(f"{proto}://{host}")
         return cfg.base_url.rstrip("/")
 
     def _build_pair_url(base: str, code: str, room: Optional[str]) -> str:
@@ -946,6 +1433,23 @@ def create_app(
         """Predictive global search — tenant-scoped; DMs only for for_participant."""
         auth = _auth_ctx(request)
         tenant_id = auth.get("tenant_id") if tenant_must_isolate(auth) else None
+        api_key = auth.get("api_key")
+        key_meta = api_key.get("metadata") if isinstance(api_key, dict) else {}
+        if isinstance(key_meta, dict) and key_meta.get("managed_agent_id"):
+            bound_room_id = str(key_meta.get("room_id") or "")
+            if room_id and room_id != bound_room_id:
+                raise HTTPException(status_code=404, detail="Room not found")
+            room_id = bound_room_id
+            if for_participant:
+                participant = await st.get_participant(for_participant)
+                if (
+                    not participant
+                    or (participant.metadata or {}).get("api_key_id")
+                    != api_key.get("id")
+                ):
+                    raise HTTPException(
+                        status_code=403, detail="Participant identity mismatch"
+                    )
         if room_id:
             await _require_room(request, room_id)
         return await global_search(
@@ -1082,6 +1586,13 @@ def create_app(
 
     @app.post("/v1/rooms", response_model=Room)
     async def create_room(request: Request, body: CreateRoomRequest) -> Room:
+        api_key = getattr(request.state, "api_key", None)
+        key_meta = api_key.get("metadata") if isinstance(api_key, dict) else {}
+        if isinstance(key_meta, dict) and key_meta.get("managed_agent_id"):
+            raise HTTPException(
+                status_code=403,
+                detail="Managed-agent credentials cannot create rooms",
+            )
         tenant_id = _request_tenant_id(request)
         room = Room(
             name=body.name,
@@ -1103,6 +1614,12 @@ def create_app(
         rooms = await st.list_rooms(
             tenant_id=tenant_id, include_archived=include_archived
         )
+        api_key = getattr(request.state, "api_key", None)
+        key_meta = api_key.get("metadata") if isinstance(api_key, dict) else {}
+        if isinstance(key_meta, dict) and key_meta.get("managed_agent_id"):
+            rooms = [
+                room for room in rooms if room.id == key_meta.get("room_id")
+            ]
         return {"rooms": [r.model_dump(mode="json") for r in rooms]}
 
     @app.get("/v1/rooms/{room_id}", response_model=Room)
@@ -1195,7 +1712,22 @@ def create_app(
             )
         name = name or "agent"
         key_meta = participant_key_metadata(api_key if isinstance(api_key, dict) else None)
-        meta = {**(body.metadata or {}), **key_meta}
+        credential_meta = (
+            api_key.get("metadata")
+            if isinstance(api_key, dict)
+            and isinstance(api_key.get("metadata"), dict)
+            else {}
+        )
+        managed_binding = (
+            {
+                "managed_agent_id": credential_meta.get("managed_agent_id"),
+                "runner_id": credential_meta.get("runner_id"),
+                "room_id": credential_meta.get("room_id"),
+            }
+            if credential_meta.get("managed_agent_id")
+            else {}
+        )
+        meta = {**(body.metadata or {}), **key_meta, **managed_binding}
         user = getattr(request.state, "user", None)
         if user and user.get("user_id"):
             meta.setdefault("user_id", user["user_id"])
@@ -1205,6 +1737,17 @@ def create_app(
             meta["primary_room_id"] = room_id
         # 1) Explicit id always wins (stable client session) — same room only
         if body.participant_id and (existing := await st.get_participant(body.participant_id)):
+            if (
+                isinstance(api_key, dict)
+                and isinstance(api_key.get("metadata"), dict)
+                and api_key["metadata"].get("managed_agent_id")
+                and (existing.metadata or {}).get("api_key_id")
+                != api_key.get("id")
+            ):
+                raise HTTPException(
+                    status_code=403,
+                    detail="Managed-agent token is not bound to this participant",
+                )
             if existing.room_id and existing.room_id != room_id:
                 # Moving seats is allowed but old roster is cleaned in store.join_room
                 pass
@@ -1255,13 +1798,38 @@ def create_app(
         p = await st.get_participant(participant_id)
         if not p or p.room_id != room_id:
             raise HTTPException(status_code=404, detail="Participant not found in room")
+        api_key = getattr(request.state, "api_key", None)
+        key_meta = api_key.get("metadata") if isinstance(api_key, dict) else {}
+        if (
+            isinstance(key_meta, dict)
+            and key_meta.get("managed_agent_id")
+            and (p.metadata or {}).get("api_key_id") != api_key.get("id")
+        ):
+            raise HTTPException(status_code=403, detail="Participant identity mismatch")
+        metadata = body.metadata
+        if isinstance(key_meta, dict) and key_meta.get("managed_agent_id"):
+            if (
+                body.name is not None
+                and body.name.strip().lower()
+                != str(api_key.get("name") or "").strip().lower()
+            ):
+                raise HTTPException(
+                    status_code=403,
+                    detail="Managed-agent name is bound to its token",
+                )
+            metadata = {
+                **(body.metadata or {}),
+                "managed_agent_id": key_meta.get("managed_agent_id"),
+                "runner_id": key_meta.get("runner_id"),
+                "room_id": key_meta.get("room_id"),
+            }
         updated = await st.update_participant(
             participant_id,
             name=body.name,
             role=body.role,
             status=body.status,
             capabilities=body.capabilities,
-            metadata=body.metadata,
+            metadata=metadata,
         )
         if not updated:
             raise HTTPException(status_code=404, detail="Participant not found")
@@ -1272,6 +1840,19 @@ def create_app(
         request: Request, room_id: str, participant_id: str = Query(...)
     ) -> dict[str, str]:
         await _require_room(request, room_id)
+        api_key = getattr(request.state, "api_key", None)
+        key_meta = api_key.get("metadata") if isinstance(api_key, dict) else {}
+        participant = await st.get_participant(participant_id)
+        if (
+            isinstance(key_meta, dict)
+            and key_meta.get("managed_agent_id")
+            and (
+                not participant
+                or (participant.metadata or {}).get("api_key_id")
+                != api_key.get("id")
+            )
+        ):
+            raise HTTPException(status_code=403, detail="Participant identity mismatch")
         result = await st.leave_room(room_id, participant_id)
         if not result:
             raise HTTPException(status_code=404, detail="Room or participant not found")
@@ -1338,8 +1919,7 @@ def create_app(
                 lower = pat.sub(" ", lower)
         return found
 
-    files_root = Path.home() / ".opengateway" / "files"
-    files_root.mkdir(parents=True, exist_ok=True)
+    files_root = files_dir()
 
     def _guess_content_type(filename: str, declared: Optional[str]) -> str:
         import mimetypes
@@ -1670,6 +2250,18 @@ def create_app(
                 status_code=400,
                 detail="from_participant_id is not seated in this room",
             )
+        api_key = getattr(request.state, "api_key", None)
+        key_meta = api_key.get("metadata") if isinstance(api_key, dict) else {}
+        if (
+            isinstance(key_meta, dict)
+            and key_meta.get("managed_agent_id")
+            and (participant.metadata or {}).get("api_key_id")
+            != api_key.get("id")
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail="Managed-agent token is not bound to from_participant_id",
+            )
         if body.parts:
             parts = await _enrich_message_parts(room_id, list(body.parts))
             message = Message(
@@ -1702,6 +2294,26 @@ def create_app(
         if "kind" not in meta:
             meta["kind"] = message_kind_from_meta(meta, to_participant_id=to_id)
 
+        from opengateway.delivery import (
+            hop_exceeded,
+            next_agent_hop,
+            structured_delivery_from_message,
+        )
+
+        allowed, block_reason = st.delivery_guard.check_post_allowed(
+            room_id=room_id,
+            from_participant_id=body.from_participant_id,
+            metadata=meta,
+        )
+        if not allowed:
+            return {
+                "ok": False,
+                "blocked": True,
+                "reason": block_reason,
+                "hint": "Duplicate delivery response or agent-hop limit — no room post.",
+                "loop_breaks": st.delivery_guard.loop_break_count(room_id),
+            }
+
         msg = RoomMessage(
             room_id=room_id,
             from_participant_id=body.from_participant_id,
@@ -1711,6 +2323,15 @@ def create_app(
             metadata=meta,
         )
         saved = await st.post_message(msg)
+        st.delivery_guard.record_outbound(
+            room_id=room_id,
+            from_participant_id=body.from_participant_id,
+            metadata=meta,
+        )
+        st.speaking_floor.release(
+            room_id, participant_id=body.from_participant_id
+        )
+        canonical_text = saved.message.text()
 
         nudged: list[dict[str, Any]] = []
         skipped: list[dict[str, Any]] = []
@@ -1740,6 +2361,22 @@ def create_app(
             in {"1", "true", "yes", "on"}
             or bool(meta.get("nudge_include_joined"))
         )
+
+        from opengateway.models import Harness
+
+        chain_id, outbound_hop = next_agent_hop(meta)
+        is_human = participant.harness == Harness.HUMAN
+        if is_human and (
+            body.nudge_all
+            or _is_all_call(body.content or "")
+            or mentioned
+            or to_id
+        ):
+            st.speaking_floor.cancel_room(room_id)
+        if hop_exceeded(outbound_hop):
+            want_nudge_all = False
+            want_nudge_mentioned = False
+            skipped_reason = skipped_reason or "agent_hop_exceeded"
 
         if want_nudge_all or want_nudge_mentioned:
             candidates = all_peers if want_nudge_all else list(mentioned)
@@ -1785,6 +2422,19 @@ def create_app(
                     )
                     continue
                 listen_only = is_listen_only(peer)
+                delivery = structured_delivery_from_message(
+                    saved.model_dump(mode="json"),
+                    target_participant_id=peer.id,
+                    canonical_text=canonical_text,
+                )
+                delivery.chain_id = chain_id or delivery.chain_id
+                delivery.agent_hop = outbound_hop
+                dm_meta = {
+                    **delivery.as_metadata(),
+                    "nudge": True,
+                    "broadcast_id": saved.id,
+                    "listen_only": listen_only,
+                }
                 dm = RoomMessage(
                     room_id=room_id,
                     from_participant_id=body.from_participant_id,
@@ -1792,14 +2442,9 @@ def create_app(
                     to_participant_id=peer.id,
                     message=text_message(
                         f"agent/{participant.name}",
-                        f"@nudge → {peer.name}: {body.content}",
+                        f"@nudge → {peer.name}: {canonical_text}",
                     ),
-                    metadata={
-                        "nudge": True,
-                        "kind": "nudge",
-                        "broadcast_id": saved.id,
-                        "listen_only": listen_only,
-                    },
+                    metadata=dm_meta,
                 )
                 await st.post_message(dm)
                 st.nudge_limiter.record_edge(
@@ -1839,47 +2484,15 @@ def create_app(
                         "listen_only": listen_only,
                     }
                 )
-            n_listen = len(nudged)
-            n_off = sum(1 for s in skipped if s.get("reason") == "offline")
-            n_joined = sum(
-                1 for s in skipped if s.get("reason") == "joined_not_listening"
-            )
-            n_other = len(skipped) - n_off - n_joined
-            toast = (
-                f"{n_listen} listening"
-                + (f", {n_joined} joined not listening" if n_joined else "")
-                + (f", {n_off} offline" if n_off else "")
-                + " — only listening agents get DMs"
-            )
-            note = RoomMessage(
-                room_id=room_id,
-                from_participant_id=body.from_participant_id,
-                from_name="system",
-                message=text_message(
-                    "agent/system",
-                    "Nudge: "
-                    + toast
-                    + (
-                        " → "
-                        + ", ".join(n["name"] for n in nudged)
-                        if nudged
-                        else " → (none)"
-                    ),
-                ),
-                metadata={
-                    "system": True,
-                    "nudge_summary": True,
-                    "kind": "system",
-                    "nudge_counts": {
-                        "nudged": n_listen,
-                        "skipped_offline": n_off,
-                        "skipped_joined_not_listening": n_joined,
-                        "skipped_other": n_other,
-                    },
-                },
-            )
-            note.from_name = "system"
-            await st.post_message(note)
+            if nudged:
+                floor_chain = chain_id or str(saved.id)
+                ordered = sorted(nudged, key=lambda n: str(n.get("name") or "").lower())
+                st.speaking_floor.open_chain(
+                    room_id,
+                    chain_id=floor_chain,
+                    source_message_id=str(saved.id),
+                    participant_ids=[str(n["participant_id"]) for n in ordered],
+                )
 
         if want_nudge_all or want_nudge_mentioned or skipped_reason:
             storm = st.nudge_limiter.room_stats(room_id)
@@ -1910,6 +2523,33 @@ def create_app(
         out["kind"] = (saved.metadata or {}).get("kind") or "chat"
         return out
 
+    @app.post("/v1/rooms/{room_id}/speaking-floor/acquire")
+    async def speaking_floor_acquire(
+        request: Request, room_id: str, body: dict[str, Any]
+    ) -> dict[str, Any]:
+        await _require_room(request, room_id)
+        participant_id = str(body.get("participant_id") or "").strip()
+        chain_id = str(body.get("chain_id") or "").strip()
+        if not participant_id:
+            raise HTTPException(status_code=400, detail="participant_id required")
+        return st.speaking_floor.acquire(
+            room_id,
+            participant_id=participant_id,
+            chain_id=chain_id,
+        )
+
+    @app.post("/v1/rooms/{room_id}/speaking-floor/release")
+    async def speaking_floor_release(
+        request: Request, room_id: str, body: dict[str, Any]
+    ) -> dict[str, Any]:
+        await _require_room(request, room_id)
+        participant_id = str(body.get("participant_id") or "").strip()
+        if not participant_id:
+            raise HTTPException(status_code=400, detail="participant_id required")
+        return st.speaking_floor.release(
+            room_id, participant_id=participant_id
+        )
+
     @app.get("/v1/rooms/{room_id}/messages")
     async def list_messages(
         request: Request,
@@ -1919,6 +2559,22 @@ def create_app(
         limit: int = Query(100, ge=1, le=500),
     ) -> dict[str, Any]:
         await _require_room(request, room_id)
+        api_key = getattr(request.state, "api_key", None)
+        key_meta = api_key.get("metadata") if isinstance(api_key, dict) else {}
+        if (
+            for_participant
+            and isinstance(key_meta, dict)
+            and key_meta.get("managed_agent_id")
+        ):
+            participant = await st.get_participant(for_participant)
+            if (
+                not participant
+                or (participant.metadata or {}).get("api_key_id")
+                != api_key.get("id")
+            ):
+                raise HTTPException(
+                    status_code=403, detail="Participant identity mismatch"
+                )
         # Public messages by default; DMs only when for_participant is set
         items = await st.list_messages(
             room_id,
@@ -1944,6 +2600,22 @@ def create_app(
         Attachment parts include content_url + inline base64 when small.
         """
         await _require_room(request, room_id)
+        api_key = getattr(request.state, "api_key", None)
+        key_meta = api_key.get("metadata") if isinstance(api_key, dict) else {}
+        if (
+            for_participant
+            and isinstance(key_meta, dict)
+            and key_meta.get("managed_agent_id")
+        ):
+            participant = await st.get_participant(for_participant)
+            if (
+                not participant
+                or (participant.metadata or {}).get("api_key_id")
+                != api_key.get("id")
+            ):
+                raise HTTPException(
+                    status_code=403, detail="Participant identity mismatch"
+                )
         if for_participant:
             # long-poll = radio on (UI "listening" badge)
             await st.touch_participant(for_participant, listening=True)
@@ -2083,21 +2755,36 @@ def create_app(
 
     @app.get("/v1/events")
     async def poll_events(
+        request: Request,
         room_id: Optional[str] = None,
         after_id: Optional[str] = None,
         limit: int = Query(100, ge=1, le=500),
     ) -> dict[str, Any]:
+        api_key = getattr(request.state, "api_key", None)
+        key_meta = api_key.get("metadata") if isinstance(api_key, dict) else {}
+        if isinstance(key_meta, dict) and key_meta.get("managed_agent_id"):
+            bound_room_id = str(key_meta.get("room_id") or "")
+            if room_id and room_id != bound_room_id:
+                raise HTTPException(status_code=404, detail="Room not found")
+            room_id = bound_room_id
         events = st.recent_events(room_id=room_id, after_id=after_id, limit=limit)
         return {"events": [e.model_dump(mode="json") for e in events]}
 
     @app.get("/v1/events/stream")
     async def global_events_sse(request: Request) -> EventSourceResponse:
         """SSE stream of all gateway events (all rooms). For CLI monitor."""
+        api_key = getattr(request.state, "api_key", None)
+        key_meta = api_key.get("metadata") if isinstance(api_key, dict) else {}
+        bound_room_id = (
+            str(key_meta.get("room_id") or "")
+            if isinstance(key_meta, dict) and key_meta.get("managed_agent_id")
+            else None
+        )
 
         async def gen():
             q = st.subscribe()
             try:
-                for e in st.recent_events(limit=30):
+                for e in st.recent_events(room_id=bound_room_id, limit=30):
                     yield {"event": e.type, "id": e.id, "data": json.dumps(e.model_dump(mode="json"))}
                 while True:
                     if await request.is_disconnected():
@@ -2106,6 +2793,11 @@ def create_app(
                         event: GatewayEvent = await asyncio.wait_for(q.get(), timeout=25.0)
                     except asyncio.TimeoutError:
                         yield {"event": "ping", "data": "{}"}
+                        continue
+                    if (
+                        bound_room_id
+                        and event.room_id not in {None, bound_room_id}
+                    ):
                         continue
                     yield {
                         "event": event.type,
@@ -2120,13 +2812,27 @@ def create_app(
     @app.get("/v1/rooms/{room_id}/events")
     async def room_events_sse(room_id: str, request: Request) -> EventSourceResponse:
         await _require_room(request, room_id)
+        participant_id = (request.query_params.get("participant_id") or "").strip() or None
+
+        def _sse_event_allowed(event: GatewayEvent) -> bool:
+            if event.type != "message":
+                return True
+            msg = event.payload.get("message")
+            if isinstance(msg, dict):
+                return dm_visible_to_participant(msg, participant_id)
+            return True
 
         async def gen():
             q = st.subscribe()
             try:
-                # Replay recent — strip private DM payloads for non-targeted events
                 for e in st.recent_events(room_id=room_id, limit=20):
-                    yield {"event": e.type, "id": e.id, "data": json.dumps(e.model_dump(mode="json"))}
+                    if not _sse_event_allowed(e):
+                        continue
+                    yield {
+                        "event": e.type,
+                        "id": e.id,
+                        "data": json.dumps(e.model_dump(mode="json")),
+                    }
                 while True:
                     if await request.is_disconnected():
                         break
@@ -2136,6 +2842,8 @@ def create_app(
                         yield {"event": "ping", "data": "{}"}
                         continue
                     if event.room_id is None or event.room_id == room_id:
+                        if not _sse_event_allowed(event):
+                            continue
                         yield {
                             "event": event.type,
                             "id": event.id,
@@ -2184,14 +2892,40 @@ def create_app(
                 await websocket.close(code=4401)
                 return
 
+        ws_api_key = (ws_auth or {}).get("api_key")
+        ws_key_meta = (
+            ws_api_key.get("metadata")
+            if isinstance(ws_api_key, dict)
+            else {}
+        )
+        if (
+            isinstance(ws_key_meta, dict)
+            and ws_key_meta.get("managed_agent_id")
+            and ws_key_meta.get("room_id") != room_id
+        ):
+            await websocket.close(code=4404)
+            return
+
         room = await st.get_room(room_id)
         if not room or (ws_auth and not room_visible_to(room, ws_auth)):
             await websocket.close(code=4404)
             return
 
-        await websocket.accept()
-
         participant_id = websocket.query_params.get("participant_id")
+        if (
+            participant_id
+            and isinstance(ws_key_meta, dict)
+            and ws_key_meta.get("managed_agent_id")
+        ):
+            participant = await st.get_participant(participant_id)
+            if (
+                not participant
+                or (participant.metadata or {}).get("api_key_id")
+                != ws_api_key.get("id")
+            ):
+                await websocket.close(code=4403)
+                return
+        await websocket.accept()
         q = st.subscribe(maxsize=512)
 
         def _dm_allowed(msg_payload: dict[str, Any]) -> bool:

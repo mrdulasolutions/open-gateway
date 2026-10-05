@@ -22,6 +22,7 @@ services:
       OPENGATEWAY_HOST: "0.0.0.0"
       OPENGATEWAY_PORT: "8765"
       OPENGATEWAY_PUBLIC_URL: "${OPENGATEWAY_PUBLIC_URL:-}"
+      OPENGATEWAY_DATA_DIR: "/data"
       OPENGATEWAY_DB: "/data/state.db"
       OPENGATEWAY_NAME: "${OPENGATEWAY_NAME:-lan}"
     volumes:

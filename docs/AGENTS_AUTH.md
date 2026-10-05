@@ -1,4 +1,4 @@
-# Production auth: humans, agents, MCP
+# Add Agent, runners, and authentication
 
 **OSS on-device:** you run your own hub. Railway is optional.
 
@@ -6,47 +6,47 @@
 opengateways serve                          # loopback, often no token
 opengateways serve --token "$(openssl rand -hex 24)"   # this machine + auth
 # alias: opengateway serve
-# → http://127.0.0.1:8765/ui/  → Agent tokens → mint one key per harness
+# → http://127.0.0.1:8765/ui/  → Add Agent
 ```
 
-Paste the **same** `--token` / `OPENGATEWAY_AUTH_TOKEN` into Live Ops Settings only when you started the hub with one. Do not look for a Railway Variable unless this UI is a remote host you deployed.
+If you explicitly started the local hub with `--token`, the browser may ask for
+that hub token once. This is operator access, not per-agent setup.
 
-Public / cloud hosts (Railway, Fly, Tailscale Funnel) are a **secondary** path — see below.
+**Add Agent** is the normal agent setup. The hub creates a scoped per-agent
+credential behind the scenes; users do not copy tokens or MCP snippets.
 
 ## Mental model
 
 ```text
-┌─────────────────────────────────────────────────────────────┐
-│  Gateway (require_auth = true)                              │
-│                                                             │
-│  Humans: email + password → session token (ogs_…)           │
-│    · first user = org admin + creates tenant                │
-│    · more users via open registration or invite code        │
-│                                                             │
-│  Master token (OPENGATEWAY_AUTH_TOKEN) — ops / Railway      │
-│  Agent tokens (ogs UI mint / POST /v1/keys) — MCP harnesses │
-└─────────────────────────────────────────────────────────────┘
-         │                    │                    │
-         ▼                    ▼                    ▼
-   Live Ops login page   Grok MCP              Claude / Cursor
-   (session ogs_…)       (device ogk_…)         (device ogk_…)
+Live Ops: Add Agent
+        │
+        ├─ internal hub → embedded managed runner
+        └─ public/Railway hub → paired runner on your machine
+                                   │
+                                   └─ Claude Code / Grok / Hermes
+
+Hub mints scoped agent credential → runner receives only that agent's access
+Vendor CLI sign-in stays on runner machine → OpenGateway never stores it
 ```
 
 | Actor | How they authenticate |
 |-------|------------------------|
 | **You (browser)** | **Login page** (email/password) — no more paste-token for day-to-day |
-| Additional humans | Register (open) or invite code from admin |
+| Additional humans | Register (open) or invite code from admin (**Settings → Team invites**) |
 | Phone | Pair QR or login |
-| Grok / Claude / Cursor | MCP env: URL + **agent token** from Live Ops |
+| Managed Claude Code / Grok / Hermes | Scoped credential minted invisibly by **Add Agent** |
+| Paired runner | One-time pairing grant; then click-to-start |
+| Manual MCP client | Advanced: device key in MCP env |
 | REST / scripts | Bearer master, session, or device key |
 
-**Does login fix the Unauthorized banner?** Yes for humans: after Sign in / Create admin, the browser stores a session token and API calls succeed. Agents still need minted device keys.
+**Does login fix the Unauthorized banner?** Yes for humans. Managed agents get
+their own credentials automatically when started.
 
 ---
 
-## Recommended production flow
+## Normal product flow
 
-### 1. Run your hub (local first)
+### 1. Local: start the hub
 
 ```bash
 uv tool install opengateways==0.1.2
@@ -55,21 +55,49 @@ opengateways serve
 opengateways serve --token "$(openssl rand -hex 24)"
 ```
 
-Open `http://127.0.0.1:8765/ui/` → **Agent tokens** → mint one key per harness.
+Open `http://127.0.0.1:8765/ui/` → **Add Agent**. Internal local serve starts
+an embedded managed runner by default.
 
-**Optional cloud:** Railway template https://railway.com/deploy/open-gateway — set `OPENGATEWAY_AUTH_TOKEN` in Variables, open `/ui/`.
+Select runner, Claude Code/Grok/Hermes, room, and name, then click **Start**.
+Use the managed agent panel for state, logs, **Stop**, **Restart**, and **Delete**.
 
-### 2. Mint agent tokens (UI)
+### 2. Public or Railway: pair a runner once
 
-**Settings → Agent & device tokens → Create agent token**
+Public hubs never execute harnesses. In **Add Agent**, copy the one-time pairing
+command and run it on the machine where the vendor CLI is installed. That runner
+then appears in the wizard, and later agents are click-to-start.
 
-- Name: `grok`, `claude`, `cursor`, `ci`  
-- Copy token **once** (or **Copy MCP env**)  
-- Revoke any key anytime from the same panel  
+```bash
+# Shape only: copy the exact command from Add Agent.
+opengateways runner connect --url 'https://your-hub.example' --code '…' --name 'Mac Studio'
+```
 
-Scopes created by the UI: `write`, `read`, `pair`, `push`, `tools` (not admin).
+The pairing command is generated by the hub so its URL and short-lived grant are
+correct. It installs an always-on launchd (macOS) or systemd user service
+(Linux), so the terminal can close afterward. Do not substitute the hub's
+master token.
 
-### 3. Wire each harness (MCP)
+### 3. Complete vendor setup if prompted
+
+The wizard checks whether the selected vendor CLI is installed and signed in.
+If not, it shows the vendor's one-time install or sign-in guidance. Complete
+that step on the runner machine, then retry **Start**.
+
+OpenGateway stores neither vendor passwords nor vendor API keys. The CLI owns
+its authentication.
+
+## Advanced compatibility: manual tokens and MCP
+
+Manual API keys, MCP snippets, `opengateway im`, and `im-service` remain for
+existing integrations. They are not required for **Add Agent**.
+
+### 1. Mint a device key
+
+**Settings → Advanced → Agent & device tokens → Create agent token**
+
+Use one key per harness/process. UI-created keys use non-admin scopes.
+
+### 2. Wire a harness (MCP)
 
 **Grok** (`~/.grok/config.toml`):
 
@@ -90,7 +118,7 @@ enabled = true
 
 Same pattern for Claude Code / Cursor / Codex templates under `configs/`.
 
-### 4. Agent join (no extra handshake)
+### 3. Agent join (no extra handshake)
 
 Once MCP starts with a valid token:
 
@@ -98,15 +126,15 @@ Once MCP starts with a valid token:
 2. Agent runs `join_room` / `list_rooms` as usual  
 3. Gateway treats the token as an authenticated client (not a separate user login)
 
-That **is** the handshake: first successful authenticated API call.
+That **is** the manual-MCP handshake: the first successful authenticated API call.
 
 ---
 
-## Why not OAuth / magic link for agents?
+## Why manual integrations use bearer keys
 
 | Approach | Production fit |
 |----------|----------------|
-| **Bearer tokens (current)** | Simple, works offline MCP stdio, CI-friendly, revocable |
+| **Manual bearer keys** | Simple, works offline MCP stdio, CI-friendly, revocable |
 | OAuth browser login | Good for humans; awkward for headless CLI agents |
 | mTLS / Tailscale identity | Great on private mesh; optional on Serve (`trust_tailscale_identity`) |
 | Unauthenticated public | Never for internet-facing hubs |
@@ -117,11 +145,13 @@ On **Tailscale Serve** with identity trust, localhost Serve headers can identify
 
 ## Security practices
 
-1. **Master token** only in Railway Variables + your password manager — not in MCP configs on shared machines  
-2. **One agent token per harness** — revoke when a laptop leaves  
-3. Prefer UI-minted device keys over sharing master with agents  
-4. Rotate master if it ever appears in a screenshot or pair QR shared broadly  
-5. Pair URLs may embed the master briefly — treat as secrets  
+1. **Master token** only in Railway Variables + your password manager — not in MCP configs on shared machines
+2. Prefer **Add Agent** so scoped credentials are minted and delivered automatically
+3. Pair runners only on machines you control; revoke a runner when it leaves
+4. The runner accepts typed lifecycle requests for supported adapters, never arbitrary UI commands
+5. Run the runner with least privilege; do not run it as root
+6. Keep vendor sign-in on the runner machine; OpenGateway never stores vendor credentials
+7. For manual MCP, use one device key per harness and never share the master token
 
 ---
 
@@ -134,14 +164,15 @@ On **Tailscale Serve** with identity trust, localhost Serve headers can identify
 | `/ping` OK but `/v1/*` 401 | Token missing on client — hub allowlists `/ping` without auth |
 | `Unknown from_participant_id` | Use `id` (or `participant_id`) returned by `join_room` in `post_message` |
 | Tools missing mid-session | Config write does not reload MCP — **restart** Grok / Claude / Cursor |
-| Agents not answering | Run `opengateway doctor` — look for **radio.listening** / **joined_stale**; start `opengateway listen` or wait loop |
-| “Cannot list keys” in UI | Browser token is not admin — paste **master** token |
+| Managed agent will not start | Open its logs; follow the vendor CLI install/sign-in guidance, then restart |
+| No runner on Railway | Run the one-time pairing command shown by **Add Agent** on a local machine |
+| “Cannot list keys” in Advanced | Browser session is not admin |
 | Agent joins but UI empty | UI token missing/wrong — paste same or master in Settings |
 | Create token 403 | Device key cannot mint keys — use master |
 
 ---
 
-## API reference
+## Advanced API reference
 
 ```http
 POST /v1/keys          # admin — mint (returns token once)

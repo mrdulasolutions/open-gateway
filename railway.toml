@@ -5,7 +5,7 @@
 #
 # After deploy:
 #   1. Confirm OPENGATEWAY_AUTH_TOKEN is a Railway Variable (not only first-boot log)
-#   2. Prefer Postgres + Redis plugins (no Volume required)
+#   2. Prefer Postgres + Redis plugins, and a volume mounted at /data for uploads/workspace
 #   3. Domain is auto-wired → OPENGATEWAY_PUBLIC_URL via entrypoint
 #   4. Entrypoint sets OPENGATEWAY_TRUST_PROXY=true on Railway (X-Forwarded-For)
 #   5. Open /ui/ → create admin → mint agent tokens for MCP

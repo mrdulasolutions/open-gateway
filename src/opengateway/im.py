@@ -36,6 +36,23 @@ from typing import Any, Callable, Optional
 
 import httpx
 
+from opengateway.delivery import (
+    event_is_empty_loop,
+    event_is_system,
+    event_message_body,
+    should_wake_seat,
+)
+
+# Re-export for tests and harness docs
+__all__ = [
+    "event_message_body",
+    "event_is_system",
+    "event_is_empty_loop",
+    "build_wake_prompt",
+    "ImConfig",
+    "ImDaemon",
+    "looks_like_ping",
+]
 from opengateway.listen import (
     ListenConfig,
     ListenSinks,
@@ -61,21 +78,34 @@ def _headers(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {t}"}
 
 
-def event_message_body(ev: dict[str, Any]) -> str:
-    """Extract plain text from a listen/im event or raw hub message."""
-    msg = ev.get("message") if isinstance(ev.get("message"), dict) else None
-    if msg is None and isinstance(ev, dict):
-        msg = ev
-    if not isinstance(msg, dict):
-        return ""
-    # listen.message_text expects {"message": {parts…}}
-    body = message_text({"message": msg})
-    if body:
-        return body
-    parts = msg.get("parts") or []
-    return " ".join(
-        str(p.get("content") or "") for p in parts if isinstance(p, dict)
-    ).strip()
+def _fetch_recent_transcript(
+    base_url: str,
+    room_id: str,
+    *,
+    auth_token: str = "",
+    limit: int = 24,
+) -> str:
+    from opengateway.delivery import format_recent_room_transcript
+
+    try:
+        with httpx.Client(
+            base_url=base_url.rstrip("/"),
+            timeout=15.0,
+            headers=_headers(auth_token),
+        ) as client:
+            r = client.get(
+                f"/v1/rooms/{room_id}/messages",
+                params={"limit": limit},
+            )
+            r.raise_for_status()
+            rows = (r.json() or {}).get("messages") or []
+            if isinstance(rows, list):
+                return format_recent_room_transcript(
+                    [x for x in rows if isinstance(x, dict)]
+                )
+    except Exception:
+        pass
+    return "(no earlier messages)"
 
 
 def format_messages_for_prompt(messages: list[dict[str, Any]]) -> str:
@@ -99,8 +129,14 @@ def build_wake_prompt(
     participant_id: str,
     messages: list[dict[str, Any]],
     base_url: str,
+    recent_transcript: str = "",
 ) -> str:
     body = format_messages_for_prompt(messages)
+    transcript_block = (
+        recent_transcript.strip()
+        if recent_transcript.strip()
+        else "(no earlier messages)"
+    )
     return f"""You are {agent_name} on OpenGateway (multi-agent hub).
 This is an IM wake — a human or peer posted in the room while you were listening.
 Reply in the room. Do not start a wait_for_messages loop.
@@ -109,17 +145,25 @@ Hub: {base_url}
 Room id: {room_id}
 Your participant_id: {participant_id}
 
-Inbound message(s):
+Recent conversation (oldest first):
+{transcript_block}
+
+Inbound message(s) addressed to you:
 {body}
 
 Required actions:
-1. Prefer OpenGateway MCP: drain_inbox then post_message(
+1. The inbound block above is authoritative — do NOT call drain_inbox or wait_for_messages to replace it.
+2. Reply once with post_message(
      room_id="{room_id}", from_participant_id="{participant_id}", content="…"
-   ). If MCP is unavailable, call the hub HTTP API with OPENGATEWAY_AUTH_TOKEN.
-2. If anyone said ping (or "are you there"), reply with a short pong.
-3. Keep the reply concise and in-character.
-4. Do NOT call wait_for_messages in a loop. Finish after posting.
-5. Do not rejoin as a different name/role.
+   ) via OpenGateway MCP or hub HTTP with OPENGATEWAY_AUTH_TOKEN.
+3. If a peer already answered the same ask, coordinate with @TheirName — do not fork a second plan to the human.
+4. @Name is the A2A handoff (no separate a2a tool).
+5. If anyone said ping (or "are you there"), reply with a short pong.
+6. Keep the reply concise; post once, then stop until addressed again.
+7. Do NOT call wait_for_messages in a loop. Finish after posting.
+8. Do not rejoin as a different name/role.
+9. If inbound text is empty or only complains about empty messages, do not post (that loops).
+10. Unaddressed public agent chatter is transcript-only — do not reply unless you were @mentioned or DM'd.
 """
 
 
@@ -296,6 +340,13 @@ class ImDaemon:
                     since = m.get("id") or since
                     if m.get("from_participant_id") == pid:
                         continue
+                    wake, _reason, _did = should_wake_seat(
+                        m,
+                        seat_participant_id=pid,
+                        seat_name=cfg.name,
+                    )
+                    if not wake:
+                        continue
                     from_name = (m.get("from_name") or "").strip()
                     if from_name and from_name in cfg.ignore_names:
                         continue
@@ -323,6 +374,20 @@ class ImDaemon:
 
     def _enqueue_wake(self, event: dict[str, Any]) -> None:
         if self.cfg.wake in ("", "none", "off"):
+            return
+        # System nudges and blank bodies were waking the agent with "(empty)".
+        # The agent then posted "your message was empty", which woke the peer.
+        if event_is_system(event) or event_is_empty_loop(event):
+            return
+        if not event_message_body(event).strip():
+            self.cfg.sinks.emit(
+                {
+                    "type": "status",
+                    "detail": "skip wake: message had no text (not replying — avoids empty ping-pong)",
+                    "room_id": str(event.get("room_id") or self.room_id or ""),
+                    "ts": _utcnow_iso(),
+                }
+            )
             return
         with self._wake.lock:
             self._wake.pending.append(event)
@@ -423,12 +488,18 @@ class ImDaemon:
             "count": len(events),
             "ts": _utcnow_iso(),
         }
+        transcript = _fetch_recent_transcript(
+            cfg.base_url.rstrip("/"),
+            self.room_id,
+            auth_token=cfg.auth_token,
+        )
         prompt = build_wake_prompt(
             agent_name=cfg.name,
             room_id=self.room_id,
             participant_id=self.participant_id,
             messages=events,
             base_url=cfg.base_url.rstrip("/"),
+            recent_transcript=transcript,
         )
         payload["prompt"] = prompt
 

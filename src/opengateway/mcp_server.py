@@ -321,25 +321,59 @@ def unarchive_room(room_id: str, actor: str = "") -> str:
         )
 
 
+def _hub_url() -> str:
+    return (
+        os.environ.get("OPENGATEWAY_URL")
+        or os.environ.get("OPENGATEWAY_BASE_URL")
+        or "http://127.0.0.1:8765"
+    ).rstrip("/")
+
+
+def _auth_token() -> str:
+    return (
+        os.environ.get("OPENGATEWAY_AUTH_TOKEN")
+        or os.environ.get("OPENGATEWAY_TOKEN")
+        or ""
+    )
+
+
 def _start_radio_for(data: dict[str, Any], room_id: str) -> dict[str, Any]:
-    """Always-on radio after a successful join."""
+    """Always-on seat runtime after a successful join (+ optional auto IM wake)."""
     from opengateway.radio import radio
+    from opengateway.seat_runtime import auto_im_enabled, make_im_wake_handler, resolve_wake_from_harness
 
     pid = (data or {}).get("id") or (data or {}).get("participant_id")
     name = (data or {}).get("name") or ""
+    harness = (data or {}).get("harness") or ""
     if not pid:
         return {"radio": "off", "reason": "join failed or missing participant id"}
-    return radio.start(
+    base = _hub_url()
+    token = _auth_token()
+    on_wake = None
+    im_meta: dict[str, Any] = {"im": "off"}
+    if auto_im_enabled() and str(harness or "").lower() not in {"human", ""}:
+        try:
+            on_wake = make_im_wake_handler(
+                room_id=room_id,
+                participant_id=str(pid),
+                name=str(name),
+                harness=str(harness or "mcp"),
+                base_url=base,
+                auth_token=token,
+            )
+            im_meta = {"im": "on", "wake": resolve_wake_from_harness(str(harness or "mcp"))}
+        except Exception as e:
+            im_meta = {"im": "error", "detail": str(e)}
+    radio_status = radio.start(
         room_id=room_id,
         participant_id=str(pid),
         name=str(name),
-        base_url=os.environ.get("OPENGATEWAY_URL")
-        or os.environ.get("OPENGATEWAY_BASE_URL")
-        or "http://127.0.0.1:8765",
-        auth_token=os.environ.get("OPENGATEWAY_AUTH_TOKEN")
-        or os.environ.get("OPENGATEWAY_TOKEN")
-        or "",
+        base_url=base,
+        auth_token=token,
+        on_wake=on_wake,
     )
+    radio_status.update(im_meta)
+    return radio_status
 
 
 @mcp.tool()
@@ -385,8 +419,9 @@ def join_room(
             try:
                 data["radio"] = _start_radio_for(data, room_id)
                 data["hint"] = (
-                    "Radio is ON. Use drain_inbox (≤1/turn) then post_message. "
-                    "Do not loop wait_for_messages. True IM: opengateway im --wake …"
+                    "Radio + auto IM ON (local). Embedded wake deliveries are authoritative — "
+                    "do not loop wait_for_messages. Desktop turn: post_message only. "
+                    "Disable: OPENGATEWAY_AUTO_IM=off"
                 )
             except Exception as e:
                 data["radio"] = {"radio": "error", "detail": str(e)}
@@ -759,10 +794,10 @@ def begin_im_mode(
             "participant_id": pid,
             "radio": "on" if auto_listen else "off",
             "next": [
-                "Radio keeps presence=listening; it does NOT wake your LLM",
-                "For true IM (ping→pong without a human desktop turn): run "
-                "`opengateway im <room> --wake hermes` (or --wake auto)",
-                "In this desktop turn: drain_inbox ≤1, post_message, no wait loops",
+                "Local default: auto IM wake on @all / @you / DMs (structured delivery)",
+                "Wake prompt is authoritative — do not drain_inbox to replace it",
+                "Desktop turn: post_message once; no wait_for_messages loops",
+                "Disable auto IM: OPENGATEWAY_AUTO_IM=off",
                 "leave_room / stop_listening when done",
             ],
             "anti_pattern": {

@@ -1,9 +1,16 @@
 import type {
+  AgentRunner,
+  AuthInvite,
   Bookmark,
+  CreateManagedAgentInput,
   DmThread,
   Fork,
+  ManagedAgent,
+  ManagedAgentAction,
+  ManagedAgentLogs,
   Ping,
   Room,
+  RunnerPairing,
   Snapshot,
   Participant,
   RoomMessage,
@@ -137,11 +144,17 @@ export const api = {
         tenant_id: string;
       } | null;
     }>("/v1/auth/me"),
-  authInvite: (body?: { role?: string }) =>
-    req<{ code: string; role: string; max_uses: number }>("/v1/auth/invite", {
+  authInvite: (body?: { role?: string; tenant_id?: string }) =>
+    req<AuthInvite>("/v1/auth/invite", {
       method: "POST",
       body: JSON.stringify(body || {}),
     }),
+  listAuthInvites: (tenantId?: string) =>
+    req<{ invites: AuthInvite[]; open_registration: boolean }>(
+      `/v1/auth/invites${
+        tenantId ? `?tenant_id=${encodeURIComponent(tenantId)}` : ""
+      }`
+    ),
   /** Public — no auth. First-run bootstrap when the hub requires a token. */
   setupStatus: async () => {
     const res = await fetch(`${API}/v1/setup`);
@@ -164,7 +177,20 @@ export const api = {
     }
     return j as { ok: boolean; token: string; message?: string };
   },
-  listRooms: () => req<{ rooms: Room[] }>("/v1/rooms"),
+  listRooms: (opts?: { includeArchived?: boolean }) =>
+    req<{ rooms: Room[] }>(
+      `/v1/rooms${
+        opts?.includeArchived ? "?include_archived=true" : ""
+      }`
+    ),
+  archiveRoom: (roomId: string, actor?: string) => {
+    const q = actor ? `?actor=${encodeURIComponent(actor)}` : "";
+    return req<Room>(`/v1/rooms/${roomId}/archive${q}`, { method: "POST" });
+  },
+  unarchiveRoom: (roomId: string, actor?: string) => {
+    const q = actor ? `?actor=${encodeURIComponent(actor)}` : "";
+    return req<Room>(`/v1/rooms/${roomId}/unarchive${q}`, { method: "POST" });
+  },
   createRoom: (body: {
     name: string;
     goal?: string;
@@ -175,7 +201,12 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
-  snapshot: (roomId: string) => req<Snapshot>(`/v1/rooms/${roomId}/snapshot`),
+  snapshot: (roomId: string, forParticipant?: string) => {
+    const qs = forParticipant
+      ? `?for_participant=${encodeURIComponent(forParticipant)}`
+      : "";
+    return req<Snapshot>(`/v1/rooms/${roomId}/snapshot${qs}`);
+  },
   join: (
     roomId: string,
     body: {
@@ -310,6 +341,110 @@ export const api = {
       lan_ips: string[];
       tips: Record<string, string>;
     }>("/v1/gateways"),
+  listRunners: async () => {
+    const payload = await req<
+      | AgentRunner[]
+      | {
+          runners?: AgentRunner[];
+          items?: AgentRunner[];
+        }
+    >("/v1/runners");
+    return {
+      runners: Array.isArray(payload)
+        ? payload
+        : payload.runners || payload.items || [],
+    };
+  },
+  pairRunner: async () => {
+    const payload = await req<
+      | RunnerPairing
+      | {
+          pairing?: RunnerPairing;
+          pair?: RunnerPairing;
+        }
+    >("/v1/runners/pair", {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    if ("pairing" in payload && payload.pairing) return payload.pairing;
+    if ("pair" in payload && payload.pair) return payload.pair;
+    return payload as RunnerPairing;
+  },
+  deleteRunner: (id: string) =>
+    req<{ ok?: boolean; status?: string }>(
+      `/v1/runners/${encodeURIComponent(id)}`,
+      { method: "DELETE" }
+    ),
+  listManagedAgents: async () => {
+    const payload = await req<
+      | ManagedAgent[]
+      | {
+          managed_agents?: ManagedAgent[];
+          agents?: ManagedAgent[];
+          items?: ManagedAgent[];
+        }
+    >("/v1/managed-agents");
+    return {
+      agents: Array.isArray(payload)
+        ? payload
+        : payload.managed_agents || payload.agents || payload.items || [],
+    };
+  },
+  createManagedAgent: async (body: CreateManagedAgentInput) => {
+    const payload = await req<
+      ManagedAgent | { agent?: ManagedAgent; managed_agent?: ManagedAgent }
+    >("/v1/managed-agents", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    if ("agent" in payload && payload.agent) return payload.agent;
+    if ("managed_agent" in payload && payload.managed_agent) {
+      return payload.managed_agent;
+    }
+    return payload as ManagedAgent;
+  },
+  moveManagedAgent: async (id: string, roomId: string) => {
+    const payload = await req<
+      | ManagedAgent
+      | { agent?: ManagedAgent; managed_agent?: ManagedAgent; job?: unknown }
+    >(`/v1/managed-agents/${encodeURIComponent(id)}/actions/move`, {
+      method: "POST",
+      body: JSON.stringify({ room_id: roomId }),
+    });
+    if ("agent" in payload && payload.agent) return payload.agent;
+    if ("managed_agent" in payload && payload.managed_agent) {
+      return payload.managed_agent;
+    }
+    return payload as ManagedAgent;
+  },
+  managedAgentAction: async (id: string, action: ManagedAgentAction) => {
+    const payload = await req<
+      ManagedAgent | { agent?: ManagedAgent; managed_agent?: ManagedAgent }
+    >(
+      `/v1/managed-agents/${encodeURIComponent(id)}/actions/${encodeURIComponent(action)}`,
+      {
+        method: "POST",
+        body: JSON.stringify({}),
+      }
+    );
+    if ("agent" in payload && payload.agent) return payload.agent;
+    if ("managed_agent" in payload && payload.managed_agent) {
+      return payload.managed_agent;
+    }
+    return payload as ManagedAgent;
+  },
+  deleteManagedAgent: (id: string) =>
+    req<{ ok?: boolean; status?: string }>(
+      `/v1/managed-agents/${encodeURIComponent(id)}`,
+      { method: "DELETE" }
+    ),
+  managedAgentLogs: (id: string, limit = 200) =>
+    req<ManagedAgentLogs>(
+      `/v1/managed-agents/${encodeURIComponent(id)}/logs?limit=${Math.max(
+        1,
+        Math.min(limit, 500)
+      )}`
+    ),
   registerGateway: (body: {
     name: string;
     mode?: string;
@@ -322,10 +457,13 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
-  eventsUrl: (roomId: string) => {
+  eventsUrl: (roomId: string, participantId?: string) => {
+    const params = new URLSearchParams();
     const t = getAuthToken();
-    const base = `${API}/v1/rooms/${roomId}/events`;
-    return t ? `${base}?token=${encodeURIComponent(t)}` : base;
+    if (t) params.set("token", t);
+    if (participantId) params.set("participant_id", participantId);
+    const qs = params.toString();
+    return `${API}/v1/rooms/${roomId}/events${qs ? `?${qs}` : ""}`;
   },
   fileUrl: (roomId: string, fileId: string) =>
     `${API}/v1/rooms/${roomId}/files/${fileId}/download`,
@@ -470,6 +608,7 @@ export type ApiKeyMeta = {
   device_label: string;
   created_at?: string;
   revoked_at?: string | null;
+  metadata?: Record<string, unknown>;
 };
 
 export function isAllCall(text: string): boolean {

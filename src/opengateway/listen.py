@@ -29,12 +29,12 @@ def _utcnow_iso() -> str:
 
 
 def message_text(msg: dict[str, Any]) -> str:
-    parts = (msg.get("message") or {}).get("parts") or []
-    chunks: list[str] = []
-    for p in parts:
-        if isinstance(p, dict) and p.get("content"):
-            chunks.append(str(p["content"]))
-    return "\n".join(chunks) if chunks else ""
+    from opengateway.delivery import event_message_body, room_message_text
+
+    text = room_message_text(msg)
+    if text:
+        return text
+    return event_message_body({"message": msg})
 
 
 @dataclass

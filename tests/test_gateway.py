@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 from httpx import ASGITransport, AsyncClient
 
@@ -163,6 +165,114 @@ async def test_everyone_nudges_all_agents(client: AsyncClient):
             )
         ).json()["messages"]
         assert any("@nudge" in (m["message"]["parts"][0]["content"]) for m in inbox)
+
+
+@pytest.mark.asyncio
+async def test_at_all_no_public_nudge_summary_row(client: AsyncClient):
+    room = (await client.post("/v1/rooms", json={"name": "a2a", "goal": "x"})).json()
+    room_id = room["id"]
+    human = (
+        await client.post(
+            f"/v1/rooms/{room_id}/join",
+            json={"name": "mark", "harness": "human"},
+        )
+    ).json()
+    a = (
+        await client.post(
+            f"/v1/rooms/{room_id}/join",
+            json={"name": "alice", "harness": "claude-code"},
+        )
+    ).json()
+    b = (
+        await client.post(
+            f"/v1/rooms/{room_id}/join",
+            json={"name": "grok", "harness": "grok"},
+        )
+    ).json()
+    _ = a, b
+
+    res = (
+        await client.post(
+            f"/v1/rooms/{room_id}/messages",
+            json={
+                "from_participant_id": human["id"],
+                "content": "@all hello",
+            },
+        )
+    ).json()
+    assert res["nudge_count"] == 2
+
+    public = (
+        await client.get(f"/v1/rooms/{room_id}/messages", params={"limit": 20})
+    ).json()["messages"]
+    assert not any(
+        "Nudge:" in (m.get("message", {}).get("parts", [{}])[0].get("content") or "")
+        for m in public
+    )
+    assert not any((m.get("metadata") or {}).get("nudge_summary") for m in public)
+
+
+@pytest.mark.asyncio
+async def test_speaking_floor_acquire_after_human_at_all(client: AsyncClient):
+    room = (await client.post("/v1/rooms", json={"name": "floor"})).json()
+    room_id = room["id"]
+    human = (
+        await client.post(
+            f"/v1/rooms/{room_id}/join",
+            json={"name": "mark", "harness": "human"},
+        )
+    ).json()
+    a = (
+        await client.post(
+            f"/v1/rooms/{room_id}/join",
+            json={"name": "alice", "harness": "claude-code"},
+        )
+    ).json()
+    b = (
+        await client.post(
+            f"/v1/rooms/{room_id}/join",
+            json={"name": "grok", "harness": "grok"},
+        )
+    ).json()
+    posted = (
+        await client.post(
+            f"/v1/rooms/{room_id}/messages",
+            json={
+                "from_participant_id": human["id"],
+                "content": "@all coordinate",
+            },
+        )
+    ).json()
+    chain_id = posted["message"]["id"]
+    first = (
+        await client.post(
+            f"/v1/rooms/{room_id}/speaking-floor/acquire",
+            json={"participant_id": a["id"], "chain_id": chain_id},
+        )
+    ).json()
+    second = (
+        await client.post(
+            f"/v1/rooms/{room_id}/speaking-floor/acquire",
+            json={"participant_id": b["id"], "chain_id": chain_id},
+        )
+    ).json()
+    assert first["granted"] is True
+    assert second["granted"] is False
+    await client.post(
+        f"/v1/rooms/{room_id}/messages",
+        json={
+            "from_participant_id": a["id"],
+            "content": "alice step 1",
+            "metadata": {"agent_hop": 1, "chain_id": chain_id},
+        },
+    )
+    third = (
+        await client.post(
+            f"/v1/rooms/{room_id}/speaking-floor/acquire",
+            json={"participant_id": b["id"], "chain_id": chain_id},
+        )
+    ).json()
+    assert third["granted"] is True
 
 
 @pytest.mark.asyncio
@@ -939,9 +1049,62 @@ async def test_dm_is_private_and_lists_peer_status(client: AsyncClient):
     assert threads[0]["peer_status"] in {"online", "offline"}
     assert threads[0]["peer_name"] == "bob"
 
+    def _has_secret(msgs: list) -> bool:
+        return any(
+            "secret hello" in (m["message"]["parts"][0]["content"]) for m in msgs
+        )
+
+    snap_public = (await client.get(f"/v1/rooms/{room_id}/snapshot")).json()
+    assert not _has_secret(snap_public["messages"])
+    snap_a = (
+        await client.get(
+            f"/v1/rooms/{room_id}/snapshot",
+            params={"for_participant": a["id"]},
+        )
+    ).json()
+    assert _has_secret(snap_a["messages"])
+    snap_b = (
+        await client.get(
+            f"/v1/rooms/{room_id}/snapshot",
+            params={"for_participant": b["id"]},
+        )
+    ).json()
+    assert _has_secret(snap_b["messages"])
+    c = (
+        await client.post(
+            f"/v1/rooms/{room_id}/join",
+            json={"name": "carol", "harness": "human"},
+        )
+    ).json()
+    snap_c = (
+        await client.get(
+            f"/v1/rooms/{room_id}/snapshot",
+            params={"for_participant": c["id"]},
+        )
+    ).json()
+    assert not _has_secret(snap_c["messages"])
+
     # Participants sorted online-first
     people = (await client.get(f"/v1/rooms/{room_id}/participants")).json()["participants"]
     assert people[0]["status"] == "online"
+
+
+def test_sse_dm_visibility_helper():
+    from opengateway.dm_visibility import dm_visible_to_participant
+
+    msg = {
+        "from_participant_id": "a",
+        "to_participant_id": "b",
+        "message": {"parts": [{"content": "secret"}]},
+    }
+    assert dm_visible_to_participant(msg, "a")
+    assert dm_visible_to_participant(msg, "b")
+    assert not dm_visible_to_participant(msg, "c")
+    assert not dm_visible_to_participant(msg, None)
+    assert dm_visible_to_participant(msg, None, admin=True)
+    assert dm_visible_to_participant(
+        {"from_participant_id": "a", "to_participant_id": None}, None
+    )
 
 
 @pytest.mark.asyncio
@@ -973,17 +1136,24 @@ def test_serve_mode_binds_localhost():
     import os
     from opengateway.config import load_gateway_config
 
-    for k in list(os.environ):
-        if k.startswith("OPENGATEWAY_"):
-            del os.environ[k]
-    os.environ["OPENGATEWAY_MODE"] = "serve"
-    os.environ["OPENGATEWAY_AUTH_TOKEN"] = "tok"
-    os.environ["OPENGATEWAY_PORT"] = "8765"
-    cfg = load_gateway_config()
-    assert cfg.host == "127.0.0.1"
-    assert cfg.network == "tailscale"
-    assert cfg.serve_hint and "tailscale serve" in cfg.serve_hint
-    assert cfg.require_auth is True
+    saved = {k: os.environ[k] for k in os.environ if k.startswith("OPENGATEWAY_")}
+    try:
+        for k in list(os.environ):
+            if k.startswith("OPENGATEWAY_"):
+                del os.environ[k]
+        os.environ["OPENGATEWAY_MODE"] = "serve"
+        os.environ["OPENGATEWAY_AUTH_TOKEN"] = "tok"
+        os.environ["OPENGATEWAY_PORT"] = "8765"
+        cfg = load_gateway_config()
+        assert cfg.host == "127.0.0.1"
+        assert cfg.network == "tailscale"
+        assert cfg.serve_hint and "tailscale serve" in cfg.serve_hint
+        assert cfg.require_auth is True
+    finally:
+        for k in list(os.environ):
+            if k.startswith("OPENGATEWAY_"):
+                del os.environ[k]
+        os.environ.update(saved)
 
 
 def test_open_lan_bind_not_mislabeled_tailscale():
@@ -991,17 +1161,24 @@ def test_open_lan_bind_not_mislabeled_tailscale():
     import os
     from opengateway.config import load_gateway_config
 
-    for k in list(os.environ):
-        if k.startswith("OPENGATEWAY_"):
-            del os.environ[k]
-    os.environ["OPENGATEWAY_MODE"] = "public"
-    os.environ["OPENGATEWAY_VIA"] = "open"
-    os.environ["OPENGATEWAY_HOST"] = "0.0.0.0"
-    os.environ["OPENGATEWAY_AUTH_TOKEN"] = "tok"
-    os.environ["OPENGATEWAY_PUBLIC_URL"] = "http://192.168.1.233:8765"
-    os.environ["OPENGATEWAY_PORT"] = "8765"
-    cfg = load_gateway_config()
-    assert cfg.host == "0.0.0.0"
-    assert cfg.network == "lan"
-    assert cfg.require_auth is True
-    assert cfg.serve_hint is None
+    saved = {k: os.environ[k] for k in os.environ if k.startswith("OPENGATEWAY_")}
+    try:
+        for k in list(os.environ):
+            if k.startswith("OPENGATEWAY_"):
+                del os.environ[k]
+        os.environ["OPENGATEWAY_MODE"] = "public"
+        os.environ["OPENGATEWAY_VIA"] = "open"
+        os.environ["OPENGATEWAY_HOST"] = "0.0.0.0"
+        os.environ["OPENGATEWAY_AUTH_TOKEN"] = "tok"
+        os.environ["OPENGATEWAY_PUBLIC_URL"] = "http://192.168.1.233:8765"
+        os.environ["OPENGATEWAY_PORT"] = "8765"
+        cfg = load_gateway_config()
+        assert cfg.host == "0.0.0.0"
+        assert cfg.network == "lan"
+        assert cfg.require_auth is True
+        assert cfg.serve_hint is None
+    finally:
+        for k in list(os.environ):
+            if k.startswith("OPENGATEWAY_"):
+                del os.environ[k]
+        os.environ.update(saved)

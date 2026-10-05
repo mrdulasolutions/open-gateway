@@ -119,10 +119,10 @@ function AuthConnectBanner({
         {msg && <p className="text-xs opacity-90">{msg}</p>}
 
         <p className="text-[11px] leading-relaxed opacity-80">
-          After connecting, open <strong>Agent tokens</strong> in the left menu
-          to mint keys for Grok / Claude / Cursor MCP. You run the hub; this
-          browser still needs the hub token once. Railway is an optional remote
-          host, not required for on-device OSS.
+          After connecting, use <strong>Add agent</strong> in the left menu for
+          a runner-managed launch. Manual API keys remain under the Advanced
+          compatibility section. You run the hub; this browser still needs the
+          hub token once.
         </p>
       </div>
     </div>
@@ -156,7 +156,11 @@ function roomMsgToAgent(
   }
   if (parts.length === 0) parts.push({ type: "text", text: "" });
 
-  const isSystem = m.from_name === "system" || Boolean(m.metadata?.system);
+  const isSystem =
+    m.from_name === "system" ||
+    Boolean(m.metadata?.system) ||
+    Boolean(m.metadata?.nudge_summary) ||
+    Boolean(m.metadata?.checkin);
   const isMine = Boolean(meId && m.from_participant_id === meId);
 
   if (isSystem) {
@@ -185,6 +189,7 @@ export default function App() {
   const { theme, toggle: toggleTheme } = useTheme();
   const [ping, setPing] = useState<Ping | null>(null);
   const [rooms, setRooms] = useState<Room[]>([]);
+  const [showArchivedRooms, setShowArchivedRooms] = useState(false);
   const [roomId, setRoomId] = useState<string | null>(null);
   const [room, setRoom] = useState<Room | null>(null);
   const [messages, setMessages] = useState<RoomMessage[]>([]);
@@ -262,10 +267,20 @@ export default function App() {
   // Public room: only broadcasts (no to). DM view: private thread only.
   const visibleMessages = useMemo(() => {
     if (!participantId) {
-      return messages.filter((m) => !m.to_participant_id);
+      return messages.filter(
+        (m) =>
+          !m.to_participant_id &&
+          !m.metadata?.nudge_summary &&
+          !m.metadata?.checkin
+      );
     }
     if (!activeDmPeerId) {
-      return messages.filter((m) => !m.to_participant_id);
+      return messages.filter(
+        (m) =>
+          !m.to_participant_id &&
+          !m.metadata?.nudge_summary &&
+          !m.metadata?.checkin
+      );
     }
     return messages.filter(
       (m) =>
@@ -320,7 +335,9 @@ export default function App() {
 
   const refreshRooms = useCallback(async () => {
     try {
-      const { rooms: list } = await api.listRooms();
+      const { rooms: list } = await api.listRooms({
+        includeArchived: showArchivedRooms,
+      });
       setRooms(list);
       setAuthNeeded(false);
       return list;
@@ -333,7 +350,7 @@ export default function App() {
       }
       throw e;
     }
-  }, []);
+  }, [showArchivedRooms]);
 
   const refreshDms = useCallback(
     async (rid: string, pid: string) => {
@@ -347,19 +364,16 @@ export default function App() {
     []
   );
 
-  const refreshSnapshot = useCallback(
-    async (id: string) => {
-      const snap = await api.snapshot(id);
-      setRoom(snap.room);
-      setMessages(snap.messages || []);
-      setParticipants(snap.participants || []);
-      setTasks(snap.tasks || []);
-      setArtifacts(snap.artifacts || []);
-      setBookmarks(snap.bookmarks || []);
-      setForks(snap.forks || []);
-    },
-    []
-  );
+  const refreshSnapshot = useCallback(async (id: string, forParticipant?: string | null) => {
+    const snap = await api.snapshot(id, forParticipant || undefined);
+    setRoom(snap.room);
+    setMessages(snap.messages || []);
+    setParticipants(snap.participants || []);
+    setTasks(snap.tasks || []);
+    setArtifacts(snap.artifacts || []);
+    setBookmarks(snap.bookmarks || []);
+    setForks(snap.forks || []);
+  }, []);
 
   const ensureJoined = useCallback(
     async (id: string, name: string, existingPid?: string | null) => {
@@ -394,17 +408,69 @@ export default function App() {
       setDisplayName(name);
       const pid = getStoredPid(id);
       setParticipantId(pid);
-      await refreshSnapshot(id);
-      await ensureJoined(id, name, pid);
-      await refreshSnapshot(id);
+      const joined = await ensureJoined(id, name, pid);
+      await refreshSnapshot(id, joined.id);
       window.location.hash = id;
     },
     [refreshSnapshot, ensureJoined]
   );
 
+  const archiveRoomById = useCallback(
+    async (id: string) => {
+      const label = rooms.find((r) => r.id === id)?.name || "room";
+      if (
+        !window.confirm(
+          `Archive "${label}"? It will be hidden from the active list. You can restore it under "Show archived".`
+        )
+      ) {
+        return;
+      }
+      try {
+        await api.archiveRoom(id, displayName || "human");
+        const list = await refreshRooms();
+        if (roomId === id) {
+          const next = list.find((r) => r.status !== "archived");
+          if (next) await selectRoom(next.id);
+          else {
+            setRoomId(null);
+            setRoom(null);
+            setMessages([]);
+            setParticipants([]);
+            setParticipantId(null);
+            window.location.hash = "";
+          }
+        }
+      } catch (e) {
+        setError({
+          message: e instanceof Error ? e.message : String(e),
+        });
+      }
+    },
+    [rooms, displayName, refreshRooms, roomId, selectRoom]
+  );
+
+  const unarchiveRoomById = useCallback(
+    async (id: string) => {
+      try {
+        await api.unarchiveRoom(id, displayName || "human");
+        await refreshRooms();
+      } catch (e) {
+        setError({
+          message: e instanceof Error ? e.message : String(e),
+        });
+      }
+    },
+    [displayName, refreshRooms]
+  );
+
+  useEffect(() => {
+    if (authGate !== "app") return;
+    void refreshRooms().catch(() => {});
+  }, [showArchivedRooms, authGate, refreshRooms]);
+
   useEffect(() => {
     if (!roomId) return;
-    const es = new EventSource(api.eventsUrl(roomId));
+    const es = new EventSource(api.eventsUrl(roomId, participantId || undefined));
     es.onopen = () => {
       setLive(true);
       log("SSE connected");
@@ -418,14 +484,19 @@ export default function App() {
         const data = JSON.parse(raw);
         const msg = data.payload?.message || data.message;
         if (!msg?.id) return;
+        const toId = msg.to_participant_id as string | null | undefined;
+        const fromId = msg.from_participant_id as string | undefined;
+        if (toId && participantId) {
+          if (participantId !== toId && participantId !== fromId) return;
+        } else if (toId && !participantId) {
+          return;
+        }
         setMessages((prev) =>
           prev.some((m) => m.id === msg.id) ? prev : [...prev, msg]
         );
         if (participantId) refreshDms(roomId, participantId);
 
         // Notifications: incoming DMs / room chatter while in a DM / @mentions
-        const fromId = msg.from_participant_id as string | undefined;
-        const toId = msg.to_participant_id as string | null | undefined;
         const fromName = (msg.from_name as string) || "agent";
         const text =
           msg.message?.parts?.[0]?.content ||
@@ -490,7 +561,7 @@ export default function App() {
       try {
         const data = JSON.parse(raw);
         log(`${type}: ${data.payload?.action || ""}`);
-        refreshSnapshot(roomId).catch(() => {});
+        refreshSnapshot(roomId, participantId).catch(() => {});
         if (type === "task" && data.payload?.action === "created") {
           const t = data.payload?.task;
           if (t?.claimed_by === participantId || t?.metadata?.assignee_id === participantId) {
@@ -557,7 +628,10 @@ export default function App() {
 
   useEffect(() => {
     (async () => {
-      // Auth gate: login page unless session / bearer already present
+      // Auth gate: login page unless session / bearer already present.
+      // Do not read `authGate` here — this effect runs once and the state
+      // value is still "loading" when require_auth is off.
+      let enteredApp = Boolean(getAuthToken());
       try {
         const st = await api.authStatus();
         const token = getAuthToken();
@@ -566,6 +640,7 @@ export default function App() {
             const me = await api.authMe();
             if (me.user) setSessionUser(me.user);
             setAuthGate("app");
+            enteredApp = true;
           } catch {
             // Bearer master still ok even if /me has no user
             if (token.startsWith("ogs_")) {
@@ -575,15 +650,18 @@ export default function App() {
               return;
             }
             setAuthGate("app");
+            enteredApp = true;
           }
         } else if (st.require_auth !== false) {
           setAuthGate("login");
           // still allow pair deep-link below if token in hash
         } else {
           setAuthGate("app");
+          enteredApp = true;
         }
       } catch {
-        setAuthGate(getAuthToken() ? "app" : "login");
+        enteredApp = Boolean(getAuthToken());
+        setAuthGate(enteredApp ? "app" : "login");
       }
 
       // Deep link: #pair=CODE&room=ID&token=…
@@ -605,6 +683,7 @@ export default function App() {
         setAuthToken(hashToken);
         setAuthTokenState(hashToken);
         setAuthGate("app");
+        enteredApp = true;
       }
       if (pairCode) {
         try {
@@ -616,6 +695,7 @@ export default function App() {
             setAuthToken(redeemed.auth_token);
             setAuthTokenState(redeemed.auth_token);
             setAuthGate("app");
+            enteredApp = true;
           }
           if (redeemed.suggested_name) {
             setDisplayName(redeemed.suggested_name);
@@ -627,7 +707,7 @@ export default function App() {
         }
       }
 
-      if (getAuthToken() || authGate === "app") {
+      if (enteredApp) {
         setAuthGate("app");
         await refreshPing();
         const list = await refreshRooms();
@@ -725,20 +805,29 @@ export default function App() {
         });
       }
 
-      // Room posts stay public (@mentions still visible). Only DM mode is private.
       const allCall =
         isAllCall(content) ||
         mentionIds.includes("__all__") ||
         mentionIds.some((id) => id === "__all__");
-      // Explicit DM only when user opened a DM thread (or future private mode)
       let to = activeDmPeerId || undefined;
+      if (
+        !to &&
+        !allCall &&
+        mentionIds.length === 1 &&
+        mentionIds[0] &&
+        mentionIds[0] !== "__all__"
+      ) {
+        to = mentionIds[0];
+        setActiveDmPeerId(to);
+        setLeftSection("dms");
+      }
 
       const res = await api.postMessage(roomId, {
         from_participant_id: participantId,
         content:
           content.trim() ||
           uploaded.map((u) => `📎 ${u.name}`).join("\n"),
-        nudge_all: !activeDmPeerId && allCall,
+        nudge_all: !to && allCall,
         to_participant_id: to,
         parts: parts.length ? parts : undefined,
         metadata: uploaded.length
@@ -748,7 +837,7 @@ export default function App() {
       if (res && typeof res === "object" && "nudge_count" in res) {
         log(`nudged ${(res as { nudge_count: number }).nudge_count} agent(s)`);
       }
-      await refreshSnapshot(roomId);
+      await refreshSnapshot(roomId, participantId);
       await refreshDms(roomId, participantId);
     } catch (e) {
       setError({ message: e instanceof Error ? e.message : String(e) });
@@ -779,7 +868,7 @@ export default function App() {
       setStoredName(p.name || next);
       setDisplayName(p.name || next);
       log(`renamed → ${p.name || next}`);
-      await refreshSnapshot(roomId);
+      await refreshSnapshot(roomId, participantId);
     } catch (e) {
       log(`rename failed: ${e instanceof Error ? e.message : e}`);
       try {
@@ -810,7 +899,7 @@ export default function App() {
       });
       setDisplayRole(p.role || next);
       log(`role → ${p.role || next}`);
-      await refreshSnapshot(roomId);
+      await refreshSnapshot(roomId, participantId);
     } catch (e) {
       log(`role update failed: ${e instanceof Error ? e.message : e}`);
       setError({
@@ -838,19 +927,28 @@ export default function App() {
       });
       log("bookmarked");
     }
-    await refreshSnapshot(roomId);
+    await refreshSnapshot(roomId, participantId);
   };
 
   const onFork = async (messageId: string) => {
     if (!roomId || !participantId) return;
-    await api.createFork(roomId, {
+    const fork = await api.createFork(roomId, {
       root_message_id: messageId,
       created_by: participantId,
       created_by_name: displayName,
     });
-    log("fork created");
+    const branchId =
+      fork.forked_room_id ||
+      (fork.metadata?.forked_room_id as string | undefined) ||
+      null;
+    log(branchId ? `fork opened branch room` : "fork created");
     setLeftSection("forks");
-    await refreshSnapshot(roomId);
+    await refreshRooms();
+    if (branchId) {
+      await selectRoom(branchId);
+    } else {
+      await refreshSnapshot(roomId, participantId);
+    }
   };
 
   const dmPeer = participants.find((p) => p.id === activeDmPeerId);
@@ -923,9 +1021,16 @@ export default function App() {
           onSelectFork={(forkId) => {
             const f = forks.find((x) => x.id === forkId);
             if (f) {
+              const branchId =
+                f.forked_room_id ||
+                (f.metadata?.forked_room_id as string | undefined);
               setActiveDmPeerId(null);
-              setHighlightMessageId(f.root_message_id);
-              setTimeout(() => setHighlightMessageId(null), 2500);
+              if (branchId) {
+                void selectRoom(branchId);
+              } else {
+                setHighlightMessageId(f.root_message_id);
+                setTimeout(() => setHighlightMessageId(null), 2500);
+              }
             }
             if (isMobile) setLeftOpen(false);
           }}
@@ -933,11 +1038,19 @@ export default function App() {
             refreshPing();
             refreshRooms();
             if (roomId) {
-              refreshSnapshot(roomId);
+              refreshSnapshot(roomId, participantId);
               if (participantId) refreshDms(roomId, participantId);
             }
           }}
           onNewRoom={() => setShowNewRoom(true)}
+          showArchivedRooms={showArchivedRooms}
+          onShowArchivedRoomsChange={setShowArchivedRooms}
+          onArchiveRoom={(id) => {
+            void archiveRoomById(id);
+          }}
+          onUnarchiveRoom={(id) => {
+            void unarchiveRoomById(id);
+          }}
           onNameChange={onNameDraft}
           onNameCommit={onNameCommit}
           onRoleChange={onRoleDraft}
@@ -952,7 +1065,7 @@ export default function App() {
                 const list = await refreshRooms();
                 if (list[0] && !roomId) await selectRoom(list[0].id);
                 else if (roomId) {
-                  await refreshSnapshot(roomId);
+                  await refreshSnapshot(roomId, participantId);
                   if (participantId) await refreshDms(roomId, participantId);
                 }
               } catch (e) {
@@ -1257,12 +1370,35 @@ export default function App() {
                 </div>
               }
               footerExtra={
-                <div className="flex w-full flex-wrap items-center justify-between gap-2 text-xs text-zinc-500">
-                  <span>
-                    {participantId
-                      ? `as ${displayName} (${displayRole}) · private DMs filtered from room · ⌘K search`
-                      : "Join a room to send"}
-                  </span>
+                <div className="flex w-full flex-col gap-2">
+                  {activeDmPeerId && (
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span
+                        className="inline-flex items-center gap-1.5 rounded-full border border-violet-500/30 bg-violet-500/10 px-2.5 py-1 text-xs font-semibold text-violet-900 dark:text-violet-100"
+                      >
+                        Private with {dmPeer?.name || "peer"}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setActiveDmPeerId(null);
+                          setLeftSection("rooms");
+                        }}
+                        className="rounded-lg border border-zinc-200 px-2.5 py-1 text-xs font-semibold text-zinc-700 hover:bg-zinc-50 dark:border-white/10 dark:text-zinc-200 dark:hover:bg-white/5"
+                      >
+                        Back to room
+                      </button>
+                    </div>
+                  )}
+                  <div className="flex w-full flex-wrap items-center justify-between gap-2 text-xs text-zinc-500">
+                    <span>
+                      {participantId
+                        ? activeDmPeerId
+                          ? `as ${displayName} (${displayRole}) · only you and ${dmPeer?.name || "peer"} see this thread`
+                          : `as ${displayName} (${displayRole}) · room is public · ⌘K search`
+                        : "Join a room to send"}
+                    </span>
+                  </div>
                 </div>
               }
             />
