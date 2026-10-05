@@ -81,3 +81,15 @@ def test_resolve_bin_returns_string():
     b = resolve_opengateway_bin()
     assert isinstance(b, str)
     assert b
+
+
+def test_resolve_bin_prefers_current_cli(monkeypatch, tmp_path):
+    current = tmp_path / "opengateways"
+    current.write_text("#!/bin/sh\n", encoding="utf-8")
+    current.chmod(0o755)
+    monkeypatch.setattr("opengateway.im_service.sys.argv", [str(current)])
+    monkeypatch.setattr(
+        "opengateway.im_service.shutil.which",
+        lambda name: "/old/opengateway" if name == "opengateway" else None,
+    )
+    assert resolve_opengateway_bin() == str(current.resolve())

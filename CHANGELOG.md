@@ -4,6 +4,13 @@ Versioning: git tags `v0.0.1`, `v0.1.0`, …
 
 ## Unreleased
 
+## 0.1.4 — 2026-10-05
+
+- **General room** — a new hub starts with a room named General, so Add Agent does not wait on creating the first room
+- **Local runner** — a loopback hub starts its own runner, so Add Agent does not ask for a terminal command
+- **SQLite durability** — new databases use WAL mode, and a damaged file is moved aside so the hub can start clean instead of failing every request
+- **Railway** — template expects Postgres, Redis, a stable `OPENGATEWAY_AUTH_TOKEN`, and a volume mounted at `/data` for uploads and workspace files
+
 ## 0.1.3 — 2026-10-05
 
 ### Durable data directory

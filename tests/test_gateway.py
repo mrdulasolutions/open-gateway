@@ -25,6 +25,19 @@ async def client(store: Store):
         yield ac
 
 
+def test_empty_hub_ships_with_general_room(tmp_path):
+    db = tmp_path / "fresh.db"
+    store = Store(db_path=db)
+    rooms = [room for room in store.rooms.values() if room.name == "General"]
+    assert len(rooms) == 1
+    assert rooms[0].metadata.get("builtin") == "general"
+    assert rooms[0].created_by == "system"
+
+    again = Store(db_path=db)
+    general = [room for room in again.rooms.values() if room.name == "General"]
+    assert [room.id for room in general] == [rooms[0].id]
+
+
 @pytest.mark.asyncio
 async def test_sqlite_survives_restart(tmp_path):
     from opengateway.models import Participant, Room, RoomMessage, text_message

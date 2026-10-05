@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sqlite3
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
+
+from pydantic import ValidationError
 
 from opengateway.models import (
     Artifact,
@@ -27,6 +31,8 @@ from opengateway.models import (
     Task,
 )
 
+
+log = logging.getLogger(__name__)
 
 DEFAULT_DB_ENV = "OPENGATEWAY_DB"
 DATABASE_URL_ENV = "OPENGATEWAY_DATABASE_URL"
@@ -94,6 +100,41 @@ def is_postgres_url(spec: Any) -> bool:
     return s.startswith("postgresql://") or s.startswith("postgres://")
 
 
+def sqlite_file_is_healthy(path: Path) -> bool:
+    """True when the file opens and SQLite's quick check passes."""
+    try:
+        conn = sqlite3.connect(str(path), timeout=5.0)
+    except sqlite3.DatabaseError:
+        return False
+    try:
+        row = conn.execute("PRAGMA quick_check").fetchone()
+    except sqlite3.DatabaseError:
+        return False
+    finally:
+        conn.close()
+    return bool(row) and str(row[0]).lower() == "ok"
+
+
+def quarantine_sqlite(path: Path) -> Path:
+    """Move a damaged database aside so the hub can create a new one."""
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    dest = path.with_name(f"{path.name}.broken-{stamp}")
+    path.rename(dest)
+    for suffix in ("-wal", "-shm"):
+        sidecar = Path(str(path) + suffix)
+        if sidecar.exists():
+            sidecar.rename(dest.with_name(dest.name + suffix))
+    return dest
+
+
+def _load_model(model: Any, raw: str, table: str, row_id: str) -> Any:
+    try:
+        return model.model_validate_json(raw)
+    except (ValidationError, ValueError) as exc:
+        log.warning("Skipping unreadable %s row %s: %s", table, row_id, exc)
+        return None
+
+
 def open_persistence(spec: Path | str) -> Any:
     """Factory: SQLite file path or Postgres URL."""
     if is_postgres_url(spec):
@@ -113,9 +154,24 @@ class SqlitePersistence:
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
-        self._conn = sqlite3.connect(str(self.path), check_same_thread=False)
+        if path.exists() and not sqlite_file_is_healthy(path):
+            broken = quarantine_sqlite(path)
+            log.error(
+                "SQLite database at %s failed integrity check; moved it to %s and starting a new database",
+                path,
+                broken,
+            )
+        self._conn = sqlite3.connect(str(self.path), timeout=5.0, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
+        self._configure()
         self._init_schema()
+
+    def _configure(self) -> None:
+        """WAL lets the hub and a local runner share one file without corrupting it."""
+        self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.execute("PRAGMA synchronous=NORMAL")
+        self._conn.execute("PRAGMA busy_timeout=5000")
+        self._conn.execute("PRAGMA foreign_keys=ON")
 
     def close(self) -> None:
         with self._lock:
@@ -811,12 +867,20 @@ class SqlitePersistence:
         """Return hydrated domain objects for Store."""
         with self._lock:
             rooms = {
-                row["id"]: Room.model_validate_json(row["data"])
+                row["id"]: room
                 for row in self._conn.execute("SELECT id, data FROM rooms")
+                if (room := _load_model(Room, row["data"], "rooms", row["id"]))
+                is not None
             }
             participants = {
-                row["id"]: Participant.model_validate_json(row["data"])
+                row["id"]: participant
                 for row in self._conn.execute("SELECT id, data FROM participants")
+                if (
+                    participant := _load_model(
+                        Participant, row["data"], "participants", row["id"]
+                    )
+                )
+                is not None
             }
             # After restart, nobody is actually connected
             for p in participants.values():
@@ -824,59 +888,101 @@ class SqlitePersistence:
 
             messages: dict[str, list[RoomMessage]] = {}
             for row in self._conn.execute(
-                "SELECT room_id, data FROM messages ORDER BY created_at ASC"
+                "SELECT id, room_id, data FROM messages ORDER BY created_at ASC"
             ):
-                msg = RoomMessage.model_validate_json(row["data"])
-                messages.setdefault(row["room_id"], []).append(msg)
+                msg = _load_model(RoomMessage, row["data"], "messages", row["id"])
+                if msg is not None:
+                    messages.setdefault(row["room_id"], []).append(msg)
 
             tasks: dict[str, list[Task]] = {}
-            for row in self._conn.execute("SELECT room_id, data FROM tasks"):
-                task = Task.model_validate_json(row["data"])
-                tasks.setdefault(row["room_id"], []).append(task)
+            for row in self._conn.execute("SELECT id, room_id, data FROM tasks"):
+                task = _load_model(Task, row["data"], "tasks", row["id"])
+                if task is not None:
+                    tasks.setdefault(row["room_id"], []).append(task)
 
             artifacts: dict[str, list[Artifact]] = {}
-            for row in self._conn.execute("SELECT room_id, data FROM artifacts"):
-                art = Artifact.model_validate_json(row["data"])
-                artifacts.setdefault(row["room_id"], []).append(art)
+            for row in self._conn.execute("SELECT id, room_id, data FROM artifacts"):
+                art = _load_model(Artifact, row["data"], "artifacts", row["id"])
+                if art is not None:
+                    artifacts.setdefault(row["room_id"], []).append(art)
 
             agents = {
-                row["name"]: RegisteredAgent.model_validate_json(row["data"])
+                row["name"]: agent
                 for row in self._conn.execute("SELECT name, data FROM agents")
+                if (
+                    agent := _load_model(
+                        RegisteredAgent, row["data"], "agents", row["name"]
+                    )
+                )
+                is not None
             }
 
             bookmarks: dict[str, list[Bookmark]] = {}
-            for row in self._conn.execute("SELECT room_id, data FROM bookmarks"):
-                b = Bookmark.model_validate_json(row["data"])
-                bookmarks.setdefault(row["room_id"], []).append(b)
+            for row in self._conn.execute("SELECT id, room_id, data FROM bookmarks"):
+                bookmark = _load_model(Bookmark, row["data"], "bookmarks", row["id"])
+                if bookmark is not None:
+                    bookmarks.setdefault(row["room_id"], []).append(bookmark)
 
             forks: dict[str, list[Fork]] = {}
-            for row in self._conn.execute("SELECT room_id, data FROM forks"):
-                f = Fork.model_validate_json(row["data"])
-                forks.setdefault(row["room_id"], []).append(f)
+            for row in self._conn.execute("SELECT id, room_id, data FROM forks"):
+                fork = _load_model(Fork, row["data"], "forks", row["id"])
+                if fork is not None:
+                    forks.setdefault(row["room_id"], []).append(fork)
 
             gateways = {
-                row["id"]: GatewayRecord.model_validate_json(row["data"])
+                row["id"]: gateway
                 for row in self._conn.execute("SELECT id, data FROM gateways")
+                if (
+                    gateway := _load_model(
+                        GatewayRecord, row["data"], "gateways", row["id"]
+                    )
+                )
+                is not None
             }
             runners = {
-                row["id"]: Runner.model_validate_json(row["data"])
+                row["id"]: runner
                 for row in self._conn.execute("SELECT id, data FROM runners")
+                if (
+                    runner := _load_model(Runner, row["data"], "runners", row["id"])
+                )
+                is not None
             }
             runner_pair_codes = {
-                row["code_hash"]: RunnerPairCode.model_validate_json(row["data"])
+                row["code_hash"]: pair
                 for row in self._conn.execute(
                     "SELECT code_hash, data FROM runner_pair_codes"
                 )
+                if (
+                    pair := _load_model(
+                        RunnerPairCode,
+                        row["data"],
+                        "runner_pair_codes",
+                        row["code_hash"],
+                    )
+                )
+                is not None
             }
             managed_agents = {
-                row["id"]: ManagedAgent.model_validate_json(row["data"])
+                row["id"]: agent
                 for row in self._conn.execute("SELECT id, data FROM managed_agents")
+                if (
+                    agent := _load_model(
+                        ManagedAgent, row["data"], "managed_agents", row["id"]
+                    )
+                )
+                is not None
             }
             runner_jobs = {
-                row["id"]: RunnerJob.model_validate_json(row["data"])
+                row["id"]: job
                 for row in self._conn.execute(
                     "SELECT id, data FROM runner_jobs ORDER BY created_at ASC"
                 )
+                if (
+                    job := _load_model(
+                        RunnerJob, row["data"], "runner_jobs", row["id"]
+                    )
+                )
+                is not None
             }
 
         return {

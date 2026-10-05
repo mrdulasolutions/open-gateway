@@ -77,12 +77,18 @@ class ImServiceSpec:
 
 
 def resolve_opengateway_bin() -> str:
-    """Prefer real executable on PATH; fall back to current interpreter -m."""
-    for name in ("opengateway", "opengateways"):
-        p = shutil.which(name)
-        if p:
-            return p
-    # Running from source / venv without console script
+    """Prefer the CLI process that is installing the service.
+
+    ``shutil.which("opengateway")`` can hit an older tool install that has no
+    ``runner`` command, while this process is ``opengateways`` 0.1.3+.
+    """
+    current = Path(sys.argv[0])
+    if current.name in {"opengateways", "opengateway"} and current.is_file():
+        return str(current.resolve())
+    for name in ("opengateways", "opengateway"):
+        found = shutil.which(name)
+        if found:
+            return found
     return sys.executable
 
 

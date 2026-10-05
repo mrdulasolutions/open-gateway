@@ -88,6 +88,14 @@ class RedeemClient:
             }
         )
 
+    def request(self, method: str, path: str, **kwargs: Any) -> FakeResponse:
+        self.posts.append((path, kwargs.get("json") or {}))
+        if str(path).endswith("/heartbeat"):
+            return FakeResponse(
+                {"runner": {"id": "runner-1", "status": "online"}}
+            )
+        return FakeResponse({})
+
 
 class FakeAdapter:
     harness = "claude-code"

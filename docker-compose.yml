@@ -9,7 +9,7 @@
 services:
   opengateway:
     build: .
-    image: opengateway:0.1.3
+    image: opengateway:0.1.4
     container_name: opengateway
     restart: unless-stopped
     ports:

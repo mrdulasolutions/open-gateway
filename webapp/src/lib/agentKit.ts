@@ -171,6 +171,17 @@ export function runnerIsConnected(runner: AgentRunner): boolean {
   ].includes(state);
 }
 
+export function hubRunsLocalRunner(baseUrl: string): boolean {
+  try {
+    const host = new URL(baseUrl, window.location.href).hostname
+      .replace(/^\[|\]$/g, "")
+      .toLowerCase();
+    return host === "127.0.0.1" || host === "localhost" || host === "::1";
+  } catch {
+    return false;
+  }
+}
+
 export function runnerIsEmbedded(runner: AgentRunner): boolean {
   const capabilities = asRecord(runner.capabilities);
   return capabilities?.embedded === true;

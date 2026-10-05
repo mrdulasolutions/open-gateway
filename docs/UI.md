@@ -20,7 +20,7 @@ harness chips, system lines, nudge footer).
 
 1. Choose a runner.
 2. Choose **Claude Code**, **Grok**, or **Hermes**.
-3. Choose a room and agent name.
+3. Choose a room and agent name. A new hub already has a **General** room.
 4. Click **Start**.
 
 Step 3 lists **every active room** in the hub, not only the room open in the

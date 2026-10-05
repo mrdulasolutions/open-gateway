@@ -7,7 +7,7 @@ from enum import Enum
 from typing import Any, Literal, Optional
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, computed_field
+from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator
 
 
 def utcnow() -> datetime:
@@ -341,6 +341,20 @@ class Room(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)
+
+    @field_validator("status", mode="before")
+    @classmethod
+    def _coerce_status(cls, value: Any) -> Any:
+        """Keep one bad status from making the whole database unloadable."""
+        if value is None or value == "":
+            return RoomStatus.OPEN
+        if isinstance(value, RoomStatus):
+            return value
+        text = str(value).strip().lower()
+        try:
+            return RoomStatus(text)
+        except ValueError:
+            return RoomStatus.OPEN
 
 
 class Bookmark(BaseModel):

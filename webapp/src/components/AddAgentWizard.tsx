@@ -24,6 +24,7 @@ import {
   MANAGED_HARNESS_LABELS,
   defaultManagedAgentName,
   runnerCapability,
+  hubRunsLocalRunner,
   runnerIsConnected,
   runnerIsEmbedded,
   runnerPairCommand,
@@ -111,6 +112,7 @@ export function AddAgentWizard({
   const [error, setError] = useState("");
   const [monitorNote, setMonitorNote] = useState("");
   const pairStarted = useRef(false);
+  const localHub = hubRunsLocalRunner(api.base || window.location.href);
   const onChangedRef = useRef(onChanged);
   const agentRef = useRef<ManagedAgent | null>(null);
   const autoSelectedRunner = useRef<string | null>(null);
@@ -150,13 +152,15 @@ export function AddAgentWizard({
         );
         setRunners(active);
         const connected = active.filter(runnerIsConnected);
+        const embedded = connected.find(runnerIsEmbedded);
         setRunnerId((current) =>
           connected.some((runner) => runner.id === current)
             ? current
-            : connected[0]?.id || ""
+            : (embedded || connected[0])?.id || ""
         );
-        if (connected.length > 0) setPairing(null);
+        if (connected.length > 0 || localHub) setPairing(null);
         if (
+          !localHub &&
           active.length === 0 &&
           autoPair &&
           !pairStarted.current
@@ -169,7 +173,7 @@ export function AddAgentWizard({
         setRunnerBusy(false);
       }
     },
-    [beginPairing]
+    [beginPairing, localHub]
   );
 
   useEffect(() => {
@@ -505,6 +509,11 @@ export function AddAgentWizard({
                     </div>
                   )}
                 </div>
+              ) : localHub ? (
+                <div className="flex items-center gap-2 rounded-xl border border-zinc-200 p-3 text-sm text-zinc-600 dark:border-white/10 dark:text-zinc-300">
+                  <Loader2 className="h-4 w-4 animate-spin text-orange-500" />
+                  This hub starts its own runner. No terminal command is needed.
+                </div>
               ) : !pairing ? (
                 <div className="rounded-xl border border-amber-500/35 bg-amber-50 p-3 dark:border-amber-500/25 dark:bg-amber-500/10">
                   <p className="text-xs font-semibold text-amber-950 dark:text-amber-100">
@@ -560,7 +569,7 @@ export function AddAgentWizard({
                 </div>
               ) : null}
 
-              {pairing && (
+              {pairing && !localHub && (
                 <div className="rounded-xl border border-orange-500/35 bg-orange-50 p-3 dark:border-orange-500/25 dark:bg-orange-500/10">
                   <div className="flex items-center gap-2 text-xs font-semibold text-orange-950 dark:text-orange-100">
                     <Terminal className="h-4 w-4" />

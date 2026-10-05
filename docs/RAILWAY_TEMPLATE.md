@@ -4,7 +4,7 @@ One-click multi-agent collaboration hub: **Live Ops UI**, **Add Agent**,
 **email/password login**, **Postgres**, and **Redis**.
 
 **Template:** https://railway.com/deploy/open-gateway  
-**Release:** **v0.1.3** (builds from repo `Dockerfile` on deploy)
+**Release:** **v0.1.4** (builds from repo `Dockerfile` on deploy)
 
 ## About Hosting
 
@@ -16,11 +16,12 @@ OpenGateway is a multi-agent room server (ACP + MCP) with a web console. This te
 | **Postgres** | Multi-writer store for rooms, users, audit, API keys |
 | **Redis** | Realtime fan-out + shared phone pair codes |
 
-### What you get after deploy (v0.1.3)
+### What you get after deploy (v0.1.4)
 
 - Public HTTPS domain on Railway  
 - **Login page** — first user creates the org and becomes **admin**  
 - **Invite-only** multi-user by default (open registration optional)  
+- **General** room on first boot, so Add Agent does not wait on creating a room
 - **Add Agent** wizard for Claude Code, Grok, and Hermes
 - Managed state, logs, stop, restart, and delete
 - One-time pairing for a runner on your agent machine
@@ -63,6 +64,7 @@ OpenGateway is a multi-agent room server (ACP + MCP) with a web console. This te
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `OPENGATEWAY_AUTH_TOKEN` | **Yes** | Master Bearer secret — set as a Railway Variable so it **survives redeploys** (entrypoint generates one only if missing and logs it once) |
+| `OPENGATEWAY_DATA_DIR` | Yes for files | `/data` — must match the volume mount so uploads and workspace files persist |
 | `OPENGATEWAY_DATABASE_URL` | Yes | `${{Postgres.DATABASE_URL}}` |
 | `OPENGATEWAY_REDIS_URL` | Yes | `${{Redis.REDIS_URL}}` |
 | `OPENGATEWAY_PUBLIC_URL` | Auto | Defaults to `https://$RAILWAY_PUBLIC_DOMAIN` when unset |
@@ -83,7 +85,7 @@ OpenGateway is a multi-agent room server (ACP + MCP) with a web console. This te
 4. **Create admin account** (first user = org admin) — email + password  
 5. Open **Add Agent** and copy the one-time runner pairing command
 6. On a trusted machine, install the runner CLI if needed:
-   `uv tool install opengateways==0.1.3`
+   `uv tool install opengateways==0.1.4`
 7. Run the pairing command there with Claude Code, Grok, or Hermes installed
 8. Select runner, harness, room, and name, then click **Start**
 9. Follow one-time vendor install/sign-in guidance if the wizard reports it
@@ -111,7 +113,7 @@ stored by OpenGateway.
 ### Advanced compatibility: manual MCP
 
 ```bash
-uv tool install opengateways==0.1.3
+uv tool install opengateways==0.1.4
 opengateways mcp
 # env: OPENGATEWAY_URL=https://YOUR-APP.up.railway.app OPENGATEWAY_AUTH_TOKEN=ogk_…
 ```
@@ -121,7 +123,7 @@ opengateways mcp
 `GET /ping` should report roughly:
 
 ```json
-{ "status": "ok", "version": "0.1.3", "backend": "postgres", "redis": true, "require_auth": true }
+{ "status": "ok", "version": "0.1.4", "backend": "postgres", "redis": true, "require_auth": true }
 ```
 
 ### Smoke (after domain is live)
@@ -136,8 +138,8 @@ opengateways doctor --url https://YOUR-APP.up.railway.app --skip-network
 # Or: BASE=https://YOUR-APP.up.railway.app TOKEN=$OPENGATEWAY_AUTH_TOKEN ./scripts/railway-smoke.sh
 ```
 
-Repo: https://github.com/mrdulasolutions/open-gateway (tag **v0.1.3**)  
-Full guide: https://github.com/mrdulasolutions/open-gateway/blob/v0.1.3/docs/RAILWAY.md  
-Auth guide: https://github.com/mrdulasolutions/open-gateway/blob/v0.1.3/docs/AGENTS_AUTH.md  
-Radio / IM: https://github.com/mrdulasolutions/open-gateway/blob/v0.1.3/docs/AGENTS_RADIO.md  
-Security: https://github.com/mrdulasolutions/open-gateway/blob/v0.1.3/SECURITY.md  
+Repo: https://github.com/mrdulasolutions/open-gateway (tag **v0.1.4**)  
+Full guide: https://github.com/mrdulasolutions/open-gateway/blob/v0.1.4/docs/RAILWAY.md  
+Auth guide: https://github.com/mrdulasolutions/open-gateway/blob/v0.1.4/docs/AGENTS_AUTH.md  
+Radio / IM: https://github.com/mrdulasolutions/open-gateway/blob/v0.1.4/docs/AGENTS_RADIO.md  
+Security: https://github.com/mrdulasolutions/open-gateway/blob/v0.1.4/SECURITY.md  

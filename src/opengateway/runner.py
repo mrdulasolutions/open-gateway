@@ -752,6 +752,19 @@ def connect_runner(
     )
     save_runner_config(config)
     save_runner_token(redeemed.runner_token)
+    # Redeem stores the runner as stale until the first heartbeat. Check in
+    # from this process so Live Ops sees the connect before launchd starts.
+    api = RunnerAPI(config, redeemed.runner_token, client=client)
+    try:
+        api.heartbeat(
+            {
+                "version": PACKAGE_VERSION,
+                "capabilities": runner_capabilities(),
+                "agent_statuses": {},
+            }
+        )
+    finally:
+        api.close()
     return config.public_dict()
 
 

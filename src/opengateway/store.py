@@ -135,6 +135,7 @@ class Store:
             self._db = open_persistence(resolved)
             self.backend_kind = "postgres" if is_postgres_url(resolved) else "sqlite"
             self._load_from_db()
+            self._ensure_general_rooms()
 
     @property
     def persistent(self) -> bool:
@@ -158,6 +159,36 @@ class Store:
         self.managed_agents = data.get("managed_agents") or {}
         self.runner_jobs = data.get("runner_jobs") or {}
         # API keys / push live only in DB (or memory maps); loaded on demand
+
+    def _ensure_general_rooms(self) -> None:
+        """Give every empty hub a room so Add Agent does not wait on room setup."""
+        if self._db is None:
+            return
+        tenant_ids: list[Optional[str]] = [None]
+        if hasattr(self._db, "list_tenants"):
+            for tenant in self._db.list_tenants() or []:
+                tid = tenant.get("id")
+                if tid:
+                    tenant_ids.append(tid)
+        for tenant_id in tenant_ids:
+            self._ensure_general_room(tenant_id=tenant_id)
+
+    def _ensure_general_room(self, *, tenant_id: Optional[str] = None) -> Optional[Room]:
+        if any(
+            room.status != RoomStatus.ARCHIVED and room.tenant_id == tenant_id
+            for room in self.rooms.values()
+        ):
+            return None
+        room = Room(
+            name="General",
+            goal="Start here. Add agents and talk in this room.",
+            created_by="system",
+            tenant_id=tenant_id,
+            metadata={"builtin": "general"},
+        )
+        self.rooms[room.id] = room
+        self._persist_room(room)
+        return room
 
     def _persist_room(self, room: Room) -> None:
         if self._db:
@@ -269,6 +300,7 @@ class Store:
                 self._memory_tenants[tid] = tenant
             tenant_id = tid
             role = "admin"
+            self._ensure_general_room(tenant_id=tenant_id)
         elif invite_code:
             code_key = (invite_code or "").strip()
             inv = None
