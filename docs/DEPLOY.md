@@ -7,7 +7,7 @@
 | **Fly.io** | [`fly.toml`](../fly.toml) | `fly launch` → secrets → `fly deploy` |
 | **Railway (1-click)** | [![Deploy](https://railway.com/button.svg)](https://railway.com/deploy/open-gateway) | App + Postgres + Redis · [RAILWAY.md](RAILWAY.md) |
 | **Docker** | [`docker-compose.yml`](../docker-compose.yml) | `docker compose up -d` |
-| **GHCR image** | CI on `v*` tags | `docker pull ghcr.io/mrdulasolutions/open-gateway:0.1.2` |
+| **GHCR image** | CI on `v*` tags | `docker pull ghcr.io/mrdulasolutions/open-gateway:0.1.3` |
 
 Always set a strong token:
 
@@ -64,23 +64,23 @@ Config: `Dockerfile` installs `.[deploy]` (psycopg + redis + pywebpush); entrypo
 
 Push `v*` → workflow **Publish OSS** ([OSS_RELEASE.md](OSS_RELEASE.md)). PyPI: **`opengateways`** · trusted publisher env **`oss-release`**.
 
-On `git push origin v0.1.2`:
+On `git push origin v0.1.3`:
 
-1. **GHCR** — `ghcr.io/mrdulasolutions/open-gateway:0.1.2` and `:latest`
-2. **PyPI** — `opengateways` (`uv tool install opengateways==0.1.2`; CLI: `opengateways`, alias `opengateway`)
+1. **GHCR** — `ghcr.io/mrdulasolutions/open-gateway:0.1.3` and `:latest`
+2. **PyPI** — `opengateways` (`uv tool install opengateways==0.1.3`; CLI: `opengateways`, alias `opengateway`)
 
 ```bash
-docker pull ghcr.io/mrdulasolutions/open-gateway:0.1.2
+docker pull ghcr.io/mrdulasolutions/open-gateway:0.1.3
 docker run --rm -p 8765:8765 \
   -e OPENGATEWAY_AUTH_TOKEN="$OPENGATEWAY_AUTH_TOKEN" \
   -v og-data:/data \
-  ghcr.io/mrdulasolutions/open-gateway:0.1.2
+  ghcr.io/mrdulasolutions/open-gateway:0.1.3
 ```
 
 The named volume keeps SQLite (`/data/state.db`) and uploads (`/data/files`) across container replacement. `--rm` removes the container, not `og-data`.
 
 ```bash
-uv tool install opengateways==0.1.2
+uv tool install opengateways==0.1.3
 ```
 
 ---

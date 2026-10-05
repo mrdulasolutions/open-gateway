@@ -18,7 +18,7 @@ Any non-loopback mode needs a strong token:
 export OPENGATEWAY_AUTH_TOKEN="$(openssl rand -hex 24)"
 ```
 
-**PyPI:** `uv tool install opengateways==0.1.2` — CLI **`opengateways`** (alias `opengateway`). Import: `opengateway`.
+**PyPI:** `uv tool install opengateways==0.1.3` — CLI **`opengateways`** (alias `opengateway`). Import: `opengateway`.
 
 After install, normal agent setup happens in Live Ops: click **Add Agent**,
 choose a runner, Claude Code/Grok/Hermes, room, and name, then click **Start**.
@@ -31,7 +31,7 @@ The hub mints the scoped agent credential invisibly.
 Requires [uv](https://docs.astral.sh/uv/) and Python 3.11+.
 
 ```bash
-uv tool install opengateways==0.1.2
+uv tool install opengateways==0.1.3
 
 opengateways serve
 # → http://127.0.0.1:8765/ui/
@@ -45,7 +45,7 @@ guidance in the wizard. OpenGateway never stores vendor credentials.
 **Alternative (git @ tag):**
 
 ```bash
-uv tool install "git+https://github.com/mrdulasolutions/open-gateway.git@v0.1.2"
+uv tool install "git+https://github.com/mrdulasolutions/open-gateway.git@v0.1.3"
 ```
 
 **LAN + Tailscale (dual path)**
@@ -62,7 +62,7 @@ tailscale serve --bg 8765
 **Upgrade**
 
 ```bash
-uv tool install opengateways==0.1.2 --force
+uv tool install opengateways==0.1.3 --force
 ```
 
 **Advanced compatibility: manual MCP** (gateway already running):
@@ -114,14 +114,14 @@ runner on the host. The wizard supplies the one-time command.
 
 ## D. GHCR image
 
-After release tag `v0.1.2`:
+After release tag `v0.1.3`:
 
 ```bash
-docker pull ghcr.io/mrdulasolutions/open-gateway:0.1.2
+docker pull ghcr.io/mrdulasolutions/open-gateway:0.1.3
 docker run --rm -p 8765:8765 \
   -e OPENGATEWAY_AUTH_TOKEN="$OPENGATEWAY_AUTH_TOKEN" \
   -v og-data:/data \
-  ghcr.io/mrdulasolutions/open-gateway:0.1.2
+  ghcr.io/mrdulasolutions/open-gateway:0.1.3
 ```
 
 ---

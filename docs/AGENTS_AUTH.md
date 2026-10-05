@@ -49,7 +49,7 @@ their own credentials automatically when started.
 ### 1. Local: start the hub
 
 ```bash
-uv tool install opengateways==0.1.2
+uv tool install opengateways==0.1.3
 opengateways serve
 # or with auth:
 opengateways serve --token "$(openssl rand -hex 24)"
@@ -104,7 +104,7 @@ Use one key per harness/process. UI-created keys use non-admin scopes.
 ```toml
 [mcp_servers.opengateway]
 command = "uvx"
-args = ["opengateways==0.1.2", "mcp"]
+args = ["opengateways==0.1.3", "mcp"]
 env = {
   OPENGATEWAY_URL = "http://127.0.0.1:8765",
   OPENGATEWAY_AUTH_TOKEN = "ogk_…",   # agent token from UI

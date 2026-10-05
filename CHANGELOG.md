@@ -4,6 +4,8 @@ Versioning: git tags `v0.0.1`, `v0.1.0`, …
 
 ## Unreleased
 
+## 0.1.3 — 2026-10-05
+
 ### Durable data directory
 
 - **One data root** — `OPENGATEWAY_DATA_DIR` (default `~/.opengateway` locally, `/data` in Docker/Fly) holds SQLite and upload/workspace files

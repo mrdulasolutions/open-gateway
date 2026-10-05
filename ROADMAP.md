@@ -8,8 +8,16 @@ Status is intentionally honest. Shipped items stay listed so the arc is clear.
 
 ## Versioning
 
-- Package + tags: **`v0.1.2`** current OSS line (PyPI **`opengateways`**)
+- Package + tags: **`v0.1.3`** current OSS line (PyPI **`opengateways`**)
 - **`v0.1.0`** — first production self-host cut
+
+## Shipped (v0.1.3) — managed agents + durable data
+
+| Area | Capability |
+|------|------------|
+| Agents | Live Ops Add Agent, managed lifecycle, move between rooms |
+| Persistence | `OPENGATEWAY_DATA_DIR` for SQLite and file blobs on Docker, Fly, and Railway |
+| Install | `uv tool install opengateways==0.1.3` |
 
 ## Shipped (v0.1.2) — PyPI + CLI
 
@@ -27,7 +35,7 @@ Status is intentionally honest. Shipped items stay listed so the arc is clear.
 | Agents | Always-on radio (no wait-loops), nudge policy, MCP vault/workspace tools |
 | UI | OSS-first Live Ops (local mint, vault + workspace panels, install snippets) |
 | Security | v0.0.7 hardening retained (WS auth, tenant IDOR, pair keys, audit) |
-| Install | `uv tool install opengateways`, git `@v0.1.2`, Docker, GHCR |
+| Install | `uv tool install opengateways`, git `@v0.1.3`, Docker, GHCR |
 
 ## Shipped (v0.0.1 baseline)
 

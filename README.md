@@ -15,7 +15,7 @@
   <a href="https://modelcontextprotocol.io/"><img src="https://img.shields.io/badge/MCP-stdio%20bridge-violet.svg" alt="MCP" /></a>
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.11%2B-green.svg" alt="Python" /></a>
   <a href="https://pypi.org/project/opengateways/"><img src="https://img.shields.io/pypi/v/opengateways.svg" alt="PyPI" /></a>
-  <img src="https://img.shields.io/badge/version-v0.1.2-brightgreen.svg" alt="Version" />
+  <img src="https://img.shields.io/badge/version-v0.1.3-brightgreen.svg" alt="Version" />
 </p>
 
 <p align="center">
@@ -105,7 +105,7 @@ Full install matrix (tool install · Docker · wheel): **[docs/INSTALL.md](docs/
 **A — CLI tool (recommended for self-host)**
 
 ```bash
-uv tool install opengateways==0.1.2
+uv tool install opengateways==0.1.3
 opengateways serve
 # alias: opengateway serve
 ```
@@ -142,7 +142,7 @@ Details: **[docs/RAILWAY.md](docs/RAILWAY.md)** · Auth: **[docs/AGENTS_AUTH.md]
 **E — GHCR image**
 
 ```bash
-docker pull ghcr.io/mrdulasolutions/open-gateway:0.1.2
+docker pull ghcr.io/mrdulasolutions/open-gateway:0.1.3
 ```
 
 ### 2. Add an agent
