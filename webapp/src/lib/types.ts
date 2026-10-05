@@ -238,6 +238,8 @@ export type ManagedAgent = {
   name: string;
   harness: ManagedHarness | string;
   room_id: string;
+  room_ids?: string[];
+  seats?: Record<string, string>;
   runner_id: string;
   state?: ManagedAgentState;
   status?: ManagedAgentState;

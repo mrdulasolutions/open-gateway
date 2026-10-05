@@ -42,6 +42,7 @@ from opengateway.seat_registry import (
     clear_runner_credentials,
     credential_store_path,
     get_managed_seat,
+    get_managed_seats,
     load_agent_credential,
     load_registry,
     load_runner_token,
@@ -126,6 +127,7 @@ class ManagedAgentSpec:
     room_id: str
     runner_id: str = ""
     target_room_id: str = ""
+    room_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -491,6 +493,10 @@ def decode_job_payload(payload: Mapping[str, Any] | None) -> RunnerJob | None:
         nested_agent, "runner_id", "runnerId"
     )
     target_room_id = _first_text(raw, "target_room_id", "targetRoomId") or ""
+    raw_rooms = raw.get("room_ids")
+    if not isinstance(raw_rooms, list):
+        raw_rooms = raw.get("roomIds") if isinstance(raw.get("roomIds"), list) else []
+    room_ids = tuple(str(item).strip() for item in raw_rooms if str(item).strip())
     if not job_id or not action or not managed_agent_id:
         raise RunnerError("Runner job is missing id, action, or managed agent id")
     return RunnerJob(
@@ -503,6 +509,7 @@ def decode_job_payload(payload: Mapping[str, Any] | None) -> RunnerJob | None:
             room_id=room_id,
             runner_id=runner_id,
             target_room_id=target_room_id,
+            room_ids=room_ids,
         ),
     )
 
@@ -947,7 +954,7 @@ class RunnerService:
         self._turn_slots = threading.BoundedSemaphore(self._max_concurrency)
         self._stop_event = threading.Event()
         self._lock = threading.RLock()
-        self._runtimes: dict[str, ManagedRuntime] = {}
+        self._runtimes: dict[str, dict[str, ManagedRuntime]] = {}
         self._logs: dict[str, BoundedLog] = {}
         self._secrets: set[str] = {runner_token} if runner_token else set()
         self._last_error = ""
@@ -1098,11 +1105,7 @@ class RunnerService:
             )
             return result
         except Exception as exc:
-            if claim.agent_token and parsed.action in {
-                "start",
-                "restart",
-                "move",
-            }:
+            if claim.agent_token and parsed.action in {"start", "restart"}:
                 remove_agent_credential(
                     f"managed:{parsed.agent.managed_agent_id}"
                 )
@@ -1179,7 +1182,7 @@ class RunnerService:
     def _execute(self, job: RunnerJob, claim: ClaimResult) -> dict[str, Any]:
         action = job.action.lower().strip()
         if action == "start":
-            return self._start_agent(job.agent, claim)
+            return self._start_memberships(job.agent, claim)
         if action == "stop":
             return self._stop_agent(
                 job.agent.managed_agent_id,
@@ -1194,18 +1197,55 @@ class RunnerService:
                 desired_state="running",
                 leave=True,
             )
-            return self._start_agent(job.agent, claim)
-        if action == "move":
+            return self._start_memberships(job.agent, claim)
+        if action == "join_room":
             target = (job.agent.target_room_id or "").strip()
             if not target:
-                raise RunnerError("Move job is missing target_room_id")
-            self._stop_agent(
+                raise RunnerError("Join job is missing target_room_id")
+            spec = ManagedAgentSpec(
+                managed_agent_id=job.agent.managed_agent_id,
+                name=job.agent.name,
+                harness=job.agent.harness,
+                room_id=target,
+                runner_id=job.agent.runner_id,
+            )
+            result = self._start_agent(spec, claim)
+            result["room_id"] = target
+            return result
+        if action == "leave_room":
+            target = (job.agent.target_room_id or job.agent.room_id or "").strip()
+            if not target:
+                raise RunnerError("Leave job is missing a room")
+            result = self._stop_agent(
                 job.agent.managed_agent_id,
                 fallback_spec=job.agent,
                 desired_state="running",
                 leave=True,
+                room_id=target,
             )
-            self._release_seat_for_room_change(job.agent.managed_agent_id)
+            remove_seat(
+                managed_agent_id=job.agent.managed_agent_id,
+                room_id=target,
+            )
+            result["room_id"] = target
+            return result
+        if action == "move":
+            target = (job.agent.target_room_id or "").strip()
+            source = (job.agent.room_id or "").strip()
+            if not target:
+                raise RunnerError("Move job is missing target_room_id")
+            if source and source != target:
+                self._stop_agent(
+                    job.agent.managed_agent_id,
+                    fallback_spec=job.agent,
+                    desired_state="running",
+                    leave=True,
+                    room_id=source,
+                )
+                remove_seat(
+                    managed_agent_id=job.agent.managed_agent_id,
+                    room_id=source,
+                )
             moved = ManagedAgentSpec(
                 managed_agent_id=job.agent.managed_agent_id,
                 name=job.agent.name,
@@ -1220,6 +1260,38 @@ class RunnerService:
             return self._delete_agent(job.agent, claim)
         raise RunnerError(f"Unsupported managed-agent action: {action}")
 
+    def _start_memberships(
+        self, spec: ManagedAgentSpec, claim: ClaimResult
+    ) -> dict[str, Any]:
+        rooms = [room for room in spec.room_ids if room]
+        if spec.room_id and spec.room_id not in rooms:
+            rooms.insert(0, spec.room_id)
+        if not rooms:
+            rooms = [spec.room_id]
+        token = claim.agent_token
+        last: dict[str, Any] = {}
+        for room in rooms:
+            room_claim = ClaimResult(
+                agent_token=token,
+                hub_url=claim.hub_url,
+                raw=claim.raw,
+            )
+            last = self._start_agent(
+                ManagedAgentSpec(
+                    managed_agent_id=spec.managed_agent_id,
+                    name=spec.name,
+                    harness=spec.harness,
+                    room_id=room,
+                    runner_id=spec.runner_id,
+                ),
+                room_claim,
+            )
+            token = token or load_agent_credential(
+                f"managed:{spec.managed_agent_id}"
+            )
+        last["room_ids"] = rooms
+        return last
+
     def _start_agent(
         self,
         spec: ManagedAgentSpec,
@@ -1229,7 +1301,9 @@ class RunnerService:
     ) -> dict[str, Any]:
         self._validate_spec(spec)
         with self._lock:
-            existing = self._runtimes.get(spec.managed_agent_id)
+            existing = (self._runtimes.get(spec.managed_agent_id) or {}).get(
+                spec.room_id
+            )
             if existing and existing.status == "running":
                 return {
                     **existing.public_dict(),
@@ -1237,7 +1311,7 @@ class RunnerService:
                     "note": "already_running",
                 }
 
-        record = get_managed_seat(spec.managed_agent_id)
+        record = get_managed_seat(spec.managed_agent_id, spec.room_id)
         if (
             record
             and record.participant_id
@@ -1358,7 +1432,9 @@ class RunnerService:
         if poller_status.get("radio") == "external":
             runtime.status = "running"
         with self._lock:
-            self._runtimes[spec.managed_agent_id] = runtime
+            self._runtimes.setdefault(spec.managed_agent_id, {})[
+                spec.room_id
+            ] = runtime
         existing_meta = dict(record.metadata) if record else {}
         session_id = valid_harness_session_id(
             str(existing_meta.get("harness_session_id") or "")
@@ -1459,10 +1535,28 @@ class RunnerService:
         fallback_spec: ManagedAgentSpec | None = None,
         desired_state: str | None = "stopped",
         leave: bool,
+        room_id: str = "",
     ) -> dict[str, Any]:
+        requested_room = room_id
         with self._lock:
-            runtime = self._runtimes.pop(managed_agent_id, None)
-        record = get_managed_seat(managed_agent_id)
+            bucket = self._runtimes.get(managed_agent_id) or {}
+            if room_id:
+                runtime = bucket.pop(room_id, None)
+                if not bucket:
+                    self._runtimes.pop(managed_agent_id, None)
+            else:
+                runtime = None
+                if bucket:
+                    runtime = next(iter(bucket.values()))
+                    for extra in list(bucket.values()):
+                        if extra is not runtime:
+                            extra.cancel_event.set()
+                            self._runtime_manager.stop(
+                                room_id=extra.spec.room_id,
+                                participant_id=extra.participant_id,
+                            )
+                    self._runtimes.pop(managed_agent_id, None)
+        record = get_managed_seat(managed_agent_id, room_id)
         spec = runtime.spec if runtime else fallback_spec
         room_id = (
             runtime.spec.room_id
@@ -1540,6 +1634,27 @@ class RunnerService:
             record.updated_at = _utcnow_iso()
             record.auth_token = token
             upsert_seat(record)
+        if leave and not requested_room:
+            for seat in get_managed_seats(managed_agent_id):
+                if not seat.room_id or seat.room_id == room_id:
+                    continue
+                if seat.participant_id:
+                    try:
+                        self._hub_request(
+                            "POST",
+                            hub_url,
+                            f"/v1/rooms/{seat.room_id}/leave",
+                            token,
+                            None,
+                            {"participant_id": seat.participant_id},
+                        )
+                    except Exception:
+                        pass
+                seat.runtime_status = "stopped"
+                if desired_state is not None:
+                    seat.desired_state = desired_state
+                seat.updated_at = _utcnow_iso()
+                upsert_seat(seat)
         self._log(managed_agent_id, "info", "managed agent stopped")
         self._write_status("running")
         return {
@@ -2028,8 +2143,11 @@ If the inbound message is empty, system traffic, or only an acknowledgement, ret
                     status = "error"
                 statuses[record.managed_agent_id] = status
         with self._lock:
-            for managed_agent_id, runtime in self._runtimes.items():
-                statuses[managed_agent_id] = runtime.status
+            for managed_agent_id, rooms in self._runtimes.items():
+                if any(runtime.status == "running" for runtime in rooms.values()):
+                    statuses[managed_agent_id] = "running"
+                elif rooms:
+                    statuses[managed_agent_id] = next(iter(rooms.values())).status
         now = time.monotonic()
         if self._capabilities is None or now - self._capabilities_at >= 60.0:
             self._capabilities = {
@@ -2154,7 +2272,7 @@ If the inbound message is empty, system traffic, or only an acknowledgement, ret
         return value
 
     def _mark_record_error(self, spec: ManagedAgentSpec, error: str) -> None:
-        record = get_managed_seat(spec.managed_agent_id)
+        record = get_managed_seat(spec.managed_agent_id, spec.room_id)
         if not record:
             return
         record.runtime_status = "error"
@@ -2165,7 +2283,11 @@ If the inbound message is empty, system traffic, or only an acknowledgement, ret
 
     def status(self) -> dict[str, Any]:
         with self._lock:
-            runtimes = [runtime.public_dict() for runtime in self._runtimes.values()]
+            runtimes = [
+                runtime.public_dict()
+                for rooms in self._runtimes.values()
+                for runtime in rooms.values()
+            ]
         return {
             **self.config.public_dict(),
             "pid": os.getpid(),

@@ -411,6 +411,34 @@ export const api = {
     }
     return payload as ManagedAgent;
   },
+  joinManagedAgentRoom: async (id: string, roomId: string) => {
+    const payload = await req<
+      | ManagedAgent
+      | { agent?: ManagedAgent; managed_agent?: ManagedAgent; job?: unknown }
+    >(`/v1/managed-agents/${encodeURIComponent(id)}/rooms`, {
+      method: "POST",
+      body: JSON.stringify({ room_id: roomId }),
+    });
+    if ("agent" in payload && payload.agent) return payload.agent;
+    if ("managed_agent" in payload && payload.managed_agent) {
+      return payload.managed_agent;
+    }
+    return payload as ManagedAgent;
+  },
+  leaveManagedAgentRoom: async (id: string, roomId: string) => {
+    const payload = await req<
+      | ManagedAgent
+      | { agent?: ManagedAgent; managed_agent?: ManagedAgent; job?: unknown }
+    >(
+      `/v1/managed-agents/${encodeURIComponent(id)}/rooms/${encodeURIComponent(roomId)}`,
+      { method: "DELETE" }
+    );
+    if ("agent" in payload && payload.agent) return payload.agent;
+    if ("managed_agent" in payload && payload.managed_agent) {
+      return payload.managed_agent;
+    }
+    return payload as ManagedAgent;
+  },
   moveManagedAgent: async (id: string, roomId: string) => {
     const payload = await req<
       | ManagedAgent

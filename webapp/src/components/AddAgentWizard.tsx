@@ -331,17 +331,17 @@ export function AddAgentWizard({
         setError("Select at least one room.");
         return;
       }
-      const createdAgents: ManagedAgent[] = [];
+      const [first, ...rest] = targets;
+      const created = await api.createManagedAgent({
+        runner_id: selectedRunner.id,
+        harness,
+        room_id: first,
+        name: name.trim(),
+      });
       const failures: string[] = [];
-      for (const rid of targets) {
+      for (const rid of rest) {
         try {
-          const created = await api.createManagedAgent({
-            runner_id: selectedRunner.id,
-            harness,
-            room_id: rid,
-            name: name.trim(),
-          });
-          createdAgents.push(created);
+          await api.joinManagedAgentRoom(created.id, rid);
         } catch (err) {
           const label = rooms.find((r) => r.id === rid)?.name || rid;
           failures.push(
@@ -349,18 +349,14 @@ export function AddAgentWizard({
           );
         }
       }
-      if (!createdAgents.length) {
-        setError(failures.join(" · ") || "Could not start agent.");
-        return;
-      }
-      setAgent(createdAgents[0]);
-      setRoomId(createdAgents[0].room_id || targets[0]);
-      if (createdAgents.length > 1) {
+      setAgent(created);
+      setRoomId(created.room_id || first);
+      if (rest.length) {
         setMonitorNote(
-          `Started in ${createdAgents.length} rooms${failures.length ? ` (${failures.length} failed)` : ""}.`
+          `One agent in ${targets.length - failures.length} room${
+            targets.length - failures.length === 1 ? "" : "s"
+          }${failures.length ? ` (${failures.join(" · ")})` : ""}.`
         );
-      } else if (failures.length) {
-        setMonitorNote(failures.join(" · "));
       }
       setListening(false);
       setPhase("starting");

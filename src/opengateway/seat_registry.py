@@ -146,27 +146,36 @@ def save_registry(seats: list[SeatRecord]) -> None:
         _atomic_private_json(registry_path(), data)
 
 
+def _registry_identity(seat: SeatRecord) -> str:
+    """One row per managed agent per room. Unmanaged seats stay name-scoped."""
+    if seat.managed_agent_id and seat.room_id:
+        return f"managed:{seat.managed_agent_id}:{seat.room_id}"
+    if seat.managed_agent_id:
+        return f"managed:{seat.managed_agent_id}"
+    return f"seat:{seat.room_id}:{seat.participant_id or seat.name}"
+
+
 def upsert_seat(record: SeatRecord) -> None:
     with _file_lock:
         if record.auth_token:
             save_agent_credential(_seat_credential_key(record), record.auth_token)
         seats = load_registry()
-        key = (
-            f"managed:{record.managed_agent_id}"
-            if record.managed_agent_id
-            else f"seat:{record.room_id}:{record.participant_id or record.name}"
-        )
+        key = _registry_identity(record)
         kept: list[SeatRecord] = []
         replaced = False
         for seat in seats:
-            seat_key = (
-                f"managed:{seat.managed_agent_id}"
-                if seat.managed_agent_id
-                else f"seat:{seat.room_id}:{seat.participant_id or seat.name}"
-            )
-            if seat_key == key:
-                kept.append(record)
-                replaced = True
+            same = _registry_identity(seat) == key
+            if (
+                not same
+                and record.managed_agent_id
+                and seat.managed_agent_id == record.managed_agent_id
+                and seat.room_id == record.room_id
+            ):
+                same = True
+            if same:
+                if not replaced:
+                    kept.append(record)
+                    replaced = True
             else:
                 kept.append(seat)
         if not replaced:
@@ -174,15 +183,21 @@ def upsert_seat(record: SeatRecord) -> None:
         save_registry(kept)
 
 
-def get_managed_seat(managed_agent_id: str) -> SeatRecord | None:
-    return next(
-        (
-            seat
-            for seat in load_registry()
-            if seat.managed_agent_id == managed_agent_id
-        ),
-        None,
-    )
+def get_managed_seats(managed_agent_id: str) -> list[SeatRecord]:
+    return [
+        seat
+        for seat in load_registry()
+        if seat.managed_agent_id == managed_agent_id
+    ]
+
+
+def get_managed_seat(
+    managed_agent_id: str, room_id: str = ""
+) -> SeatRecord | None:
+    seats = get_managed_seats(managed_agent_id)
+    if room_id:
+        return next((seat for seat in seats if seat.room_id == room_id), None)
+    return seats[0] if seats else None
 
 
 def remove_seat(
@@ -198,7 +213,9 @@ def remove_seat(
         for seat in seats:
             match = False
             if managed_agent_id:
-                match = seat.managed_agent_id == managed_agent_id
+                match = seat.managed_agent_id == managed_agent_id and (
+                    not room_id or seat.room_id == room_id
+                )
             elif room_id:
                 match = seat.room_id == room_id and (
                     not participant_id or seat.participant_id == participant_id
@@ -208,8 +225,15 @@ def remove_seat(
             else:
                 kept.append(seat)
         save_registry(kept)
+        surviving = {
+            _seat_credential_key(seat)
+            for seat in kept
+            if seat.managed_agent_id
+        }
         for seat in removed:
-            remove_agent_credential(_seat_credential_key(seat))
+            cred = _seat_credential_key(seat)
+            if cred not in surviving:
+                remove_agent_credential(cred)
 
 
 def lock_path(room_id: str, participant_id: str) -> Path:

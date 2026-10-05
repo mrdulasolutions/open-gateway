@@ -119,7 +119,6 @@ export function ManagedAgentsPanel({
   const [logs, setLogs] = useState<Record<string, string[]>>({});
   const [logError, setLogError] = useState<Record<string, string>>({});
   const [logBusy, setLogBusy] = useState<string | null>(null);
-  const [moveRoomId, setMoveRoomId] = useState<Record<string, string>>({});
 
   const load = useCallback(async (showSpinner = false) => {
     if (showSpinner) setRefreshing(true);
@@ -182,25 +181,29 @@ export function ManagedAgentsPanel({
     }
   };
 
-  const moveToRoom = async (agent: ManagedAgent) => {
-    const target = (moveRoomId[agent.id] || "").trim();
-    if (!target || target === agent.room_id) return;
-    const label =
-      roomNames.get(target) || rooms.find((room) => room.id === target)?.name;
-    if (
-      !window.confirm(
-        `Move “${agent.name}” to room “${label || target}”? The agent will leave its current room and start listening in the new one.`
-      )
-    ) {
+  const membershipIds = (agent: ManagedAgent) => {
+    const ids = agent.room_ids?.length ? agent.room_ids : [agent.room_id];
+    return ids.filter(Boolean);
+  };
+
+  const toggleRoom = async (agent: ManagedAgent, roomId: string) => {
+    const member = membershipIds(agent).includes(roomId);
+    const label = roomNames.get(roomId) || roomId;
+    if (member && membershipIds(agent).length <= 1) {
+      setError(`Stop ${agent.name} to leave its last room.`);
       return;
     }
     setBusy((value) => ({ ...value, [agent.id]: "move" }));
+    setError("");
     try {
-      await api.moveManagedAgent(agent.id, target);
+      if (member) await api.leaveManagedAgentRoom(agent.id, roomId);
+      else await api.joinManagedAgentRoom(agent.id, roomId);
       await load();
       onChanged?.();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(
+        `${label}: ${err instanceof Error ? err.message : String(err)}`
+      );
     } finally {
       setBusy((value) => {
         const next = { ...value };
@@ -310,8 +313,15 @@ export function ManagedAgentsPanel({
             const state = stateOf(agent);
             const pending = busy[agent.id];
             const runner = runners.find((item) => item.id === agent.runner_id);
-            const roomName =
-              agent.room_name || roomNames.get(agent.room_id) || agent.room_id;
+            const memberRooms = membershipIds(agent);
+            const roomName = memberRooms
+              .map(
+                (id) =>
+                  roomNames.get(id) ||
+                  (id === agent.room_id ? agent.room_name : "") ||
+                  id
+              )
+              .join(", ");
             const runnerName =
               agent.runner_name ||
               runnerNames.get(agent.runner_id) ||
@@ -426,58 +436,34 @@ export function ManagedAgentsPanel({
                       Restart
                     </button>
                   )}
-                  {!["deleting", "deleted"].includes(state) &&
-                    rooms.some(
-                      (room) =>
-                        room.id !== agent.room_id &&
-                        room.status !== "archived"
-                    ) && (
-                      <div className="inline-flex max-w-full items-center gap-1 rounded-lg border border-zinc-200 px-1 py-0.5 dark:border-white/10">
-                        <label className="sr-only" htmlFor={`move-${agent.id}`}>
-                          Move {agent.name} to room
-                        </label>
-                        <select
-                          id={`move-${agent.id}`}
-                          value={moveRoomId[agent.id] || ""}
-                          onChange={(event) =>
-                            setMoveRoomId((value) => ({
-                              ...value,
-                              [agent.id]: event.target.value,
-                            }))
-                          }
-                          disabled={Boolean(pending)}
-                          className="max-w-[7.5rem] truncate rounded-md bg-transparent py-0.5 pl-1 text-[9px] font-semibold outline-none disabled:opacity-40"
-                        >
-                          <option value="">Move to…</option>
-                          {rooms
-                            .filter(
-                              (room) =>
-                                room.id !== agent.room_id &&
-                                room.status !== "archived"
-                            )
-                            .map((room) => (
-                              <option key={room.id} value={room.id}>
-                                {room.name}
-                              </option>
-                            ))}
-                        </select>
-                        <button
-                          type="button"
-                          onClick={() => void moveToRoom(agent)}
-                          disabled={
-                            Boolean(pending) ||
-                            !(moveRoomId[agent.id] || "").trim()
-                          }
-                          className="rounded-md px-1.5 py-0.5 text-[9px] font-semibold text-orange-800 disabled:opacity-40 dark:text-orange-200"
-                        >
-                          {pending === "move" ? (
-                            <Loader2 className="h-3 w-3 animate-spin" />
-                          ) : (
-                            "Go"
-                          )}
-                        </button>
+                  {!["deleting", "deleted"].includes(state) && (
+                    <div className="mt-1 w-full rounded-lg border border-zinc-200 px-2 py-1.5 dark:border-white/10">
+                      <p className="text-[9px] font-semibold text-zinc-500">
+                        Rooms
+                      </p>
+                      <div className="mt-1 flex flex-col gap-1">
+                        {rooms
+                          .filter((room) => room.status !== "archived")
+                          .map((room) => {
+                            const checked = memberRooms.includes(room.id);
+                            return (
+                              <label
+                                key={room.id}
+                                className="flex items-center gap-1.5 text-[10px] text-zinc-700 dark:text-zinc-200"
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={checked}
+                                  disabled={Boolean(pending)}
+                                  onChange={() => void toggleRoom(agent, room.id)}
+                                />
+                                <span className="truncate">{room.name}</span>
+                              </label>
+                            );
+                          })}
                       </div>
-                    )}
+                    </div>
+                  )}
                   <button
                     type="button"
                     onClick={() => {

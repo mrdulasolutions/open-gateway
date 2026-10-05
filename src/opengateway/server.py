@@ -29,6 +29,25 @@ from fastapi.staticfiles import StaticFiles
 from sse_starlette.sse import EventSourceResponse
 
 from opengateway import __version__
+
+
+def _managed_room_ids(store: Any, key_meta: dict[str, Any]) -> set[str] | None:
+    """Rooms a managed-agent key may touch. Live membership wins over the key snapshot."""
+    if not key_meta.get("managed_agent_id"):
+        return None
+    allowed: set[str] = set()
+    bound = str(key_meta.get("room_id") or "")
+    if bound:
+        allowed.add(bound)
+    extra = key_meta.get("room_ids")
+    if isinstance(extra, list):
+        allowed.update(str(item) for item in extra if item)
+    agent = store.managed_agents.get(str(key_meta.get("managed_agent_id")))
+    if agent is not None:
+        if agent.room_id:
+            allowed.add(agent.room_id)
+        allowed.update(str(rid) for rid in (agent.room_ids or []) if rid)
+    return allowed
 from opengateway.dm_visibility import dm_visible_to_participant
 from opengateway.acp_handlers import BUILTIN_AGENTS, dispatch_acp_run
 from opengateway.api_keys import SCOPE_RUNNER
@@ -63,6 +82,7 @@ from opengateway.models import (
     CreateBookmarkRequest,
     CreateForkRequest,
     CreateManagedAgentRequest,
+    ManagedAgentRoomRequest,
     MoveManagedAgentRequest,
     CreateRoomRequest,
     CreateTaskRequest,
@@ -233,8 +253,8 @@ def create_app(
         key_meta = api_key.get("metadata") if isinstance(api_key, dict) else {}
         if not isinstance(key_meta, dict):
             key_meta = {}
-        bound_room_id = key_meta.get("room_id")
-        if key_meta.get("managed_agent_id") and bound_room_id != room_id:
+        allowed = _managed_room_ids(st, key_meta)
+        if allowed is not None and room_id not in allowed:
             # Hide the existence of rooms outside this managed identity.
             raise HTTPException(status_code=404, detail="Room not found")
         return room
@@ -977,6 +997,41 @@ def create_app(
             "job": job.model_dump(mode="json") if job else None,
         }
 
+    @app.post("/v1/managed-agents/{agent_id}/rooms")
+    async def join_managed_agent_room(
+        request: Request, agent_id: str, body: ManagedAgentRoomRequest
+    ) -> dict[str, Any]:
+        await _require_control_admin(request)
+        await _managed_agent_for_admin(request, agent_id, include_deleted=False)
+        await _require_room(request, body.room_id)
+        try:
+            agent, job = await st.join_managed_agent_room(agent_id, body.room_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {
+            "agent": _public_managed_agent(agent),
+            "job": job.model_dump(mode="json") if job else None,
+        }
+
+    @app.delete("/v1/managed-agents/{agent_id}/rooms/{room_id}")
+    async def leave_managed_agent_room(
+        request: Request, agent_id: str, room_id: str
+    ) -> dict[str, Any]:
+        await _require_control_admin(request)
+        await _managed_agent_for_admin(request, agent_id, include_deleted=False)
+        try:
+            agent, job = await st.leave_managed_agent_room(agent_id, room_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {
+            "agent": _public_managed_agent(agent),
+            "job": job.model_dump(mode="json") if job else None,
+        }
+
     @app.post("/v1/managed-agents/{agent_id}/actions/{action}")
     async def managed_agent_action(
         request: Request,
@@ -1460,10 +1515,11 @@ def create_app(
         api_key = auth.get("api_key")
         key_meta = api_key.get("metadata") if isinstance(api_key, dict) else {}
         if isinstance(key_meta, dict) and key_meta.get("managed_agent_id"):
-            bound_room_id = str(key_meta.get("room_id") or "")
-            if room_id and room_id != bound_room_id:
+            allowed = _managed_room_ids(st, key_meta) or set()
+            if room_id and room_id not in allowed:
                 raise HTTPException(status_code=404, detail="Room not found")
-            room_id = bound_room_id
+            if not room_id and len(allowed) == 1:
+                room_id = next(iter(allowed))
             if for_participant:
                 participant = await st.get_participant(for_participant)
                 if (
@@ -1476,7 +1532,7 @@ def create_app(
                     )
         if room_id:
             await _require_room(request, room_id)
-        return await global_search(
+        payload = await global_search(
             st,
             q,
             limit=limit,
@@ -1485,6 +1541,14 @@ def create_app(
             for_participant=for_participant,
             include_dms=False,
         )
+        if isinstance(key_meta, dict) and key_meta.get("managed_agent_id"):
+            allowed = _managed_room_ids(st, key_meta) or set()
+            payload["hits"] = [
+                hit
+                for hit in payload.get("hits") or []
+                if not hit.get("room_id") or hit.get("room_id") in allowed
+            ]
+        return payload
 
     web_dir = _find_web_dir()
     if web_dir is not None:
@@ -1641,9 +1705,8 @@ def create_app(
         api_key = getattr(request.state, "api_key", None)
         key_meta = api_key.get("metadata") if isinstance(api_key, dict) else {}
         if isinstance(key_meta, dict) and key_meta.get("managed_agent_id"):
-            rooms = [
-                room for room in rooms if room.id == key_meta.get("room_id")
-            ]
+            allowed = _managed_room_ids(st, key_meta) or set()
+            rooms = [room for room in rooms if room.id in allowed]
         return {"rooms": [r.model_dump(mode="json") for r in rooms]}
 
     @app.get("/v1/rooms/{room_id}", response_model=Room)
@@ -2786,12 +2849,20 @@ def create_app(
     ) -> dict[str, Any]:
         api_key = getattr(request.state, "api_key", None)
         key_meta = api_key.get("metadata") if isinstance(api_key, dict) else {}
+        allowed_rooms: Optional[set[str]] = None
         if isinstance(key_meta, dict) and key_meta.get("managed_agent_id"):
-            bound_room_id = str(key_meta.get("room_id") or "")
-            if room_id and room_id != bound_room_id:
+            allowed_rooms = _managed_room_ids(st, key_meta) or set()
+            if room_id and room_id not in allowed_rooms:
                 raise HTTPException(status_code=404, detail="Room not found")
-            room_id = bound_room_id
+            if not room_id and len(allowed_rooms) == 1:
+                room_id = next(iter(allowed_rooms))
         events = st.recent_events(room_id=room_id, after_id=after_id, limit=limit)
+        if allowed_rooms is not None and not room_id:
+            events = [
+                event
+                for event in events
+                if event.room_id is None or event.room_id in allowed_rooms
+            ]
         return {"events": [e.model_dump(mode="json") for e in events]}
 
     @app.get("/v1/events/stream")
@@ -2799,8 +2870,8 @@ def create_app(
         """SSE stream of all gateway events (all rooms). For CLI monitor."""
         api_key = getattr(request.state, "api_key", None)
         key_meta = api_key.get("metadata") if isinstance(api_key, dict) else {}
-        bound_room_id = (
-            str(key_meta.get("room_id") or "")
+        allowed_rooms = (
+            _managed_room_ids(st, key_meta)
             if isinstance(key_meta, dict) and key_meta.get("managed_agent_id")
             else None
         )
@@ -2808,7 +2879,13 @@ def create_app(
         async def gen():
             q = st.subscribe()
             try:
-                for e in st.recent_events(room_id=bound_room_id, limit=30):
+                for e in st.recent_events(limit=30):
+                    if (
+                        allowed_rooms is not None
+                        and e.room_id is not None
+                        and e.room_id not in allowed_rooms
+                    ):
+                        continue
                     yield {"event": e.type, "id": e.id, "data": json.dumps(e.model_dump(mode="json"))}
                 while True:
                     if await request.is_disconnected():
@@ -2819,8 +2896,9 @@ def create_app(
                         yield {"event": "ping", "data": "{}"}
                         continue
                     if (
-                        bound_room_id
-                        and event.room_id not in {None, bound_room_id}
+                        allowed_rooms is not None
+                        and event.room_id is not None
+                        and event.room_id not in allowed_rooms
                     ):
                         continue
                     yield {
@@ -2925,7 +3003,7 @@ def create_app(
         if (
             isinstance(ws_key_meta, dict)
             and ws_key_meta.get("managed_agent_id")
-            and ws_key_meta.get("room_id") != room_id
+            and room_id not in (_managed_room_ids(st, ws_key_meta) or set())
         ):
             await websocket.close(code=4404)
             return

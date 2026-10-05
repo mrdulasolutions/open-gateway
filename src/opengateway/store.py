@@ -1590,7 +1590,11 @@ class Store:
         return True
 
     def _pending_runner_job(
-        self, agent_id: str, action: RunnerJobAction
+        self,
+        agent_id: str,
+        action: RunnerJobAction,
+        *,
+        target_room_id: Optional[str] = None,
     ) -> Optional[RunnerJob]:
         for job in self.runner_jobs.values():
             if (
@@ -1598,9 +1602,55 @@ class Store:
                 and job.action == action
                 and job.status
                 in {RunnerJobStatus.QUEUED, RunnerJobStatus.CLAIMED}
+                and (
+                    target_room_id is None
+                    or (job.target_room_id or "") == target_room_id
+                )
             ):
                 return job
         return None
+
+    def _membership_job_pending(self, agent_id: str) -> Optional[RunnerJob]:
+        membership = {
+            RunnerJobAction.JOIN_ROOM,
+            RunnerJobAction.LEAVE_ROOM,
+            RunnerJobAction.MOVE,
+        }
+        for job in self.runner_jobs.values():
+            if (
+                job.managed_agent_id == agent_id
+                and job.action in membership
+                and job.status
+                in {RunnerJobStatus.QUEUED, RunnerJobStatus.CLAIMED}
+            ):
+                return job
+        return None
+
+    def _name_taken_in_room(
+        self, room_id: str, name: str, *, except_id: str = ""
+    ) -> bool:
+        normalized = (name or "").strip().casefold()
+        if not normalized:
+            return False
+        for existing in self.managed_agents.values():
+            if existing.deleted_at is not None or existing.id == except_id:
+                continue
+            rooms = list(existing.room_ids or [])
+            if existing.room_id and existing.room_id not in rooms:
+                rooms.append(existing.room_id)
+            if room_id in rooms and existing.name.strip().casefold() == normalized:
+                return True
+        return False
+
+    @staticmethod
+    def _membership_snapshot(agent: ManagedAgent) -> dict[str, Any]:
+        return {
+            "room_id": agent.room_id,
+            "room_ids": list(agent.room_ids),
+            "seats": dict(agent.seats),
+            "participant_id": agent.participant_id,
+            "status": agent.status.value,
+        }
 
     def _enqueue_runner_job_locked(
         self,
@@ -1608,8 +1658,11 @@ class Store:
         action: RunnerJobAction,
         *,
         target_room_id: Optional[str] = None,
+        room_id: Optional[str] = None,
     ) -> RunnerJob:
-        pending = self._pending_runner_job(agent.id, action)
+        pending = self._pending_runner_job(
+            agent.id, action, target_room_id=target_room_id
+        )
         if pending is not None:
             return pending
         job = RunnerJob(
@@ -1618,7 +1671,8 @@ class Store:
             action=action,
             agent_name=agent.name,
             harness=agent.harness,
-            room_id=agent.room_id,
+            room_id=room_id or agent.room_id,
+            room_ids=list(agent.room_ids or [agent.room_id]),
             target_room_id=target_room_id,
         )
         self.runner_jobs[job.id] = job
@@ -1657,13 +1711,7 @@ class Store:
                 and runner.tenant_id != room.tenant_id
             ):
                 raise ValueError("Runner and room belong to different organizations")
-            normalized_name = (name or "").strip().casefold()
-            if any(
-                existing.deleted_at is None
-                and existing.room_id == room_id
-                and existing.name.strip().casefold() == normalized_name
-                for existing in self.managed_agents.values()
-            ):
+            if self._name_taken_in_room(room_id, name):
                 raise ValueError(
                     "A managed agent with this name already exists in the room"
                 )
@@ -1671,6 +1719,7 @@ class Store:
                 name=scrub_secret_text(name or "", max_length=120).strip(),
                 harness=harness,
                 room_id=room_id,
+                room_ids=[room_id],
                 runner_id=runner_id,
                 tenant_id=tenant_id or runner.tenant_id or room.tenant_id,
             )
@@ -1725,7 +1774,9 @@ class Store:
                 raise KeyError("Managed agent not found")
             if agent.deleted_at is not None and action != RunnerJobAction.DELETE:
                 raise ValueError("Managed agent is deleted")
-            pending = self._pending_runner_job(agent.id, action)
+            pending = self._pending_runner_job(
+                agent.id, action, target_room_id=(target_room_id or "").strip() or None
+            )
             if pending is not None:
                 return agent, pending
 
@@ -1743,24 +1794,40 @@ class Store:
                 if not (target_room_id or "").strip():
                     raise ValueError("target_room_id is required for move")
                 agent.status = ManagedAgentStatus.RESTARTING
+            elif action in {RunnerJobAction.JOIN_ROOM, RunnerJobAction.LEAVE_ROOM}:
+                if not (target_room_id or "").strip():
+                    raise ValueError("target_room_id is required")
+                agent.status = ManagedAgentStatus.RESTARTING
             elif action == RunnerJobAction.DELETE:
                 agent.status = ManagedAgentStatus.DELETING
             else:  # pragma: no cover - enum protects this boundary
                 raise ValueError("Unsupported managed-agent action")
 
-            # A newer lifecycle intent supersedes any job that has not already
-            # completed. A runner completing an old claim then receives the
-            # cancellation idempotently instead of resurrecting the seat.
+            # Stop, restart, start, and delete replace in-flight work.
+            # Joining another room must not cancel a start that is still queued.
+            membership = {
+                RunnerJobAction.JOIN_ROOM,
+                RunnerJobAction.LEAVE_ROOM,
+                RunnerJobAction.MOVE,
+            }
+            target = (target_room_id or "").strip()
             for existing in self.runner_jobs.values():
                 if (
-                    existing.managed_agent_id == agent.id
-                    and existing.status
-                    in {RunnerJobStatus.QUEUED, RunnerJobStatus.CLAIMED}
+                    existing.managed_agent_id != agent.id
+                    or existing.status
+                    not in {RunnerJobStatus.QUEUED, RunnerJobStatus.CLAIMED}
                 ):
-                    existing.status = RunnerJobStatus.CANCELLED
-                    existing.completed_at = utcnow()
-                    existing.error = f"Superseded by {action.value}"
-                    self._persist_runner_job(existing)
+                    continue
+                if action in membership:
+                    if existing.action not in membership:
+                        continue
+                    same_target = (existing.target_room_id or "") == target
+                    if action != RunnerJobAction.MOVE and not same_target:
+                        continue
+                existing.status = RunnerJobStatus.CANCELLED
+                existing.completed_at = utcnow()
+                existing.error = f"Superseded by {action.value}"
+                self._persist_runner_job(existing)
 
             agent.last_error = None
             agent.updated_at = utcnow()
@@ -1785,6 +1852,77 @@ class Store:
         )
         return agent, job
 
+    def _require_live_room(self, room_id: str):
+        room = self.rooms.get(room_id)
+        if not room:
+            raise ValueError("Room not found")
+        if room.status == RoomStatus.ARCHIVED:
+            raise ValueError("Cannot use an archived room")
+        return room
+
+    async def join_managed_agent_room(
+        self, agent_id: str, room_id: str
+    ) -> tuple[ManagedAgent, Optional[RunnerJob]]:
+        target = (room_id or "").strip()
+        if not target:
+            raise ValueError("room_id is required")
+        async with self._lock:
+            agent = self.managed_agents.get(agent_id)
+            if not agent or agent.deleted_at is not None:
+                raise KeyError("Managed agent not found")
+            self._require_live_room(target)
+            if target in (agent.room_ids or []) and agent.seats.get(target):
+                return agent, None
+            if self._name_taken_in_room(target, agent.name, except_id=agent.id):
+                raise ValueError(
+                    "A managed agent with this name already exists in the room"
+                )
+            if self._membership_job_pending(agent.id):
+                raise ValueError("A room change is already in progress")
+            agent.metadata = {
+                **agent.metadata,
+                "membership_rollback": self._membership_snapshot(agent),
+            }
+            if target not in agent.room_ids:
+                agent.room_ids = [*agent.room_ids, target]
+            agent.updated_at = utcnow()
+            self._persist_managed_agent(agent)
+        return await self.action_managed_agent(
+            agent_id, RunnerJobAction.JOIN_ROOM, target_room_id=target
+        )
+
+    async def leave_managed_agent_room(
+        self, agent_id: str, room_id: str
+    ) -> tuple[ManagedAgent, Optional[RunnerJob]]:
+        target = (room_id or "").strip()
+        if not target:
+            raise ValueError("room_id is required")
+        async with self._lock:
+            agent = self.managed_agents.get(agent_id)
+            if not agent or agent.deleted_at is not None:
+                raise KeyError("Managed agent not found")
+            rooms = list(agent.room_ids or [agent.room_id])
+            if target not in rooms:
+                raise ValueError("Agent is not in that room")
+            if len(rooms) <= 1:
+                raise ValueError("Stop the agent to leave its last room")
+            if self._membership_job_pending(agent.id):
+                raise ValueError("A room change is already in progress")
+            agent.metadata = {
+                **agent.metadata,
+                "membership_rollback": self._membership_snapshot(agent),
+            }
+            agent.room_ids = [rid for rid in rooms if rid != target]
+            agent.seats.pop(target, None)
+            if agent.room_id == target:
+                agent.room_id = agent.room_ids[0]
+                agent.participant_id = agent.seats.get(agent.room_id)
+            agent.updated_at = utcnow()
+            self._persist_managed_agent(agent)
+        return await self.action_managed_agent(
+            agent_id, RunnerJobAction.LEAVE_ROOM, target_room_id=target
+        )
+
     async def move_managed_agent(
         self, agent_id: str, room_id: str
     ) -> tuple[ManagedAgent, Optional[RunnerJob]]:
@@ -1797,26 +1935,47 @@ class Store:
                 raise KeyError("Managed agent not found")
             if agent.deleted_at is not None:
                 raise ValueError("Managed agent is deleted")
-            if agent.room_id == target:
+            rooms = list(agent.room_ids or [agent.room_id])
+            if rooms == [target] or (agent.room_id == target and target in rooms and len(rooms) == 1):
                 raise ValueError("Agent is already in that room")
-            room = self.rooms.get(target)
-            if not room:
-                raise ValueError("Room not found")
-            if room.status == RoomStatus.ARCHIVED:
-                raise ValueError("Cannot move an agent into an archived room")
-            normalized_name = (agent.name or "").strip().casefold()
-            if any(
-                existing.deleted_at is None
-                and existing.id != agent.id
-                and existing.room_id == target
-                and existing.name.strip().casefold() == normalized_name
-                for existing in self.managed_agents.values()
+            self._require_live_room(target)
+            if target not in rooms and self._name_taken_in_room(
+                target, agent.name, except_id=agent.id
             ):
                 raise ValueError(
                     "A managed agent with this name already exists in the room"
                 )
-        agent, job = await self.action_managed_agent(
-            agent_id, RunnerJobAction.MOVE, target_room_id=target
+            if self._membership_job_pending(agent.id):
+                raise ValueError("A room change is already in progress")
+            source = agent.room_id
+            agent.metadata = {
+                **agent.metadata,
+                "membership_rollback": self._membership_snapshot(agent),
+            }
+            next_rooms = [rid for rid in rooms if rid != source]
+            if target not in next_rooms:
+                next_rooms.append(target)
+            agent.room_ids = next_rooms or [target]
+            agent.seats.pop(source, None)
+            agent.room_id = target
+            agent.participant_id = agent.seats.get(target)
+            agent.updated_at = utcnow()
+            self._persist_managed_agent(agent)
+            agent.status = ManagedAgentStatus.RESTARTING
+            job = self._enqueue_runner_job_locked(
+                agent,
+                RunnerJobAction.MOVE,
+                target_room_id=target,
+                room_id=source,
+            )
+            self._persist_managed_agent(agent)
+        await self.audit(
+            "managed_agent.move",
+            actor=agent.name,
+            room_id=source,
+            resource_type="managed_agent",
+            resource_id=agent.id,
+            detail={"target_room_id": target, "job_id": job.id},
         )
         return agent, job
 
@@ -1885,12 +2044,15 @@ class Store:
             if claimed.action in {
                 RunnerJobAction.START,
                 RunnerJobAction.RESTART,
-                RunnerJobAction.MOVE,
-            }:
+            } or (
+                claimed.action == RunnerJobAction.JOIN_ROOM
+                and not agent.active_key_id
+            ):
                 key_room_id = agent.room_id
                 if (
-                    claimed.action == RunnerJobAction.MOVE
+                    claimed.action == RunnerJobAction.JOIN_ROOM
                     and (claimed.target_room_id or "").strip()
+                    and not agent.room_ids
                 ):
                     key_room_id = str(claimed.target_room_id).strip()
                 token, key_record = self._new_api_key_record(
@@ -1901,6 +2063,7 @@ class Store:
                     metadata={
                         "managed_agent_id": agent.id,
                         "room_id": key_room_id,
+                        "room_ids": list(agent.room_ids or [key_room_id]),
                         "runner_id": runner_id,
                         "tenant_id": agent.tenant_id,
                         "identity_type": "managed_agent",
@@ -2010,23 +2173,58 @@ class Store:
             )
 
             if success:
+                participant_id = (result or {}).get("participant_id")
+                pid = (
+                    participant_id.strip()[:128]
+                    if isinstance(participant_id, str) and participant_id.strip()
+                    else ""
+                )
+                meta = dict(agent.metadata)
+                meta.pop("membership_rollback", None)
+                agent.metadata = meta
                 if job.action in {
                     RunnerJobAction.START,
                     RunnerJobAction.RESTART,
                     RunnerJobAction.MOVE,
+                    RunnerJobAction.JOIN_ROOM,
                 }:
                     agent.status = ManagedAgentStatus.RUNNING
-                    participant_id = (result or {}).get("participant_id")
-                    if isinstance(participant_id, str) and participant_id.strip():
-                        agent.participant_id = participant_id.strip()[:128]
-                    if job.action == RunnerJobAction.MOVE:
-                        new_room = (job.target_room_id or "").strip() or (
-                            (result or {}).get("room_id")
-                        )
-                        if isinstance(new_room, str) and new_room.strip():
-                            agent.room_id = new_room.strip()[:128]
+                    seat_room = agent.room_id
+                    if job.action in {
+                        RunnerJobAction.MOVE,
+                        RunnerJobAction.JOIN_ROOM,
+                    }:
+                        seat_room = (job.target_room_id or "").strip() or seat_room
+                    if job.action == RunnerJobAction.MOVE and seat_room:
+                        agent.room_id = seat_room
+                        if seat_room not in agent.room_ids:
+                            agent.room_ids = [*agent.room_ids, seat_room]
+                    if pid and seat_room:
+                        agent.seats = {**agent.seats, seat_room: pid}
+                        if agent.room_id == seat_room:
+                            agent.participant_id = pid
+                    elif pid and job.action in {
+                        RunnerJobAction.START,
+                        RunnerJobAction.RESTART,
+                    }:
+                        agent.participant_id = pid
+                        if agent.room_id:
+                            agent.seats = {**agent.seats, agent.room_id: pid}
                     revoke_key_ids.extend(agent.retiring_key_ids)
                     agent.retiring_key_ids = []
+                elif job.action == RunnerJobAction.LEAVE_ROOM:
+                    left = (job.target_room_id or "").strip()
+                    if left:
+                        agent.seats = {
+                            rid: seat
+                            for rid, seat in agent.seats.items()
+                            if rid != left
+                        }
+                        agent.room_ids = [
+                            rid for rid in agent.room_ids if rid != left
+                        ]
+                    agent.status = ManagedAgentStatus.RUNNING
+                    agent.participant_id = agent.seats.get(agent.room_id)
                 elif job.action == RunnerJobAction.STOP:
                     agent.status = ManagedAgentStatus.STOPPED
                     if agent.active_key_id:
@@ -2044,12 +2242,55 @@ class Store:
                     agent.retiring_key_ids = []
                 agent.last_error = None
             else:
-                agent.status = ManagedAgentStatus.ERROR
-                agent.last_error = job.error or "Runner job failed"
+                restored = False
                 if job.action in {
+                    RunnerJobAction.JOIN_ROOM,
+                    RunnerJobAction.LEAVE_ROOM,
+                    RunnerJobAction.MOVE,
+                }:
+                    snap = agent.metadata.get("membership_rollback")
+                    if isinstance(snap, dict):
+                        agent.room_id = str(snap.get("room_id") or agent.room_id)
+                        agent.room_ids = [
+                            str(rid)
+                            for rid in (snap.get("room_ids") or [])
+                            if rid
+                        ] or [agent.room_id]
+                        seats = snap.get("seats") if isinstance(snap.get("seats"), dict) else {}
+                        agent.seats = {str(k): str(v) for k, v in seats.items()}
+                        raw_pid = snap.get("participant_id")
+                        agent.participant_id = (
+                            str(raw_pid) if isinstance(raw_pid, str) and raw_pid else None
+                        )
+                        try:
+                            agent.status = ManagedAgentStatus(
+                                str(snap.get("status") or "running")
+                            )
+                        except ValueError:
+                            agent.status = ManagedAgentStatus.RUNNING
+                        meta = dict(agent.metadata)
+                        meta.pop("membership_rollback", None)
+                        agent.metadata = meta
+                        restored = True
+                    target = (job.target_room_id or "").strip()
+                    if job.action == RunnerJobAction.JOIN_ROOM and target:
+                        agent.room_ids = [
+                            rid for rid in agent.room_ids if rid != target
+                        ]
+                        agent.seats = {
+                            rid: seat
+                            for rid, seat in agent.seats.items()
+                            if rid != target
+                        }
+                        if agent.room_id == target and agent.room_ids:
+                            agent.room_id = agent.room_ids[0]
+                            agent.participant_id = agent.seats.get(agent.room_id)
+                if not restored:
+                    agent.status = ManagedAgentStatus.ERROR
+                agent.last_error = job.error or "Runner job failed"
+                if not restored and job.action in {
                     RunnerJobAction.START,
                     RunnerJobAction.RESTART,
-                    RunnerJobAction.MOVE,
                     RunnerJobAction.DELETE,
                 }:
                     if agent.active_key_id:

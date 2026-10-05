@@ -532,11 +532,7 @@ async def test_managed_agent_move_updates_room_and_mints_target_key(
                 headers=runner,
             )
         ).json()
-        second_token = move_claim["agent_token"]
-        assert second_token and second_token != first_token
-        key_b = await store.verify_api_key(second_token)
-        assert key_b is not None
-        assert key_b["metadata"]["room_id"] == room_b["id"]
+        assert "agent_token" not in move_claim
 
         await client.post(
             f"/v1/runners/{runner_id}/jobs/{move_id}/complete",
@@ -546,10 +542,12 @@ async def test_managed_agent_move_updates_room_and_mints_target_key(
             },
             headers=runner,
         )
-        assert await store.verify_api_key(first_token) is None
+        assert await store.verify_api_key(first_token) is not None
         agent = await store.get_managed_agent(agent_id)
         assert agent is not None
         assert agent.room_id == room_b["id"]
+        assert agent.room_ids == [room_b["id"]]
+        assert agent.seats.get(room_b["id"]) == "seat-b"
         assert agent.participant_id == "seat-b"
         assert agent.status == ManagedAgentStatus.RUNNING
 
@@ -559,6 +557,136 @@ async def test_managed_agent_move_updates_room_and_mints_target_key(
             headers=admin,
         )
         assert same_room.status_code == 409
+    store._db.close()
+
+
+@pytest.mark.asyncio
+async def test_managed_agent_joins_second_room_and_failed_join_keeps_the_first(
+    tmp_path: Path,
+):
+    store = Store(db_path=tmp_path / "runner-membership.db", audit=True)
+    app = create_app(store=store, config=_config())
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        admin = _master_headers()
+        room_a = (
+            await client.post("/v1/rooms", json={"name": "room-a"}, headers=admin)
+        ).json()
+        room_b = (
+            await client.post("/v1/rooms", json={"name": "room-b"}, headers=admin)
+        ).json()
+        room_c = (
+            await client.post("/v1/rooms", json={"name": "room-c"}, headers=admin)
+        ).json()
+        _, runner_id, runner_token = await _pair_and_redeem(
+            client, admin_headers=admin
+        )
+        runner = {"Authorization": f"Bearer {runner_token}"}
+        created = (
+            await client.post(
+                "/v1/managed-agents",
+                json={
+                    "name": "member",
+                    "harness": "grok",
+                    "room_id": room_a["id"],
+                    "runner_id": runner_id,
+                },
+                headers=admin,
+            )
+        ).json()
+        agent_id = created["agent"]["id"]
+        start_id = created["job"]["id"]
+        start_claim = (
+            await client.post(
+                f"/v1/runners/{runner_id}/jobs/{start_id}/claim",
+                json={},
+                headers=runner,
+            )
+        ).json()
+        token = start_claim["agent_token"]
+        await client.post(
+            f"/v1/runners/{runner_id}/jobs/{start_id}/complete",
+            json={"success": True, "result": {"participant_id": "seat-a"}},
+            headers=runner,
+        )
+
+        joined = await client.post(
+            f"/v1/managed-agents/{agent_id}/rooms",
+            json={"room_id": room_b["id"]},
+            headers=admin,
+        )
+        assert joined.status_code == 200, joined.text
+        body = joined.json()
+        assert body["job"]["action"] == "join_room"
+        assert room_b["id"] in body["agent"]["room_ids"]
+        assert room_a["id"] in body["agent"]["room_ids"]
+        join_claim = (
+            await client.post(
+                f"/v1/runners/{runner_id}/jobs/{body['job']['id']}/claim",
+                json={},
+                headers=runner,
+            )
+        ).json()
+        assert "agent_token" not in join_claim
+        await client.post(
+            f"/v1/runners/{runner_id}/jobs/{body['job']['id']}/complete",
+            json={"success": True, "result": {"participant_id": "seat-b"}},
+            headers=runner,
+        )
+        agent = await store.get_managed_agent(agent_id)
+        assert agent is not None
+        assert agent.room_ids == [room_a["id"], room_b["id"]]
+        assert agent.seats[room_b["id"]] == "seat-b"
+        assert agent.seats[room_a["id"]] == "seat-a"
+        assert await store.verify_api_key(token) is not None
+
+        failed = await client.post(
+            f"/v1/managed-agents/{agent_id}/rooms",
+            json={"room_id": room_c["id"]},
+            headers=admin,
+        )
+        assert failed.status_code == 200, failed.text
+        fail_body = failed.json()
+        claimed_fail = await client.post(
+            f"/v1/runners/{runner_id}/jobs/{fail_body['job']['id']}/claim",
+            json={},
+            headers=runner,
+        )
+        assert claimed_fail.status_code == 200, claimed_fail.text
+        failed_complete = await client.post(
+            f"/v1/runners/{runner_id}/jobs/{fail_body['job']['id']}/complete",
+            json={"success": False, "error": "join failed"},
+            headers=runner,
+        )
+        assert failed_complete.status_code == 200, failed_complete.text
+        agent = await store.get_managed_agent(agent_id)
+        assert agent is not None
+        assert room_c["id"] not in agent.room_ids
+        assert agent.room_ids == [room_a["id"], room_b["id"]]
+        assert agent.last_error == "join failed"
+        assert await store.verify_api_key(token) is not None
+
+        left = await client.delete(
+            f"/v1/managed-agents/{agent_id}/rooms/{room_a['id']}",
+            headers=admin,
+        )
+        assert left.status_code == 200, left.text
+        leave_body = left.json()
+        assert leave_body["job"]["action"] == "leave_room"
+        await client.post(
+            f"/v1/runners/{runner_id}/jobs/{leave_body['job']['id']}/claim",
+            json={},
+            headers=runner,
+        )
+        await client.post(
+            f"/v1/runners/{runner_id}/jobs/{leave_body['job']['id']}/complete",
+            json={"success": True, "result": {}},
+            headers=runner,
+        )
+        agent = await store.get_managed_agent(agent_id)
+        assert agent is not None
+        assert agent.room_ids == [room_b["id"]]
+        assert agent.room_id == room_b["id"]
     store._db.close()
 
 

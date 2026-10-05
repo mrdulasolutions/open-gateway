@@ -543,7 +543,11 @@ export function OpsSidebar({
           onToggle={() => setOpenVault((v) => !v)}
         >
           <div className="px-1 pb-1">
-            <ToolVaultPanel hasAuthToken={Boolean(authToken?.trim())} />
+            <ToolVaultPanel
+              hasAuthToken={Boolean(authToken?.trim())}
+              requireAuth={Boolean(ping?.require_auth)}
+              onOpenSettings={() => setOpenSettings(true)}
+            />
           </div>
         </Accordion>
 
@@ -556,6 +560,8 @@ export function OpsSidebar({
           <div className="px-1 pb-1">
             <WorkspacePanel
               hasAuthToken={Boolean(authToken?.trim())}
+              requireAuth={Boolean(ping?.require_auth)}
+              onOpenSettings={() => setOpenSettings(true)}
               roomId={activeRoomId}
               updatedBy={participantId || displayName}
             />
@@ -870,7 +876,11 @@ export function OpsSidebar({
               </span>
             </label>
 
-            <TeamInvitesPanel hasAuthToken={Boolean(authToken?.trim())} />
+            <TeamInvitesPanel
+              hasAuthToken={Boolean(authToken?.trim())}
+              requireAuth={Boolean(ping?.require_auth)}
+              onOpenSettings={() => setOpenSettings(true)}
+            />
 
             <PushEnableButton participantId={participantId} />
             <p className="text-[11px] leading-relaxed text-zinc-500">
@@ -1192,7 +1202,15 @@ function PairQrModal({
   );
 }
 
-function TeamInvitesPanel({ hasAuthToken }: { hasAuthToken: boolean }) {
+function TeamInvitesPanel({
+  hasAuthToken,
+  requireAuth,
+  onOpenSettings,
+}: {
+  hasAuthToken: boolean;
+  requireAuth: boolean;
+  onOpenSettings: () => void;
+}) {
   const [invites, setInvites] = useState<AuthInvite[]>([]);
   const [openRegistration, setOpenRegistration] = useState(false);
   const [canManage, setCanManage] = useState(false);
@@ -1204,17 +1222,18 @@ function TeamInvitesPanel({ hasAuthToken }: { hasAuthToken: boolean }) {
   const [hasUsers, setHasUsers] = useState(false);
 
   const load = async () => {
-    if (!hasAuthToken) {
-      setCanManage(false);
-      setInvites([]);
-      return;
-    }
     try {
       const [status, me] = await Promise.all([
         api.authStatus(),
         api.authMe(),
       ]);
       setHasUsers(Boolean(status.has_users));
+      if (!hasAuthToken) {
+        setCanManage(false);
+        setInvites([]);
+        setErr("");
+        return;
+      }
       const admin =
         me.user?.role === "admin" || me.auth_kind === "master";
       setCanManage(Boolean(status.has_users) && admin);
@@ -1234,7 +1253,7 @@ function TeamInvitesPanel({ hasAuthToken }: { hasAuthToken: boolean }) {
 
   useEffect(() => {
     void load();
-  }, [hasAuthToken]);
+  }, [hasAuthToken, requireAuth]);
 
   const create = async () => {
     setBusy(true);
@@ -1257,17 +1276,54 @@ function TeamInvitesPanel({ hasAuthToken }: { hasAuthToken: boolean }) {
     window.setTimeout(() => setCopied(false), 1500);
   };
 
-  if (!hasUsers || !canManage) {
-    return null;
+  const hubUrl = `${window.location.origin}${import.meta.env.BASE_URL}`;
+
+  if (!hasUsers) {
+    return (
+      <div className="rounded-lg border border-zinc-200 bg-white p-3 dark:border-white/10 dark:bg-zinc-950/40">
+        <div className="flex items-center gap-2 text-sm font-semibold text-zinc-800 dark:text-zinc-100">
+          <UserPlus className="h-4 w-4 text-zinc-500" />
+          People
+        </div>
+        <p className="mt-1 text-[10px] leading-relaxed text-zinc-500">
+          Create your admin account on the login page first. Then you can
+          invite other humans here. Add Agent starts Claude, Grok, or Hermes,
+          not a person.
+        </p>
+      </div>
+    );
   }
 
-  const hubUrl = `${window.location.origin}${import.meta.env.BASE_URL}`;
+  if (!canManage) {
+    return (
+      <div className="rounded-lg border border-zinc-200 bg-white p-3 dark:border-white/10 dark:bg-zinc-950/40">
+        <div className="flex items-center gap-2 text-sm font-semibold text-zinc-800 dark:text-zinc-100">
+          <UserPlus className="h-4 w-4 text-zinc-500" />
+          People
+        </div>
+        <p className="mt-1 text-[10px] leading-relaxed text-zinc-500">
+          {requireAuth && !hasAuthToken
+            ? "Sign in or paste the hub token in Settings to invite people."
+            : "Only an admin can invite people. They open this hub and choose Join organization."}
+        </p>
+        {requireAuth && !hasAuthToken ? (
+          <button
+            type="button"
+            onClick={onOpenSettings}
+            className="mt-2 text-[10px] font-semibold text-orange-700 underline dark:text-orange-300"
+          >
+            Open Settings
+          </button>
+        ) : null}
+      </div>
+    );
+  }
 
   return (
     <div className="rounded-lg border border-zinc-200 bg-white p-3 dark:border-white/10 dark:bg-zinc-950/40">
       <div className="flex items-center gap-2 text-sm font-semibold text-zinc-800 dark:text-zinc-100">
         <UserPlus className="h-4 w-4 text-zinc-500" />
-        Team invites
+        People
       </div>
       <p className="mt-1 text-[10px] leading-relaxed text-zinc-500">
         {openRegistration
@@ -1581,7 +1637,15 @@ function AgentTokensPanel({
 }
 
 /** Admin tool credential vault — secrets never listed; agents use tool_proxy. */
-function ToolVaultPanel({ hasAuthToken }: { hasAuthToken: boolean }) {
+function ToolVaultPanel({
+  hasAuthToken,
+  requireAuth,
+  onOpenSettings,
+}: {
+  hasAuthToken: boolean;
+  requireAuth: boolean;
+  onOpenSettings: () => void;
+}) {
   const [rows, setRows] = useState<
     {
       name: string;
@@ -1598,8 +1662,10 @@ function ToolVaultPanel({ hasAuthToken }: { hasAuthToken: boolean }) {
   const [err, setErr] = useState("");
   const [ok, setOk] = useState("");
 
+  const unlocked = hasAuthToken || !requireAuth;
+
   const load = async () => {
-    if (!hasAuthToken) return;
+    if (!unlocked) return;
     try {
       const r = await api.listToolCredentials();
       setRows(r.credentials || []);
@@ -1611,11 +1677,21 @@ function ToolVaultPanel({ hasAuthToken }: { hasAuthToken: boolean }) {
 
   useEffect(() => {
     void load();
-  }, [hasAuthToken]);
+  }, [unlocked]);
 
-  if (!hasAuthToken) {
+  if (!unlocked) {
     return (
-      <p className="text-[10px] text-zinc-500">Connect hub to manage vault.</p>
+      <p className="text-[10px] leading-relaxed text-zinc-500">
+        API keys agents can use without seeing the secret. Sign in or paste
+        the hub token in Settings.{" "}
+        <button
+          type="button"
+          onClick={onOpenSettings}
+          className="font-semibold text-orange-700 underline dark:text-orange-300"
+        >
+          Open Settings
+        </button>
+      </p>
     );
   }
 
@@ -1626,9 +1702,9 @@ function ToolVaultPanel({ hasAuthToken }: { hasAuthToken: boolean }) {
         Tool credentials
       </div>
       <p className="text-[10px] leading-relaxed text-zinc-500">
-        Store third-party API keys on the hub. Agents call{" "}
-        <code className="text-[9px]">tool_proxy</code> by name — secrets never
-        enter agent env.
+        API keys agents can use without seeing the secret. Agents call{" "}
+        <code className="text-[9px]">tool_proxy</code> by name. The secret
+        stays on the hub.
       </p>
       <label className="block text-[10px] font-medium text-zinc-500">
         Name
@@ -1742,10 +1818,14 @@ function ToolVaultPanel({ hasAuthToken }: { hasAuthToken: boolean }) {
 /** Path-addressed room workspace (shared collab FS). */
 function WorkspacePanel({
   hasAuthToken,
+  requireAuth,
+  onOpenSettings,
   roomId,
   updatedBy,
 }: {
   hasAuthToken: boolean;
+  requireAuth: boolean;
+  onOpenSettings: () => void;
   roomId: string | null;
   updatedBy: string;
 }) {
@@ -1757,8 +1837,10 @@ function WorkspacePanel({
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
 
+  const unlocked = hasAuthToken || !requireAuth;
+
   const load = async () => {
-    if (!hasAuthToken || !roomId) return;
+    if (!unlocked || !roomId) return;
     try {
       const r = await api.listWorkspace(roomId);
       setFiles(r.files || []);
@@ -1770,11 +1852,21 @@ function WorkspacePanel({
 
   useEffect(() => {
     void load();
-  }, [hasAuthToken, roomId]);
+  }, [unlocked, roomId]);
 
-  if (!hasAuthToken) {
+  if (!unlocked) {
     return (
-      <p className="text-[10px] text-zinc-500">Connect hub to use workspace.</p>
+      <p className="text-[10px] leading-relaxed text-zinc-500">
+        Shared files for this room. Sign in or paste the hub token in
+        Settings.{" "}
+        <button
+          type="button"
+          onClick={onOpenSettings}
+          className="font-semibold text-orange-700 underline dark:text-orange-300"
+        >
+          Open Settings
+        </button>
+      </p>
     );
   }
   if (!roomId) {
@@ -1788,7 +1880,7 @@ function WorkspacePanel({
   return (
     <div className="space-y-2 rounded-xl border border-zinc-200 p-3 dark:border-white/10">
       <p className="text-[10px] leading-relaxed text-zinc-500">
-        Shared path FS for this room. Prefer paths over dumping files into chat.
+        Shared files for this room. Prefer paths over dumping files into chat.
         Agents: <code className="text-[9px]">workspace_write</code> /{" "}
         <code className="text-[9px]">workspace_read</code>.
       </p>

@@ -7,7 +7,7 @@ from enum import Enum
 from typing import Any, Literal, Optional
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator, model_validator
 
 
 def utcnow() -> datetime:
@@ -110,6 +110,8 @@ class RunnerJobAction(str, Enum):
     STOP = "stop"
     RESTART = "restart"
     MOVE = "move"
+    JOIN_ROOM = "join_room"
+    LEAVE_ROOM = "leave_room"
     DELETE = "delete"
 
 
@@ -155,6 +157,8 @@ class ManagedAgent(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     harness: Harness
     room_id: str
+    room_ids: list[str] = Field(default_factory=list)
+    seats: dict[str, str] = Field(default_factory=dict)
     runner_id: str
     status: ManagedAgentStatus = ManagedAgentStatus.STARTING
     tenant_id: Optional[str] = None
@@ -166,6 +170,20 @@ class ManagedAgent(BaseModel):
     deleted_at: Optional[datetime] = None
     last_error: Optional[str] = Field(default=None, max_length=1000)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _sync_membership(self) -> "ManagedAgent":
+        rooms: list[str] = []
+        for rid in [self.room_id, *self.room_ids]:
+            if rid and rid not in rooms:
+                rooms.append(rid)
+        self.room_ids = rooms
+        if rooms and self.room_id not in rooms:
+            self.room_id = rooms[0]
+        seat = self.seats.get(self.room_id) if self.room_id else None
+        if seat and not self.participant_id:
+            self.participant_id = seat
+        return self
 
 
 class RunnerJob(BaseModel):
@@ -179,6 +197,7 @@ class RunnerJob(BaseModel):
     agent_name: str
     harness: Harness
     room_id: str
+    room_ids: list[str] = Field(default_factory=list)
     target_room_id: Optional[str] = None
     created_at: datetime = Field(default_factory=utcnow)
     claimed_at: Optional[datetime] = None
@@ -527,6 +546,12 @@ class CreateManagedAgentRequest(BaseModel):
 
 
 class MoveManagedAgentRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    room_id: str = Field(min_length=1, max_length=128)
+
+
+class ManagedAgentRoomRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     room_id: str = Field(min_length=1, max_length=128)

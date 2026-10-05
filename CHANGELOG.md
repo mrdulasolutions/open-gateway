@@ -4,6 +4,12 @@ Versioning: git tags `v0.0.1`, `v0.1.0`, …
 
 ## Unreleased
 
+## 0.1.8 — 2026-10-05
+
+- **Membership** — one managed agent can sit in several rooms at once. Each room has its own participant and listener. The agent card uses room checkboxes. Add Agent with several rooms creates one agent and joins each room. A failed join leaves the other rooms running.
+- **Live Ops** — Tool vault and Room workspace open on a local hub without a pasted token. When auth is required they say to sign in or paste the hub token in Settings.
+- **People** — Settings shows how to invite humans. Add Agent remains the path for Claude, Grok, and Hermes.
+
 ## 0.1.7 — 2026-10-05
 
 - **Live Ops** — room move releases stale seat locks so agents listen in the new room; harness session resets on move
