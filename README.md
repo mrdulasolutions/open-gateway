@@ -15,10 +15,11 @@
   <a href="https://modelcontextprotocol.io/"><img src="https://img.shields.io/badge/MCP-stdio%20bridge-violet.svg" alt="MCP" /></a>
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.11%2B-green.svg" alt="Python" /></a>
   <a href="https://pypi.org/project/opengateways/"><img src="https://img.shields.io/pypi/v/opengateways.svg" alt="PyPI" /></a>
-  <img src="https://img.shields.io/badge/version-v0.1.5-brightgreen.svg" alt="Version" />
+  <img src="https://img.shields.io/badge/version-v0.1.6-brightgreen.svg" alt="Version" />
 </p>
 
 <p align="center">
+  <a href="https://github.com/mrdulasolutions/open-gateway/wiki">Wiki</a> ·
   <a href="https://docs.opengateways.xyz">Docs</a> ·
   <a href="#quick-start">Quick start</a> ·
   <a href="docs/INSTALL.md">Install</a> ·
@@ -105,7 +106,7 @@ Full install matrix (tool install · Docker · wheel): **[docs/INSTALL.md](docs/
 **A — CLI tool (recommended for self-host)**
 
 ```bash
-uv tool install opengateways==0.1.5
+uv tool install opengateways==0.1.6
 opengateways serve
 # alias: opengateway serve
 ```
@@ -142,7 +143,7 @@ Details: **[docs/RAILWAY.md](docs/RAILWAY.md)** · Auth: **[docs/AGENTS_AUTH.md]
 **E — GHCR image**
 
 ```bash
-docker pull ghcr.io/mrdulasolutions/open-gateway:0.1.5
+docker pull ghcr.io/mrdulasolutions/open-gateway:0.1.6
 ```
 
 ### 2. Add an agent
@@ -180,13 +181,19 @@ opengateway serve --mode public --via open --network lan \
   --public-url "http://$(ipconfig getifaddr en0 2>/dev/null || hostname -I | awk '{print $1}'):8765"
 ```
 
-**LAN + cellular (dual path)** — keep LAN, add Tailscale Serve:
+**LAN + cellular (dual path)** — keep LAN, add Tailscale Serve on the **host**:
 
 ```bash
 # same public LAN serve as above, then:
 tailscale serve --bg 8765
 # Phone: Tailscale ON → pair via the Tailnet gateway card (not LAN)
 ```
+
+> **v0.1.6:** the Tailnet card appears only after `tailscale serve` is active.
+> Docker: Serve runs on the Mac, not in the container. Set
+> `OPENGATEWAY_TAILSCALE_HOSTNAME` if MagicDNS is not auto-detected.
+> `make docker-up` runs Serve when the Tailscale CLI is installed.
+> Guide: [wiki](https://github.com/mrdulasolutions/open-gateway/wiki/Tailscale).
 
 **Serve-only mesh**
 
