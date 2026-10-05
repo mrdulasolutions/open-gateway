@@ -5,7 +5,7 @@
 | Platform | Config | Steps |
 |----------|--------|--------|
 | **Fly.io** | [`fly.toml`](../fly.toml) | `fly launch` → secrets → `fly deploy` |
-| **Railway (1-click)** | [![Deploy](https://railway.com/button.svg)](https://railway.com/deploy/open-gateway) | App + Postgres + Redis · [RAILWAY.md](RAILWAY.md) |
+| **Railway (1-click)** | [![Deploy](https://railway.com/button.svg)](https://railway.com/deploy/open-gateway-1) | App + Postgres + Redis · [RAILWAY.md](RAILWAY.md) |
 | **Docker** | [`docker-compose.yml`](../docker-compose.yml) | `docker compose up -d` |
 | **GHCR image** | CI on `v*` tags | `docker pull ghcr.io/mrdulasolutions/open-gateway:0.1.4` |
 
@@ -47,7 +47,7 @@ fly secrets set OPENGATEWAY_REDIS_URL="redis://default:…@….upstash.io:6379"
 
 ## Railway
 
-**One-click (app + Postgres + Redis):** [Deploy on Railway](https://railway.com/deploy/open-gateway) · **[RAILWAY.md](RAILWAY.md)**
+**One-click (app + Postgres + Redis):** [Deploy on Railway](https://railway.com/deploy/open-gateway-1) · **[RAILWAY.md](RAILWAY.md)**
 
 Quick post-deploy:
 

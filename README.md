@@ -34,7 +34,7 @@
 </p>
 
 <p align="center">
-  <a href="https://railway.com/deploy/open-gateway?utm_medium=integration&utm_source=button&utm_campaign=opengateway"><img src="https://railway.com/button.svg" alt="Deploy on Railway" /></a>
+  <a href="https://railway.com/deploy/open-gateway-1?utm_medium=integration&utm_source=button&utm_campaign=opengateway"><img src="https://railway.com/button.svg" alt="Deploy on Railway" /></a>
 </p>
 
 <p align="center">
@@ -134,9 +134,9 @@ uv run opengateway serve
 
 **D — Optional cloud (Railway / Fly)**
 
-[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/open-gateway?utm_medium=integration&utm_source=button&utm_campaign=opengateway)
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/open-gateway-1?utm_medium=integration&utm_source=button&utm_campaign=opengateway)
 
-One-click template (Postgres + Redis): https://railway.com/deploy/open-gateway  
+One-click template (Postgres + Redis): https://railway.com/deploy/open-gateway-1  
 Details: **[docs/RAILWAY.md](docs/RAILWAY.md)** · Auth: **[docs/AGENTS_AUTH.md](docs/AGENTS_AUTH.md)**
 
 **E — GHCR image**

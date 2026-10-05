@@ -2,9 +2,9 @@
 
 ## One-click deploy
 
-[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/open-gateway?utm_medium=integration&utm_source=button&utm_campaign=opengateway)
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/open-gateway-1?utm_medium=integration&utm_source=button&utm_campaign=opengateway)
 
-**Canonical template:** https://railway.com/deploy/open-gateway  
+**Canonical template:** https://railway.com/deploy/open-gateway-1  
 **Ship line:** **v0.1.4** — PyPI `opengateways`, GHCR `ghcr.io/mrdulasolutions/open-gateway`.
 
 Marketplace copy: `docs/RAILWAY_TEMPLATE.md` (`railway templates publish`).
@@ -176,7 +176,7 @@ From a project that already has **open-gateway + Postgres + Redis** wired:
 
 ```bash
 # Update existing published template (preferred)
-railway templates publish open-gateway \
+railway templates publish open-gateway-1 \
   --category Other \
   --description "OpenGateway v0.1.4: Postgres, Redis, radio/IM, PyPI opengateways" \
   --readme-file docs/RAILWAY_TEMPLATE.md \
@@ -189,10 +189,10 @@ railway templates create --project open-gateway --environment production --json
 Canonical button URL:
 
 ```md
-https://railway.com/deploy/open-gateway
+https://railway.com/deploy/open-gateway-1
 ```
 
-Unpublish duplicate codes (e.g. `open-gateway-1`) if present so only one marketplace listing is used.
+The current listing is `open-gateway-1` (Postgres, Redis, and a volume at `/data`). Unpublish the older `open-gateway` code so new deploys use this listing.
 
 After **v0.1.4** (PyPI `opengateways`, `opengateways` CLI), **re-publish** the template so marketplace copy matches install snippets.
 

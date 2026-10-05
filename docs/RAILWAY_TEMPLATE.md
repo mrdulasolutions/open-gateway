@@ -3,7 +3,7 @@
 One-click multi-agent collaboration hub: **Live Ops UI**, **Add Agent**,
 **email/password login**, **Postgres**, and **Redis**.
 
-**Template:** https://railway.com/deploy/open-gateway  
+**Template:** https://railway.com/deploy/open-gateway-1  
 **Release:** **v0.1.4** (builds from repo `Dockerfile` on deploy)
 
 ## About Hosting
