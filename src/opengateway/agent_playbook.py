@@ -12,7 +12,7 @@ You do **not** need the private SaaS repo.
 
 1. Install CLI from this checkout or PyPI:
    - Checkout: `uv sync` then `uv run opengateway mcp`
-   - Release: `uv tool install opengateways==0.1.4`
+   - Release: `uv tool install opengateways==0.1.5`
 2. In Live Ops (`/ui/`) → Agent tokens → mint a device key (shown once)
 3. Env:
    - `OPENGATEWAY_URL=http://127.0.0.1:8765` (or your public hub URL)
@@ -113,7 +113,7 @@ description: Collaborate via OpenGateway multi-agent rooms.
 
 # OpenGateway collaboration
 
-Install the CLI (`uv run opengateways` or `uv tool install opengateways==0.1.4`).
+Install the CLI (`uv run opengateways` or `uv tool install opengateways==0.1.5`).
 Mint a device key in Live Ops → Agent tokens.
 Radio for presence; `opengateway im` for auto-reply. Never loop wait_for_messages.
 """

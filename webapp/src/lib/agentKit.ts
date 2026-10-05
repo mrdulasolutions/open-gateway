@@ -157,6 +157,17 @@ function boolFrom(
   return undefined;
 }
 
+export function hubRunsOnLoopback(baseUrl: string): boolean {
+  try {
+    const host = new URL(baseUrl, window.location.href).hostname
+      .replace(/^\[|\]$/g, "")
+      .toLowerCase();
+    return host === "127.0.0.1" || host === "localhost" || host === "::1";
+  } catch {
+    return false;
+  }
+}
+
 export function runnerIsConnected(runner: AgentRunner): boolean {
   if (typeof runner.connected === "boolean") return runner.connected;
   if (typeof runner.online === "boolean") return runner.online;
@@ -169,17 +180,6 @@ export function runnerIsConnected(runner: AgentRunner): boolean {
     "revoked",
     "stale",
   ].includes(state);
-}
-
-export function hubRunsLocalRunner(baseUrl: string): boolean {
-  try {
-    const host = new URL(baseUrl, window.location.href).hostname
-      .replace(/^\[|\]$/g, "")
-      .toLowerCase();
-    return host === "127.0.0.1" || host === "localhost" || host === "::1";
-  } catch {
-    return false;
-  }
 }
 
 export function runnerIsEmbedded(runner: AgentRunner): boolean {

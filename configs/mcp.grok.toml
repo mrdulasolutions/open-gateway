@@ -9,12 +9,12 @@
 # See docs/AGENTS_AUTH.md
 #
 # Install once:
-#   uv tool install opengateways==0.1.4
+#   uv tool install opengateways==0.1.5
 
 [mcp_servers.opengateway]
 command = "uvx"
 args = [
-  "opengateways==0.1.4",
+  "opengateways==0.1.5",
   "mcp",
 ]
 # Dev checkout alternative:

@@ -18,7 +18,7 @@ Any non-loopback mode needs a strong token:
 export OPENGATEWAY_AUTH_TOKEN="$(openssl rand -hex 24)"
 ```
 
-**PyPI:** `uv tool install opengateways==0.1.4` — CLI **`opengateways`** (alias `opengateway`). Import: `opengateway`.
+**PyPI:** `uv tool install opengateways==0.1.5` — CLI **`opengateways`** (alias `opengateway`). Import: `opengateway`.
 
 After install, normal agent setup happens in Live Ops: click **Add Agent**,
 choose a runner, Claude Code/Grok/Hermes, room, and name, then click **Start**.
@@ -31,7 +31,7 @@ The hub mints the scoped agent credential invisibly.
 Requires [uv](https://docs.astral.sh/uv/) and Python 3.11+.
 
 ```bash
-uv tool install opengateways==0.1.4
+uv tool install opengateways==0.1.5
 
 opengateways serve
 # → http://127.0.0.1:8765/ui/
@@ -45,7 +45,7 @@ guidance in the wizard. OpenGateway never stores vendor credentials.
 **Alternative (git @ tag):**
 
 ```bash
-uv tool install "git+https://github.com/mrdulasolutions/open-gateway.git@v0.1.4"
+uv tool install "git+https://github.com/mrdulasolutions/open-gateway.git@v0.1.5"
 ```
 
 **LAN + Tailscale (dual path)**
@@ -62,7 +62,7 @@ tailscale serve --bg 8765
 **Upgrade**
 
 ```bash
-uv tool install opengateways==0.1.4 --force
+uv tool install opengateways==0.1.5 --force
 ```
 
 **Advanced compatibility: manual MCP** (gateway already running):
@@ -100,28 +100,37 @@ make check       # tests + UI
 
 ```bash
 export OPENGATEWAY_AUTH_TOKEN="$(openssl rand -hex 24)"
-docker compose up -d --build
+make docker-up
 open http://localhost:8765/ui/
-# paste token in Settings
+# paste token in Settings (first browser session)
 ```
 
-Rooms, uploads, and workspace files live on the `og-data` volume (`OPENGATEWAY_DATA_DIR=/data`: `state.db` plus `files/`).
+`make docker-up` builds and starts the hub, waits for `/ping`, then runs
+`opengateways runner ensure` on **this Mac** so Live Ops **Add Agent** sees a
+connected runner without a copy-paste terminal command.
 
-If the container cannot see a host vendor CLI, use **Add Agent** to pair a
-runner on the host. The wizard supplies the one-time command.
+Rooms, uploads, and workspace files live on the `og-data` volume
+(`OPENGATEWAY_DATA_DIR=/data`: `state.db` plus `files/`).
+
+Re-attach the host runner after token or port changes:
+
+```bash
+OPENGATEWAY_AUTH_TOKEN="$OPENGATEWAY_AUTH_TOKEN" \
+  opengateways runner ensure --url http://127.0.0.1:8765
+```
 
 ---
 
 ## D. GHCR image
 
-After release tag `v0.1.4`:
+After release tag `v0.1.5`:
 
 ```bash
-docker pull ghcr.io/mrdulasolutions/open-gateway:0.1.4
+docker pull ghcr.io/mrdulasolutions/open-gateway:0.1.5
 docker run --rm -p 8765:8765 \
   -e OPENGATEWAY_AUTH_TOKEN="$OPENGATEWAY_AUTH_TOKEN" \
   -v og-data:/data \
-  ghcr.io/mrdulasolutions/open-gateway:0.1.4
+  ghcr.io/mrdulasolutions/open-gateway:0.1.5
 ```
 
 ---

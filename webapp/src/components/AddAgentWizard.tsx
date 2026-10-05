@@ -23,8 +23,8 @@ import {
   MANAGED_HARNESSES,
   MANAGED_HARNESS_LABELS,
   defaultManagedAgentName,
+  hubRunsOnLoopback,
   runnerCapability,
-  hubRunsLocalRunner,
   runnerIsConnected,
   runnerIsEmbedded,
   runnerPairCommand,
@@ -112,7 +112,8 @@ export function AddAgentWizard({
   const [error, setError] = useState("");
   const [monitorNote, setMonitorNote] = useState("");
   const pairStarted = useRef(false);
-  const localHub = hubRunsLocalRunner(api.base || window.location.href);
+  const [localHub, setLocalHub] = useState<boolean | null>(null);
+  const hubLoopback = hubRunsOnLoopback(api.base || window.location.href);
   const onChangedRef = useRef(onChanged);
   const agentRef = useRef<ManagedAgent | null>(null);
   const autoSelectedRunner = useRef<string | null>(null);
@@ -160,7 +161,8 @@ export function AddAgentWizard({
         );
         if (connected.length > 0 || localHub) setPairing(null);
         if (
-          !localHub &&
+          localHub === false &&
+          !hubLoopback &&
           active.length === 0 &&
           autoPair &&
           !pairStarted.current
@@ -173,12 +175,37 @@ export function AddAgentWizard({
         setRunnerBusy(false);
       }
     },
-    [beginPairing, localHub]
+    [beginPairing, hubLoopback, localHub]
   );
+
+  useEffect(() => {
+    let cancelled = false;
+    void api
+      .ping()
+      .then((ping) => {
+        if (!cancelled) setLocalHub(ping.local_runner === true);
+      })
+      .catch(() => {
+        if (!cancelled) setLocalHub(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     void refreshRunners(true);
   }, [refreshRunners]);
+
+  useEffect(() => {
+    const waitingForBuiltin =
+      localHub === true || (hubLoopback && localHub === false);
+    if (!waitingForBuiltin || runners.some(runnerIsConnected)) return;
+    const timer = window.setInterval(() => {
+      void refreshRunners(false);
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [hubLoopback, localHub, refreshRunners, runners]);
 
   useEffect(() => {
     if (!pairing || runners.some(runnerIsConnected)) return;
@@ -509,10 +536,33 @@ export function AddAgentWizard({
                     </div>
                   )}
                 </div>
+              ) : localHub == null ? (
+                <div className="flex items-center gap-2 rounded-xl border border-zinc-200 p-3 text-sm text-zinc-600 dark:border-white/10 dark:text-zinc-300">
+                  <Loader2 className="h-4 w-4 animate-spin text-orange-500" />
+                  Checking for a runner…
+                </div>
               ) : localHub ? (
                 <div className="flex items-center gap-2 rounded-xl border border-zinc-200 p-3 text-sm text-zinc-600 dark:border-white/10 dark:text-zinc-300">
                   <Loader2 className="h-4 w-4 animate-spin text-orange-500" />
                   This hub starts its own runner. No terminal command is needed.
+                </div>
+              ) : hubLoopback ? (
+                <div className="rounded-xl border border-zinc-200 p-3 text-sm text-zinc-600 dark:border-white/10 dark:text-zinc-300">
+                  <div className="flex items-center gap-2">
+                    <Loader2 className="h-4 w-4 shrink-0 animate-spin text-orange-500" />
+                    <span>Waiting for the local runner…</span>
+                  </div>
+                  <p className="mt-2 text-[11px] leading-relaxed text-zinc-500 dark:text-zinc-400">
+                    Docker and Compose start it on this Mac during{" "}
+                    <code className="rounded bg-zinc-100 px-1 py-0.5 text-[10px] dark:bg-white/10">
+                      make docker-up
+                    </code>
+                    . Or run{" "}
+                    <code className="rounded bg-zinc-100 px-1 py-0.5 text-[10px] dark:bg-white/10">
+                      opengateways runner ensure
+                    </code>{" "}
+                    with the same hub token.
+                  </p>
                 </div>
               ) : !pairing ? (
                 <div className="rounded-xl border border-amber-500/35 bg-amber-50 p-3 dark:border-amber-500/25 dark:bg-amber-500/10">
@@ -569,7 +619,7 @@ export function AddAgentWizard({
                 </div>
               ) : null}
 
-              {pairing && !localHub && (
+              {pairing && !localHub && !hubLoopback && (
                 <div className="rounded-xl border border-orange-500/35 bg-orange-50 p-3 dark:border-orange-500/25 dark:bg-orange-500/10">
                   <div className="flex items-center gap-2 text-xs font-semibold text-orange-950 dark:text-orange-100">
                     <Terminal className="h-4 w-4" />

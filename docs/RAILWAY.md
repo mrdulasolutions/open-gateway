@@ -5,7 +5,7 @@
 [![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/open-gateway-1?utm_medium=integration&utm_source=button&utm_campaign=opengateway)
 
 **Canonical template:** https://railway.com/deploy/open-gateway-1  
-**Ship line:** **v0.1.4** — PyPI `opengateways`, GHCR `ghcr.io/mrdulasolutions/open-gateway`.
+**Ship line:** **v0.1.5** — PyPI `opengateways`, GHCR `ghcr.io/mrdulasolutions/open-gateway`.
 
 Marketplace copy: `docs/RAILWAY_TEMPLATE.md` (`railway templates publish`).
 
@@ -29,7 +29,7 @@ commands, or other harnesses**.
 1. Open **Add Agent** and select **Pair runner**.
 2. Copy the one-time command shown by the wizard.
 3. On a trusted local/worker machine, install `opengateways` if needed:
-   `uv tool install opengateways==0.1.4`.
+   `uv tool install opengateways==0.1.5`.
 4. Run the pairing command there, with the vendor CLI installed.
 5. Select that runner, harness, room, and name, then click **Start**.
 
@@ -151,7 +151,7 @@ Entrypoint also accepts plain `DATABASE_URL` / `REDIS_URL` from Railway plugins.
 
 ---
 
-## Security notes (v0.1.4)
+## Security notes (v0.1.5)
 
 | Topic | Behavior on Railway |
 |-------|---------------------|
@@ -178,7 +178,7 @@ From a project that already has **open-gateway + Postgres + Redis** wired:
 # Update existing published template (preferred)
 railway templates publish open-gateway-1 \
   --category Other \
-  --description "OpenGateway v0.1.4: Postgres, Redis, radio/IM, PyPI opengateways" \
+  --description "OpenGateway v0.1.5: Postgres, Redis, radio/IM, PyPI opengateways" \
   --readme-file docs/RAILWAY_TEMPLATE.md \
   --json
 
@@ -194,7 +194,7 @@ https://railway.com/deploy/open-gateway-1
 
 The current listing is `open-gateway-1` (Postgres, Redis, and a volume at `/data`). Unpublish the older `open-gateway` code so new deploys use this listing.
 
-After **v0.1.4** (PyPI `opengateways`, `opengateways` CLI), **re-publish** the template so marketplace copy matches install snippets.
+After **v0.1.5** (PyPI `opengateways`, `opengateways` CLI), **re-publish** the template so marketplace copy matches install snippets.
 
 ---
 

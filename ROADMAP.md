@@ -8,8 +8,17 @@ Status is intentionally honest. Shipped items stay listed so the arc is clear.
 
 ## Versioning
 
-- Package + tags: **`v0.1.4`** current OSS line (PyPI **`opengateways`**)
+- Package + tags: **`v0.1.5`** current OSS line (PyPI **`opengateways`**)
 - **`v0.1.0`** — first production self-host cut
+
+## Shipped (v0.1.5) — Docker host runner on install
+
+| Area | Capability |
+|------|------------|
+| Docker | `make docker-up` runs `runner ensure` after the hub is healthy |
+| CLI | `opengateways runner ensure` for loopback hubs |
+| UI | Localhost Add Agent waits for the host runner instead of a paste command |
+| Install | `uv tool install opengateways==0.1.5` |
 
 ## Shipped (v0.1.4) — first room and safer local installs
 
@@ -45,7 +54,7 @@ Status is intentionally honest. Shipped items stay listed so the arc is clear.
 | Agents | Always-on radio (no wait-loops), nudge policy, MCP vault/workspace tools |
 | UI | OSS-first Live Ops (local mint, vault + workspace panels, install snippets) |
 | Security | v0.0.7 hardening retained (WS auth, tenant IDOR, pair keys, audit) |
-| Install | `uv tool install opengateways`, git `@v0.1.4`, Docker, GHCR |
+| Install | `uv tool install opengateways`, git `@v0.1.5`, Docker, GHCR |
 
 ## Shipped (v0.0.1 baseline)
 

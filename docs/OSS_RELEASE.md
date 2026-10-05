@@ -6,7 +6,7 @@
 | **CLI** | `opengateways` | alias: `opengateway` |
 | **Import** | `opengateway` | unchanged |
 | **GHCR** | `ghcr.io/mrdulasolutions/open-gateway` | tag `v*` |
-| **Git** | `mrdulasolutions/open-gateway` | tags `v0.1.4`, … |
+| **Git** | `mrdulasolutions/open-gateway` | tags `v0.1.5`, … |
 
 PyPI rejects the name `open-gateway` (too similar to unrelated `opengateway`). OSS ships on **`opengateways`**.
 
@@ -24,7 +24,7 @@ Project **`opengateways`** on PyPI:
 ## Publish
 
 ```bash
-git tag v0.1.4 && git push origin main --tags
+git tag v0.1.5 && git push origin main --tags
 # or PyPI only:
 gh workflow run "Publish OSS" --ref main -f publish_pypi=true
 ```
@@ -33,6 +33,6 @@ gh workflow run "Publish OSS" --ref main -f publish_pypi=true
 
 ```bash
 curl -sS https://pypi.org/pypi/opengateways/json | jq -r '.info.version'
-uv tool install opengateways==0.1.4
+uv tool install opengateways==0.1.5
 opengateways --version
 ```

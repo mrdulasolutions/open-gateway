@@ -39,6 +39,15 @@ docker:
 docker-up:
 	@test -n "$$OPENGATEWAY_AUTH_TOKEN" || (echo "Set OPENGATEWAY_AUTH_TOKEN first" && exit 1)
 	docker compose up -d --build
+	@echo "Waiting for hub /ping…"
+	@i=0; \
+	while [ $$i -lt 45 ]; do \
+	  if curl -fsS "http://127.0.0.1:$${OPENGATEWAY_PORT:-8765}/ping" >/dev/null 2>&1; then break; fi; \
+	  i=$$((i+1)); sleep 2; \
+	done; \
+	curl -fsS "http://127.0.0.1:$${OPENGATEWAY_PORT:-8765}/ping" >/dev/null || (echo "Hub did not become healthy" && exit 1)
+	OPENGATEWAY_AUTH_TOKEN="$$OPENGATEWAY_AUTH_TOKEN" uv run opengateway runner ensure \
+		--url "http://127.0.0.1:$${OPENGATEWAY_PORT:-8765}"
 
 serve:
 	uv run opengateway serve

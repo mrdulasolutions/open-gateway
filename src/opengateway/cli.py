@@ -1323,6 +1323,45 @@ def runner_connect(
     )
 
 
+@runner_app.command("ensure")
+def runner_ensure(
+    url: str = typer.Option(
+        "http://127.0.0.1:8765",
+        "--url",
+        help="Loopback hub URL (Docker Compose / local LAN bind on this machine)",
+    ),
+    token: Optional[str] = typer.Option(
+        None,
+        "--token",
+        envvar="OPENGATEWAY_AUTH_TOKEN",
+        help="Hub master token used to mint a runner pairing code",
+    ),
+    name: str = typer.Option("Local Runner", "--name", help="Runner label in Live Ops"),
+) -> None:
+    """Pair and start the managed runner for a hub on this machine."""
+    from opengateway.runner import RunnerError, ensure_local_runner
+
+    auth = (token or os.environ.get("OPENGATEWAY_AUTH_TOKEN") or "").strip()
+    if not auth:
+        console.print(
+            "[red]runner ensure failed:[/] set OPENGATEWAY_AUTH_TOKEN or pass --token"
+        )
+        raise typer.Exit(1)
+    try:
+        result = ensure_local_runner(url=url, auth_token=auth, name=name)
+    except (RunnerError, httpx.HTTPError) as exc:
+        console.print(f"[red]runner ensure failed:[/] {exc}")
+        raise typer.Exit(1) from exc
+    status = result.get("status", "ok")
+    console.print(
+        f"[green]Runner {status}[/] {result.get('name')} "
+        f"({result.get('runner_id')}) · {result.get('hub_url')}"
+    )
+    service = result.get("service") or {}
+    if service.get("logs"):
+        console.print(f"[dim]Logs: {service.get('logs')}[/]")
+
+
 @runner_app.command("start")
 def runner_start() -> None:
     """Run the connected worker in the foreground until Ctrl-C."""

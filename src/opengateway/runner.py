@@ -768,6 +768,95 @@ def connect_runner(
     return config.public_dict()
 
 
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+
+
+def _loopback_host(host: str) -> bool:
+    return (host or "").lower() in _LOOPBACK_HOSTS
+
+
+def _hub_url_port(url: str) -> int:
+    parsed = urlparse(_validated_hub_url(url))
+    if parsed.port is not None:
+        return parsed.port
+    return 443 if parsed.scheme == "https" else 80
+
+
+def _same_loopback_hub(left: str, right: str) -> bool:
+    left_url = _validated_hub_url(left)
+    right_url = _validated_hub_url(right)
+    left_host = (urlparse(left_url).hostname or "").lower()
+    right_host = (urlparse(right_url).hostname or "").lower()
+    if not (_loopback_host(left_host) and _loopback_host(right_host)):
+        return left_url.rstrip("/") == right_url.rstrip("/")
+    return _hub_url_port(left_url) == _hub_url_port(right_url)
+
+
+def ensure_local_runner(
+    *,
+    url: str,
+    auth_token: str,
+    name: str = "Local Runner",
+    client: Any | None = None,
+) -> dict[str, Any]:
+    """Pair and start a background runner for a loopback hub (Docker / LAN on this Mac).
+
+    Idempotent: reuses saved credentials when they already target the same hub
+    and only restarts the OS service when needed.
+    """
+    hub_url = _validated_hub_url(url)
+    host = (urlparse(hub_url).hostname or "").lower()
+    if not _loopback_host(host):
+        raise RunnerError("runner ensure only supports loopback hub URLs")
+    token_value = (auth_token or "").strip()
+    if not token_value:
+        raise RunnerError("OPENGATEWAY_AUTH_TOKEN is required to pair a local runner")
+
+    from opengateway.runner_service import (
+        install_runner_service,
+        runner_service_status,
+    )
+
+    existing = load_runner_config()
+    runner_token = load_runner_token()
+    if existing and runner_token and _same_loopback_hub(existing.hub_url, hub_url):
+        service = runner_service_status()
+        if service.get("running"):
+            return {
+                "status": "already_running",
+                **existing.public_dict(),
+                "service": service,
+            }
+        installed = install_runner_service()
+        return {
+            "status": "service_started",
+            **existing.public_dict(),
+            "service": installed,
+        }
+
+    headers = {"Authorization": f"Bearer {token_value}"}
+    with httpx.Client(base_url=hub_url, headers=headers, timeout=30.0) as http:
+        pair_response = http.post("/v1/runners/pair", json={"name": name})
+        pair_response.raise_for_status()
+        pair_data = _response_json(pair_response)
+        code = _first_text(pair_data, "code", "pairing_code", "pairingCode")
+        if not code:
+            raise RunnerError("Hub pair response omitted its code")
+
+    result = connect_runner(
+        url=hub_url,
+        code=code,
+        name=name,
+        client=client,
+    )
+    service = install_runner_service()
+    return {
+        "status": "paired",
+        **result,
+        "service": service,
+    }
+
+
 def _validated_hub_url(url: str) -> str:
     value = (url or "").strip().rstrip("/")
     parsed = urlparse(value)

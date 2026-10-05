@@ -148,6 +148,7 @@ export type Ping = {
   network?: string;
   require_auth?: boolean;
   base_url?: string;
+  local_runner?: boolean;
 };
 
 /** Harnesses that the local runner can launch and supervise. */

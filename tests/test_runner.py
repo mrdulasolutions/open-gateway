@@ -34,6 +34,7 @@ from opengateway.runner import (
     decode_job_payload,
     disconnect_runner,
     embedded_runner_allowed,
+    ensure_local_runner,
     load_runner_config,
     runner_config_path,
     runner_status,
@@ -498,6 +499,95 @@ def test_connect_stores_secrets_separately_and_redacts_repr(tmp_path, monkeypatc
     assert _private_mode(credential_store_path()) == 0o600
     assert _private_mode(runner_config_path().parent) == 0o700
     assert token not in json.dumps(runner_status(include_probes=False))
+
+
+def test_ensure_local_runner_rejects_public_hub():
+    try:
+        ensure_local_runner(
+            url="https://hub.example",
+            auth_token="master-token",
+        )
+    except Exception as exc:
+        assert "loopback" in str(exc).lower()
+    else:
+        raise AssertionError("expected loopback guard")
+
+
+def test_ensure_local_runner_reuses_running_service(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    class LocalRedeemClient(RedeemClient):
+        def post(self, path: str, *, json: dict[str, Any]) -> FakeResponse:
+            return FakeResponse(
+                {
+                    "data": {
+                        "runner": {"id": "runner-1", "name": "Local Runner"},
+                        "authToken": self.token,
+                        "hubUrl": "http://127.0.0.1:8765",
+                    }
+                }
+            )
+
+    connect_runner(
+        url="http://127.0.0.1:8765",
+        code="ABCD-EFGH-JKLM",
+        name="Local Runner",
+        client=LocalRedeemClient("ogk_runner_super_secret"),
+    )
+    monkeypatch.setattr(
+        "opengateway.runner_service.runner_service_status",
+        lambda platform_name="": {"running": True, "installed": True},
+    )
+    paired = ensure_local_runner(
+        url="http://localhost:8765",
+        auth_token="master-token",
+    )
+    assert paired["status"] == "already_running"
+
+
+def test_ensure_local_runner_pairs_and_installs(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    installs: list[str] = []
+
+    class PairHttp:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        def __enter__(self) -> PairHttp:
+            return self
+
+        def __exit__(self, *args: Any) -> None:
+            return None
+
+        def post(self, path: str, *, json: dict[str, Any]) -> FakeResponse:
+            assert path == "/v1/runners/pair"
+            return FakeResponse({"code": "ABCD-EFGH-JKLM"})
+
+    monkeypatch.setattr("opengateway.runner.httpx.Client", PairHttp)
+    monkeypatch.setattr(
+        "opengateway.runner_service.install_runner_service",
+        lambda platform_name="": installs.append("yes") or {"logs": "/tmp"},
+    )
+    class LocalRedeemClient(RedeemClient):
+        def post(self, path: str, *, json: dict[str, Any]) -> FakeResponse:
+            return FakeResponse(
+                {
+                    "data": {
+                        "runner": {"id": "runner-1", "name": "Local Runner"},
+                        "authToken": self.token,
+                        "hubUrl": "http://127.0.0.1:8765",
+                    }
+                }
+            )
+
+    result = ensure_local_runner(
+        url="http://127.0.0.1:8765",
+        auth_token="master-token",
+        client=LocalRedeemClient("ogk_runner_super_secret"),
+    )
+    assert result["status"] == "paired"
+    assert installs == ["yes"]
+    assert load_runner_config() is not None
 
 
 def test_prefer_operator_url_when_hub_advertises_loopback():

@@ -4,6 +4,12 @@ Versioning: git tags `v0.0.1`, `v0.1.0`, …
 
 ## Unreleased
 
+## 0.1.5 — 2026-10-05
+
+- **Docker local runner** — `make docker-up` waits for `/ping`, then runs `opengateways runner ensure` on the host so Add Agent does not need a copy-paste connect command
+- **`runner ensure`** — pairs a loopback hub with `OPENGATEWAY_AUTH_TOKEN`, installs the background runner service, and is safe to re-run
+- **Add Agent UX** — localhost Docker hubs show install guidance instead of a terminal pairing block; `/ping` exposes `local_runner` for embedded loopback serve
+
 ## 0.1.4 — 2026-10-05
 
 - **General room** — a new hub starts with a room named General, so Add Agent does not wait on creating the first room

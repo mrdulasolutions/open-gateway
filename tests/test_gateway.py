@@ -70,7 +70,9 @@ async def test_sqlite_survives_restart(tmp_path):
 async def test_ping(client: AsyncClient):
     r = await client.get("/ping")
     assert r.status_code == 200
-    assert r.json()["status"] == "ok"
+    body = r.json()
+    assert body["status"] == "ok"
+    assert isinstance(body["local_runner"], bool)
 
 
 @pytest.mark.asyncio
