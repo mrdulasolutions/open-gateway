@@ -320,8 +320,8 @@ export default function App() {
         role: "assistant",
         name,
         harness,
-        parts: [{ type: "text", text: "…" }],
-        createdAt: new Date().toISOString(),
+        parts: [{ type: "text", text: "" }],
+        thinking: true,
       });
     }
     return base;

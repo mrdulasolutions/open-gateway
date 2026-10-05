@@ -25,6 +25,7 @@ import {
   Check,
 } from "lucide-react";
 import { Markdown } from "@/components/Markdown";
+import { TypingBubble } from "@/components/agent-chat/TypingBubble";
 import { cn } from "@/lib/utils";
 
 export type ChatStatus = "ready" | "streaming" | "submitted" | "idle";
@@ -41,6 +42,7 @@ export type AgentMessage = {
   name?: string;
   harness?: string;
   createdAt?: string;
+  thinking?: boolean;
 };
 
 export type Mentionable = { id: string; name: string; harness?: string };
@@ -375,6 +377,17 @@ function MessageList({
               .join("\n");
             return <SystemLine key={m.id} text={text} />;
           }
+          if (m.thinking) {
+            return (
+              <TypingBubble
+                key={m.id}
+                id={m.id}
+                name={m.name}
+                harness={m.harness}
+                harnessClass={harnessTone(m.harness)}
+              />
+            );
+          }
           if (m.role === "user") {
             return (
               <UserBubble
@@ -586,11 +599,11 @@ function InputBar({
           {pendingFiles.map((pf) => (
             <span
               key={pf.id}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-orange-500/20 bg-orange-500/5 px-2.5 py-1 text-xs font-medium text-zinc-700 dark:border-violet-500/20 dark:bg-violet-500/10 dark:text-zinc-200"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-orange-500/20 bg-orange-500/5 px-2.5 py-1 text-xs font-medium text-orange-950 dark:border-violet-500/20 dark:bg-violet-500/10 dark:text-orange-50"
             >
               <FileIcon className="h-3.5 w-3.5 text-orange-600 dark:text-violet-300" />
               {pf.file.name}
-              <span className="text-[10px] text-zinc-400">
+              <span className="text-[10px] text-orange-950/80 dark:text-orange-50/80">
                 {(pf.file.size / 1024).toFixed(0)}kb
               </span>
               <button
@@ -661,7 +674,7 @@ function InputBar({
                 setMentionQuery("");
                 taRef.current?.focus();
               }}
-              className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-medium text-zinc-600 transition hover:bg-orange-500/10 hover:text-orange-800 dark:text-zinc-300 dark:hover:text-orange-200"
+              className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-medium text-orange-950 transition hover:bg-orange-500/10 dark:text-orange-50"
               title="Mention"
             >
               <AtSign className="h-3.5 w-3.5" />
@@ -671,7 +684,7 @@ function InputBar({
               type="button"
               disabled={busy}
               onClick={() => insertAtCursor("@all ")}
-              className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-medium text-zinc-600 transition hover:bg-violet-500/10 hover:text-violet-800 dark:text-zinc-300 dark:hover:text-violet-200"
+              className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-medium text-violet-950 transition hover:bg-violet-500/10 dark:text-violet-50"
               title="Broadcast to all agents"
             >
               @all

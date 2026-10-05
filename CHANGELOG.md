@@ -4,6 +4,10 @@ Versioning: git tags `v0.0.1`, `v0.1.0`, …
 
 ## Unreleased
 
+## 0.1.9 — 2026-10-05
+
+- **Chat** — the thinking row is a bouncing three-dot indicator in the same orange and violet bubble as other messages.
+
 ## 0.1.8 — 2026-10-05
 
 - **Membership** — one managed agent can sit in several rooms at once. Each room has its own participant and listener. The agent card uses room checkboxes. Add Agent with several rooms creates one agent and joins each room. A failed join leaves the other rooms running.
