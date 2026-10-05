@@ -1334,9 +1334,29 @@ def create_app(
             "access": _pair_access_bases(),
         }
 
+    def _tailnet_gateway_eligible() -> bool:
+        """Tailnet QR only when Serve can actually reach this hub."""
+        from opengateway.tailscale import tailscale_serve_configured
+
+        ts = (cfg.tailscale_hostname or "").strip().rstrip(".")
+        if not ts:
+            return False
+        if cfg.network in {"tailscale", "funnel"}:
+            return True
+        return tailscale_serve_configured()
+
     async def _ensure_tailscale_gateway_card() -> None:
         """Advertise MagicDNS path alongside LAN self-card (cellular / away networks)."""
         ts = (cfg.tailscale_hostname or "").strip().rstrip(".")
+        if not _tailnet_gateway_eligible():
+            for g in await st.list_gateways():
+                if (
+                    not g.is_self
+                    and g.name == "tailnet-serve"
+                    and g.network == "tailscale"
+                ):
+                    await st.delete_gateway(g.id)
+            return
         if not ts:
             return
         base = f"https://{ts}"

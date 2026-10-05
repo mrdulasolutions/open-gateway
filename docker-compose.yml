@@ -22,6 +22,8 @@ services:
       OPENGATEWAY_HOST: "0.0.0.0"
       OPENGATEWAY_PORT: "8765"
       OPENGATEWAY_PUBLIC_URL: "${OPENGATEWAY_PUBLIC_URL:-}"
+      # Optional: MagicDNS name when Tailscale runs on the host, not in the container
+      OPENGATEWAY_TAILSCALE_HOSTNAME: "${OPENGATEWAY_TAILSCALE_HOSTNAME:-}"
       OPENGATEWAY_DATA_DIR: "/data"
       OPENGATEWAY_DB: "/data/state.db"
       OPENGATEWAY_NAME: "${OPENGATEWAY_NAME:-lan}"

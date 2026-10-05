@@ -168,7 +168,8 @@ def load_gateway_config() -> GatewayConfig:
     origins_raw = _env("OPENGATEWAY_CORS_ORIGINS", "*")
     allow_origins = [o.strip() for o in origins_raw.split(",") if o.strip()] or ["*"]
 
-    ts = detect_tailscale_hostname()
+    ts_env = _env("OPENGATEWAY_TAILSCALE_HOSTNAME")
+    ts = ts_env.rstrip(".") if ts_env else detect_tailscale_hostname()
 
     # Network label is about *how we expose*, not "is Tailscale installed".
     # Bug we fixed: mere presence of `tailscale` CLI was mislabeling open LAN binds

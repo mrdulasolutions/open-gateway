@@ -13,6 +13,11 @@ def tailscale_available() -> bool:
     return shutil.which("tailscale") is not None
 
 
+def tailscale_serve_configured() -> bool:
+    """True when `tailscale serve` has an active proxy (required for MagicDNS HTTPS)."""
+    return bool(tailscale_status().get("serve_configured"))
+
+
 def tailscale_status() -> dict[str, Any]:
     """Rich status for doctor / health. Never raises."""
     out: dict[str, Any] = {

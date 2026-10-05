@@ -48,6 +48,12 @@ docker-up:
 	curl -fsS "http://127.0.0.1:$${OPENGATEWAY_PORT:-8765}/ping" >/dev/null || (echo "Hub did not become healthy" && exit 1)
 	OPENGATEWAY_AUTH_TOKEN="$$OPENGATEWAY_AUTH_TOKEN" uv run opengateway runner ensure \
 		--url "http://127.0.0.1:$${OPENGATEWAY_PORT:-8765}"
+	@if command -v tailscale >/dev/null 2>&1; then \
+	  echo "Enabling Tailscale Serve on host port $${OPENGATEWAY_PORT:-8765}…"; \
+	  tailscale serve --bg "$${OPENGATEWAY_PORT:-8765}" || true; \
+	else \
+	  echo "Tip: install Tailscale on this Mac and run: tailscale serve --bg $${OPENGATEWAY_PORT:-8765}"; \
+	fi
 
 serve:
 	uv run opengateway serve

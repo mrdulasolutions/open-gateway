@@ -4,6 +4,11 @@ Versioning: git tags `v0.0.1`, `v0.1.0`, …
 
 ## Unreleased
 
+## 0.1.6 — 2026-10-05
+
+- **Tailnet gateway** — the **tailnet-serve** card appears only when `tailscale serve` is active (or the hub runs in tailscale/funnel mode); stale cards are removed so pair QR URLs are not dead links
+- **Docker + Tailscale** — `OPENGATEWAY_TAILSCALE_HOSTNAME` for MagicDNS when the CLI runs on the host; `make docker-up` runs `tailscale serve --bg` on the host when the Tailscale CLI is installed
+
 ## 0.1.5 — 2026-10-05
 
 - **Docker local runner** — `make docker-up` waits for `/ping`, then runs `opengateways runner ensure` on the host so Add Agent does not need a copy-paste connect command

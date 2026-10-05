@@ -208,7 +208,9 @@ uv run opengateway serve --mode public --via open --network lan \
 tailscale serve --bg 8765
 ```
 
-Live Ops shows two cards:
+Live Ops shows two cards **only after** `tailscale serve --bg 8765` is active on the
+**host** (Docker: run Serve on the Mac, not inside the container; set
+`OPENGATEWAY_TAILSCALE_HOSTNAME` in `.env` if MagicDNS is not auto-detected):
 
 | Card | URL | Phone |
 |------|-----|--------|

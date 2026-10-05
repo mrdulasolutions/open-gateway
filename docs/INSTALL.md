@@ -105,9 +105,13 @@ open http://localhost:8765/ui/
 # paste token in Settings (first browser session)
 ```
 
-`make docker-up` builds and starts the hub, waits for `/ping`, then runs
-`opengateways runner ensure` on **this Mac** so Live Ops **Add Agent** sees a
-connected runner without a copy-paste terminal command.
+`make docker-up` builds and starts the hub, waits for `/ping`, runs
+`opengateways runner ensure` on **this Mac**, and (if the Tailscale CLI is
+installed) runs `tailscale serve --bg 8765` on the **host** so the Tailnet
+gateway card works on cellular.
+
+Set `OPENGATEWAY_TAILSCALE_HOSTNAME=your-machine.tailnet-xxxx.ts.net` in
+`.env` when the hub runs in Docker (the container cannot run `tailscale status`).
 
 Rooms, uploads, and workspace files live on the `og-data` volume
 (`OPENGATEWAY_DATA_DIR=/data`: `state.db` plus `files/`).

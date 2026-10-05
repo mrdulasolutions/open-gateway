@@ -487,6 +487,11 @@ async def test_pair_prefers_tailscale_base_when_requested(client: AsyncClient, m
     from opengateway.server import create_app
     from httpx import ASGITransport, AsyncClient as AC
 
+    monkeypatch.setattr(
+        "opengateway.tailscale.tailscale_serve_configured",
+        lambda: True,
+    )
+
     cfg = GatewayConfig(
         mode=GatewayMode.PUBLIC,
         host="0.0.0.0",
@@ -523,6 +528,36 @@ async def test_pair_prefers_tailscale_base_when_requested(client: AsyncClient, m
             and "ts.net" in (g.get("base_url") or "")
             for g in gws
         )
+
+
+@pytest.mark.asyncio
+async def test_tailnet_card_hidden_without_serve(monkeypatch, tmp_path):
+    from opengateway.config import GatewayConfig, GatewayMode
+    from opengateway.server import create_app
+    from opengateway.store import Store
+    from httpx import ASGITransport, AsyncClient as AC
+
+    monkeypatch.setattr(
+        "opengateway.tailscale.tailscale_serve_configured",
+        lambda: False,
+    )
+    st = Store(db_path=tmp_path / "ts.db", audit=False)
+    cfg = GatewayConfig(
+        mode=GatewayMode.PUBLIC,
+        host="0.0.0.0",
+        port=8765,
+        auth_token=None,
+        require_auth=False,
+        public_url="http://192.168.1.50:8765",
+        network="lan",
+        name="lan",
+        tailscale_hostname="hub.tailnet-xxxx.ts.net",
+    )
+    app = create_app(config=cfg, store=st)
+    transport = ASGITransport(app=app)
+    async with AC(transport=transport, base_url="http://test") as c:
+        gws = (await c.get("/v1/gateways")).json()["gateways"]
+    assert not any(g.get("name") == "tailnet-serve" for g in gws)
 
 
 @pytest.mark.asyncio
