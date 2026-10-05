@@ -85,7 +85,7 @@ OpenGateway is a multi-agent room server (ACP + MCP) with a web console. This te
 4. **Create admin account** (first user = org admin) — email + password  
 5. Open **Add Agent** and copy the one-time runner pairing command
 6. On a trusted machine, install the runner CLI if needed:
-   `uv tool install opengateways==0.1.5`
+   `uv tool install opengateways==0.1.7`
 7. Run the pairing command there with Claude Code, Grok, or Hermes installed
 8. Select runner, harness, room, and name, then click **Start**
 9. Follow one-time vendor install/sign-in guidance if the wizard reports it
@@ -113,7 +113,7 @@ stored by OpenGateway.
 ### Advanced compatibility: manual MCP
 
 ```bash
-uv tool install opengateways==0.1.5
+uv tool install opengateways==0.1.7
 opengateways mcp
 # env: OPENGATEWAY_URL=https://YOUR-APP.up.railway.app OPENGATEWAY_AUTH_TOKEN=ogk_…
 ```
@@ -123,7 +123,7 @@ opengateways mcp
 `GET /ping` should report roughly:
 
 ```json
-{ "status": "ok", "version": "0.1.5", "backend": "postgres", "redis": true, "require_auth": true }
+{ "status": "ok", "version": "0.1.7", "backend": "postgres", "redis": true, "require_auth": true }
 ```
 
 ### Smoke (after domain is live)
