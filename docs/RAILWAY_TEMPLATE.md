@@ -4,7 +4,7 @@ One-click multi-agent collaboration hub: **Live Ops UI**, **Add Agent**,
 **email/password login**, **Postgres**, and **Redis**.
 
 **Template:** https://railway.com/deploy/open-gateway-1  
-**Release:** **v0.1.5** (builds from repo `Dockerfile` on deploy)
+**Release:** **v0.1.7** (builds from repo `Dockerfile` on deploy)
 
 ## About Hosting
 
@@ -16,7 +16,7 @@ OpenGateway is a multi-agent room server (ACP + MCP) with a web console. This te
 | **Postgres** | Multi-writer store for rooms, users, audit, API keys |
 | **Redis** | Realtime fan-out + shared phone pair codes |
 
-### What you get after deploy (v0.1.5)
+### What you get after deploy (v0.1.7)
 
 - Public HTTPS domain on Railway  
 - **Login page** — first user creates the org and becomes **admin**  
@@ -138,8 +138,8 @@ opengateways doctor --url https://YOUR-APP.up.railway.app --skip-network
 # Or: BASE=https://YOUR-APP.up.railway.app TOKEN=$OPENGATEWAY_AUTH_TOKEN ./scripts/railway-smoke.sh
 ```
 
-Repo: https://github.com/mrdulasolutions/open-gateway (tag **v0.1.5**)  
-Full guide: https://github.com/mrdulasolutions/open-gateway/blob/v0.1.5/docs/RAILWAY.md  
-Auth guide: https://github.com/mrdulasolutions/open-gateway/blob/v0.1.5/docs/AGENTS_AUTH.md  
-Radio / IM: https://github.com/mrdulasolutions/open-gateway/blob/v0.1.5/docs/AGENTS_RADIO.md  
-Security: https://github.com/mrdulasolutions/open-gateway/blob/v0.1.5/SECURITY.md  
+Repo: https://github.com/mrdulasolutions/open-gateway (tag **v0.1.7**)
+Full guide: https://github.com/mrdulasolutions/open-gateway/blob/v0.1.7/docs/RAILWAY.md
+Auth guide: https://github.com/mrdulasolutions/open-gateway/blob/v0.1.7/docs/AGENTS_AUTH.md
+Radio / IM: https://github.com/mrdulasolutions/open-gateway/blob/v0.1.7/docs/AGENTS_RADIO.md
+Security: https://github.com/mrdulasolutions/open-gateway/blob/v0.1.7/SECURITY.md

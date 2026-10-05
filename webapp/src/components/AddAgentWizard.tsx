@@ -94,6 +94,11 @@ export function AddAgentWizard({
   const [runnerId, setRunnerId] = useState("");
   const [harness, setHarness] =
     useState<ManagedHarness>("claude-code");
+  const [roomIds, setRoomIds] = useState<string[]>(() => {
+    if (currentRoomId) return [currentRoomId];
+    const first = rooms[0]?.id;
+    return first ? [first] : [];
+  });
   const [roomId, setRoomId] = useState(
     currentRoomId || rooms[0]?.id || ""
   );
@@ -227,7 +232,10 @@ export function AddAgentWizard({
     if (!roomId && rooms.length) {
       setRoomId(currentRoomId || rooms[0].id);
     }
-  }, [currentRoomId, roomId, rooms]);
+    if (currentRoomId && !roomIds.includes(currentRoomId)) {
+      setRoomIds((prev) => [...prev, currentRoomId]);
+    }
+  }, [currentRoomId, roomId, rooms, roomIds]);
 
   useEffect(() => {
     if (!nameTouched) setName(defaultManagedAgentName(harness));
@@ -309,7 +317,7 @@ export function AddAgentWizard({
     if (
       !selectedRunner ||
       !selectedCapability?.available ||
-      !roomId ||
+      (!roomIds.length && !roomId) ||
       !name.trim()
     ) {
       return;
@@ -318,13 +326,42 @@ export function AddAgentWizard({
     setError("");
     setMonitorNote("");
     try {
-      const created = await api.createManagedAgent({
-        runner_id: selectedRunner.id,
-        harness,
-        room_id: roomId,
-        name: name.trim(),
-      });
-      setAgent(created);
+      const targets = roomIds.length ? roomIds : roomId ? [roomId] : [];
+      if (!targets.length) {
+        setError("Select at least one room.");
+        return;
+      }
+      const createdAgents: ManagedAgent[] = [];
+      const failures: string[] = [];
+      for (const rid of targets) {
+        try {
+          const created = await api.createManagedAgent({
+            runner_id: selectedRunner.id,
+            harness,
+            room_id: rid,
+            name: name.trim(),
+          });
+          createdAgents.push(created);
+        } catch (err) {
+          const label = rooms.find((r) => r.id === rid)?.name || rid;
+          failures.push(
+            `${label}: ${err instanceof Error ? err.message : String(err)}`
+          );
+        }
+      }
+      if (!createdAgents.length) {
+        setError(failures.join(" · ") || "Could not start agent.");
+        return;
+      }
+      setAgent(createdAgents[0]);
+      setRoomId(createdAgents[0].room_id || targets[0]);
+      if (createdAgents.length > 1) {
+        setMonitorNote(
+          `Started in ${createdAgents.length} rooms${failures.length ? ` (${failures.length} failed)` : ""}.`
+        );
+      } else if (failures.length) {
+        setMonitorNote(failures.join(" · "));
+      }
       setListening(false);
       setPhase("starting");
       onChangedRef.current();
@@ -764,29 +801,38 @@ export function AddAgentWizard({
                 <h3 id="room-heading" className="text-sm font-semibold">
                   3. Room
                 </h3>
-                <label
-                  htmlFor="agent-room"
-                  className="mt-1.5 block text-xs font-medium text-zinc-600 dark:text-zinc-300"
-                >
-                  Agent room
-                  <select
-                    id="agent-room"
-                    value={roomId}
-                    onChange={(event) => setRoomId(event.target.value)}
-                    className="field-input mt-1"
-                    required
-                  >
+                <div className="mt-1.5 text-xs font-medium text-zinc-600 dark:text-zinc-300">
+                  Rooms (one seat per room)
+                  <ul className="mt-2 max-h-40 space-y-1 overflow-auto rounded-lg border border-zinc-200 p-2 dark:border-white/10">
                     {rooms.length === 0 && (
-                      <option value="">Create a room first</option>
+                      <li className="text-zinc-500">Create a room first</li>
                     )}
-                    {rooms.map((room) => (
-                      <option key={room.id} value={room.id}>
-                        {room.name}
-                        {room.id === currentRoomId ? " · current" : ""}
-                      </option>
-                    ))}
-                  </select>
-                </label>
+                    {rooms.map((room) => {
+                      const checked = roomIds.includes(room.id);
+                      return (
+                        <li key={room.id}>
+                          <label className="flex cursor-pointer items-center gap-2 rounded-md px-1 py-1 hover:bg-zinc-50 dark:hover:bg-white/5">
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() => {
+                                setRoomIds((prev) =>
+                                  checked
+                                    ? prev.filter((id) => id !== room.id)
+                                    : [...prev, room.id]
+                                );
+                              }}
+                            />
+                            <span className="text-sm">
+                              {room.name}
+                              {room.id === currentRoomId ? " · current" : ""}
+                            </span>
+                          </label>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
               </section>
 
               <section aria-labelledby="name-heading">
@@ -833,7 +879,7 @@ export function AddAgentWizard({
                   startBusy ||
                   !selectedRunner ||
                   !selectedCapability?.available ||
-                  !roomId ||
+                  (!roomIds.length && !roomId) ||
                   !name.trim()
                 }
                 className="btn-primary inline-flex items-center justify-center gap-1.5"

@@ -4,6 +4,14 @@ Versioning: git tags `v0.0.1`, `v0.1.0`, …
 
 ## Unreleased
 
+## 0.1.7 — 2026-10-05
+
+- **Live Ops** — room move releases stale seat locks so agents listen in the new room; harness session resets on move
+- **Add Agent** — multi-room checkbox list creates one managed seat per room; **Agent** button in the chat composer opens the wizard for the current room
+- **Chat** — visible check-in line when an agent joins; **…** row while a harness turn is in flight (runner `agent_activity` heartbeat)
+- **Search** — single ⌘K palette with `for_participant` (your DMs), visible on mobile/desktop, and surfaced API errors
+- **UI** — collapsed left rail fills the viewport height
+
 ## 0.1.6 — 2026-10-05
 
 - **Tailnet gateway** — the **tailnet-serve** card appears only when `tailscale serve` is active (or the hub runs in tailscale/funnel mode); stale cards are removed so pair QR URLs are not dead links

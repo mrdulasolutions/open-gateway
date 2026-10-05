@@ -214,7 +214,6 @@ export default function App() {
   const [isMobile, setIsMobile] = useState(
     () => typeof window !== "undefined" && window.innerWidth < 768
   );
-  const [mobileSearchOpen, setMobileSearchOpen] = useState(false);
   const [leftSection, setLeftSection] = useState<LeftSection>("rooms");
   const [activeDmPeerId, setActiveDmPeerId] = useState<string | null>(null);
   const [highlightMessageId, setHighlightMessageId] = useState<string | null>(
@@ -245,6 +244,14 @@ export default function App() {
     "loading"
   );
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
+  const [searchPaletteOpen, setSearchPaletteOpen] = useState(false);
+  const [addAgentOpen, setAddAgentOpen] = useState(false);
+  const [managedAgents, setManagedAgents] = useState<
+    import("@/lib/types").ManagedAgent[]
+  >([]);
+  const [pendingThinkers, setPendingThinkers] = useState<
+    Record<string, number>
+  >({});
 
   const pushNotif = useCallback((n: Omit<AppNotification, "read"> & { read?: boolean }) => {
     setNotifications((prev) => {
@@ -268,18 +275,12 @@ export default function App() {
   const visibleMessages = useMemo(() => {
     if (!participantId) {
       return messages.filter(
-        (m) =>
-          !m.to_participant_id &&
-          !m.metadata?.nudge_summary &&
-          !m.metadata?.checkin
+        (m) => !m.to_participant_id && !m.metadata?.nudge_summary
       );
     }
     if (!activeDmPeerId) {
       return messages.filter(
-        (m) =>
-          !m.to_participant_id &&
-          !m.metadata?.nudge_summary &&
-          !m.metadata?.checkin
+        (m) => !m.to_participant_id && !m.metadata?.nudge_summary
       );
     }
     return messages.filter(
@@ -292,11 +293,47 @@ export default function App() {
     );
   }, [messages, activeDmPeerId, participantId]);
 
-  const chatMessages = useMemo(
-    () =>
-      visibleMessages.map((m) => roomMsgToAgent(m, participantId, harnessMap)),
-    [visibleMessages, participantId, harnessMap]
-  );
+  const chatMessages = useMemo(() => {
+    const base = visibleMessages.map((m) =>
+      roomMsgToAgent(m, participantId, harnessMap)
+    );
+    const now = Date.now();
+    const thinkingNames = new Set<string>();
+    for (const agent of managedAgents) {
+      if (
+        agent.room_id === roomId &&
+        String(agent.metadata?.activity || "").toLowerCase() === "thinking"
+      ) {
+        thinkingNames.add(agent.name);
+      }
+    }
+    for (const [pid, until] of Object.entries(pendingThinkers)) {
+      if (until > now) {
+        const p = participants.find((x) => x.id === pid);
+        if (p?.name) thinkingNames.add(p.name);
+      }
+    }
+    for (const name of thinkingNames) {
+      const harness = harnessMap[name] || "agent";
+      base.push({
+        id: `thinking-${name}`,
+        role: "assistant",
+        name,
+        harness,
+        parts: [{ type: "text", text: "…" }],
+        createdAt: new Date().toISOString(),
+      });
+    }
+    return base;
+  }, [
+    visibleMessages,
+    participantId,
+    harnessMap,
+    managedAgents,
+    roomId,
+    pendingThinkers,
+    participants,
+  ]);
 
   const bookmarkedIds = useMemo(
     () => new Set(bookmarks.map((b) => b.message_id)),
@@ -469,6 +506,85 @@ export default function App() {
   }, [showArchivedRooms, authGate, refreshRooms]);
 
   useEffect(() => {
+    if (authGate !== "app" || !roomId) return;
+    const load = () => {
+      void api
+        .listManagedAgents()
+        .then((res) => setManagedAgents(res.agents || []))
+        .catch(() => {});
+    };
+    load();
+    const id = window.setInterval(load, 4000);
+    return () => window.clearInterval(id);
+  }, [authGate, roomId]);
+
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      const now = Date.now();
+      setPendingThinkers((prev) => {
+        const next = Object.fromEntries(
+          Object.entries(prev).filter(([, until]) => until > now)
+        );
+        return Object.keys(next).length === Object.keys(prev).length
+          ? prev
+          : next;
+      });
+    }, 5000);
+    return () => window.clearInterval(id);
+  }, []);
+
+  const onSearchNavigate = useCallback(
+    (hit: SearchHit) => {
+      void (async () => {
+        if (hit.room_id && hit.room_id !== roomId) {
+          await selectRoom(hit.room_id);
+        }
+        if (hit.type === "participant" && hit.id) {
+          setActiveDmPeerId(hit.id);
+          setLeftSection("dms");
+        } else if (hit.type === "dm") {
+          const from =
+            hit.path?.match(/dm_from=([^&]+)/)?.[1] ||
+            (hit.meta?.from_participant_id as string | undefined);
+          const to =
+            hit.path?.match(/dm_to=([^&]+)/)?.[1] ||
+            (hit.meta?.to_participant_id as string | undefined);
+          const peer =
+            from && participantId && from === participantId
+              ? to
+              : from || to;
+          if (peer) {
+            setActiveDmPeerId(peer);
+            setLeftSection("dms");
+          }
+          const msgMatch = hit.path?.match(/msg=([^&]+)/);
+          if (msgMatch?.[1] || hit.id) {
+            setHighlightMessageId(msgMatch?.[1] || hit.id);
+            setTimeout(() => setHighlightMessageId(null), 2800);
+          }
+        } else if (
+          hit.type === "message" ||
+          hit.type === "bookmark" ||
+          hit.type === "fork"
+        ) {
+          setActiveDmPeerId(null);
+          setHighlightMessageId(hit.id);
+          const msgMatch = hit.path?.match(/msg=([^&]+)/);
+          if (msgMatch?.[1]) setHighlightMessageId(msgMatch[1]);
+          setTimeout(() => setHighlightMessageId(null), 2800);
+        } else if (hit.type === "room") {
+          setActiveDmPeerId(null);
+        }
+      })().catch((e) =>
+        setError({
+          message: e instanceof Error ? e.message : String(e),
+        })
+      );
+    },
+    [roomId, participantId, selectRoom]
+  );
+
+  useEffect(() => {
     if (!roomId) return;
     const es = new EventSource(api.eventsUrl(roomId, participantId || undefined));
     es.onopen = () => {
@@ -507,6 +623,14 @@ export default function App() {
           "";
         const mine = participantId && fromId === participantId;
         if (mine) return;
+        if (fromId) {
+          setPendingThinkers((prev) => {
+            if (!prev[fromId]) return prev;
+            const next = { ...prev };
+            delete next[fromId];
+            return next;
+          });
+        }
 
         if (toId && participantId && toId === participantId) {
           // Direct message to me
@@ -837,6 +961,24 @@ export default function App() {
       if (res && typeof res === "object" && "nudge_count" in res) {
         log(`nudged ${(res as { nudge_count: number }).nudge_count} agent(s)`);
       }
+      const thinkUntil = Date.now() + 90_000;
+      const nextThink: Record<string, number> = {};
+      for (const id of mentionIds) {
+        if (id && id !== "__all__") nextThink[id] = thinkUntil;
+      }
+      if (allCall) {
+        for (const p of participants) {
+          if (
+            p.id !== participantId &&
+            String(p.harness).toLowerCase() !== "human"
+          ) {
+            nextThink[p.id] = thinkUntil;
+          }
+        }
+      }
+      if (Object.keys(nextThink).length) {
+        setPendingThinkers((prev) => ({ ...prev, ...nextThink }));
+      }
       await refreshSnapshot(roomId, participantId);
       await refreshDms(roomId, participantId);
     } catch (e) {
@@ -985,10 +1127,12 @@ export default function App() {
             ? leftOpen
               ? "og-drawer-left"
               : "hidden"
-            : undefined
+            : "flex h-full min-h-0 shrink-0 self-stretch"
         }
       >
         <OpsSidebar
+          addAgentOpen={addAgentOpen}
+          onAddAgentOpenChange={setAddAgentOpen}
           rooms={rooms}
           activeRoomId={roomId}
           ping={ping}
@@ -1131,61 +1275,23 @@ export default function App() {
             </p>
           </div>
           <div className="og-search-wrap min-w-0 flex-1">
-            <GlobalSearch
-              onNavigate={(hit: SearchHit) => {
-                void (async () => {
-                  if (hit.room_id && hit.room_id !== roomId) {
-                    await selectRoom(hit.room_id);
-                  }
-                  if (hit.type === "participant" && hit.id) {
-                    setActiveDmPeerId(hit.id);
-                    setLeftSection("dms");
-                  } else if (hit.type === "dm") {
-                    const from =
-                      hit.path?.match(/dm_from=([^&]+)/)?.[1] ||
-                      (hit.meta?.from_participant_id as string | undefined);
-                    const to =
-                      hit.path?.match(/dm_to=([^&]+)/)?.[1] ||
-                      (hit.meta?.to_participant_id as string | undefined);
-                    const peer =
-                      from && participantId && from === participantId
-                        ? to
-                        : from || to;
-                    if (peer) {
-                      setActiveDmPeerId(peer);
-                      setLeftSection("dms");
-                    }
-                    const msgMatch = hit.path?.match(/msg=([^&]+)/);
-                    if (msgMatch?.[1] || hit.id) {
-                      setHighlightMessageId(msgMatch?.[1] || hit.id);
-                      setTimeout(() => setHighlightMessageId(null), 2800);
-                    }
-                  } else if (
-                    hit.type === "message" ||
-                    hit.type === "bookmark" ||
-                    hit.type === "fork"
-                  ) {
-                    setActiveDmPeerId(null);
-                    setHighlightMessageId(hit.id);
-                    const msgMatch = hit.path?.match(/msg=([^&]+)/);
-                    if (msgMatch?.[1]) setHighlightMessageId(msgMatch[1]);
-                    setTimeout(() => setHighlightMessageId(null), 2800);
-                  } else if (hit.type === "room") {
-                    setActiveDmPeerId(null);
-                  }
-                })().catch((e) =>
-                  setError({
-                    message: e instanceof Error ? e.message : String(e),
-                  })
-                );
-              }}
-            />
+            <button
+              type="button"
+              onClick={() => setSearchPaletteOpen(true)}
+              className="flex w-full min-w-[12rem] items-center gap-2 rounded-xl border border-zinc-200 bg-white px-3 py-2 text-left text-sm text-zinc-500 shadow-sm hover:border-orange-500/30 dark:border-white/10 dark:bg-zinc-900"
+            >
+              <span className="opacity-70">⌕</span>
+              <span className="truncate">Search rooms, agents, messages…</span>
+              <kbd className="ml-auto hidden rounded border border-zinc-200 px-1.5 py-0.5 text-[10px] sm:inline dark:border-white/10">
+                ⌘K
+              </kbd>
+            </button>
           </div>
           <div className="flex shrink-0 flex-wrap items-center gap-2">
             {isMobile && (
               <button
                 type="button"
-                onClick={() => setMobileSearchOpen((v) => !v)}
+                onClick={() => setSearchPaletteOpen(true)}
                 className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-zinc-200 bg-white text-zinc-600 dark:border-white/10 dark:bg-zinc-900 dark:text-zinc-300"
                 title="Search"
               >
@@ -1284,44 +1390,15 @@ export default function App() {
           </div>
         </header>
 
-        {isMobile && mobileSearchOpen && (
-          <div className="og-search-wrap-mobile border-b border-zinc-200 px-3 py-2 dark:border-white/10">
-            <GlobalSearch
-              onNavigate={(hit: SearchHit) => {
-                setMobileSearchOpen(false);
-                void (async () => {
-                  if (hit.room_id && hit.room_id !== roomId) {
-                    await selectRoom(hit.room_id);
-                  }
-                  if (hit.type === "participant" && hit.id) {
-                    setActiveDmPeerId(hit.id);
-                  } else if (hit.type === "dm") {
-                    const from = hit.path?.match(/dm_from=([^&]+)/)?.[1];
-                    const to = hit.path?.match(/dm_to=([^&]+)/)?.[1];
-                    const peer =
-                      from && participantId && from === participantId
-                        ? to
-                        : from || to;
-                    if (peer) setActiveDmPeerId(peer);
-                  } else {
-                    setActiveDmPeerId(null);
-                    if (hit.id) {
-                      setHighlightMessageId(hit.id);
-                      setTimeout(() => setHighlightMessageId(null), 2800);
-                    }
-                  }
-                })();
-              }}
-            />
-          </div>
-        )}
-
         <div className="flex min-h-0 flex-1">
           <div className="flex min-h-0 min-w-0 flex-1 flex-col">
             <AgentChat
               className="min-h-0 flex-1"
               messages={chatMessages}
               onSend={onSend}
+              onAddAgent={
+                activeDmPeerId ? undefined : () => setAddAgentOpen(true)
+              }
               status={participantId ? "ready" : "idle"}
               disabled={!participantId}
               error={error}
@@ -1445,6 +1522,18 @@ export default function App() {
           }}
         />
       )}
+
+      <GlobalSearch
+        variant="palette"
+        paletteOpen={searchPaletteOpen}
+        onPaletteOpenChange={setSearchPaletteOpen}
+        registerShortcut
+        forParticipant={participantId}
+        onNavigate={(hit) => {
+          setSearchPaletteOpen(false);
+          onSearchNavigate(hit);
+        }}
+      />
     </div>
   );
 }

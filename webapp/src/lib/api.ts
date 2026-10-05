@@ -309,8 +309,15 @@ export const api = {
     req<{ threads: DmThread[] }>(
       `/v1/rooms/${roomId}/dms?participant_id=${encodeURIComponent(participantId)}`
     ),
-  search: (q: string, limit = 40) =>
-    req<{
+  search: (q: string, limit = 40, forParticipant?: string | null) => {
+    const params = new URLSearchParams({
+      q,
+      limit: String(limit),
+    });
+    if (forParticipant) {
+      params.set("for_participant", forParticipant);
+    }
+    return req<{
       query: string;
       hits: {
         type: string;
@@ -324,7 +331,8 @@ export const api = {
         meta?: Record<string, unknown>;
       }[];
       suggestions: { label: string; query: string; type?: string }[];
-    }>(`/v1/search?q=${encodeURIComponent(q)}&limit=${limit}`),
+    }>(`/v1/search?${params.toString()}`);
+  },
   listGateways: () =>
     req<{
       gateways: {

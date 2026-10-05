@@ -807,6 +807,7 @@ def create_app(
                 version=heartbeat.version,
                 capabilities=heartbeat.capabilities,
                 agent_statuses=heartbeat.agent_statuses,
+                agent_activity=heartbeat.agent_activity,
             )
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc

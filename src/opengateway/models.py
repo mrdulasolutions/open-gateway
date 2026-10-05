@@ -514,6 +514,7 @@ class RunnerHeartbeatRequest(BaseModel):
     version: Optional[str] = Field(default=None, max_length=80)
     capabilities: Optional[dict[str, Any]] = None
     agent_statuses: dict[str, ManagedAgentStatus] = Field(default_factory=dict)
+    agent_activity: dict[str, str] = Field(default_factory=dict)
 
 
 class CreateManagedAgentRequest(BaseModel):

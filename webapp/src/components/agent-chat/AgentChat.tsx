@@ -19,6 +19,7 @@ import {
   FileIcon,
   AtSign,
   Bookmark,
+  Bot,
   GitFork,
   Copy,
   Check,
@@ -72,6 +73,7 @@ export type AgentChatProps = {
   highlightMessageId?: string | null;
   /** Shown in composer toolbar, e.g. "Room" or "DM · alice" */
   modeLabel?: string;
+  onAddAgent?: () => void;
 };
 
 function initials(name?: string) {
@@ -424,6 +426,7 @@ function InputBar({
   onAddFiles,
   onRemoveFile,
   modeLabel,
+  onAddAgent,
 }: {
   onSend?: (payload: {
     role: "user";
@@ -442,6 +445,7 @@ function InputBar({
   onAddFiles: (files: FileList | null) => void;
   onRemoveFile: (id: string) => void;
   modeLabel?: string;
+  onAddAgent?: () => void;
 }) {
   const taRef = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -672,6 +676,19 @@ function InputBar({
             >
               @all
             </button>
+            {onAddAgent && (
+              <button
+                type="button"
+                disabled={busy}
+                onClick={onAddAgent}
+                className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-medium text-orange-800 transition hover:bg-orange-500/15 dark:text-orange-100"
+                title="Add agent to this room"
+              >
+                <Bot className="h-3.5 w-3.5" />
+                Agent
+              </button>
+            )}
+
             <button
               type="button"
               disabled={busy}
@@ -750,6 +767,7 @@ export const AgentChat = memo(function AgentChat({
   onCopy,
   highlightMessageId,
   modeLabel,
+  onAddAgent,
 }: AgentChatProps) {
   const [draft, setDraft] = useState("");
   const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
@@ -813,6 +831,7 @@ export const AgentChat = memo(function AgentChat({
         mentionables={mentionables}
         pendingFiles={pendingFiles}
         modeLabel={modeLabel}
+        onAddAgent={onAddAgent}
         onAddFiles={(list) => {
           if (!list?.length) return;
           const next = Array.from(list).map((file) => ({

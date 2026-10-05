@@ -94,6 +94,10 @@ body {
 }
 
 @media (min-width: 768px) {
+  .og-search-wrap {
+    display: flex;
+    min-width: 12rem;
+  }
   .og-search-wrap-mobile {
     display: none;
   }

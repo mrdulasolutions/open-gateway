@@ -1503,6 +1503,7 @@ class Store:
         version: Optional[str] = None,
         capabilities: Optional[dict[str, Any]] = None,
         agent_statuses: Optional[dict[str, ManagedAgentStatus]] = None,
+        agent_activity: Optional[dict[str, str]] = None,
     ) -> Runner:
         async with self._lock:
             runner = self.runners.get(runner_id)
@@ -1528,6 +1529,19 @@ class Store:
                     agent.status = reported
                     agent.updated_at = utcnow()
                     self._persist_managed_agent(agent)
+            for agent_id, activity in (agent_activity or {}).items():
+                agent = self.managed_agents.get(agent_id)
+                if not agent or agent.runner_id != runner_id or agent.deleted_at:
+                    continue
+                meta = dict(agent.metadata)
+                cleaned = (activity or "").strip().lower()
+                if cleaned:
+                    meta["activity"] = cleaned[:32]
+                else:
+                    meta.pop("activity", None)
+                agent.metadata = meta
+                agent.updated_at = utcnow()
+                self._persist_managed_agent(agent)
         return runner
 
     async def revoke_runner(self, runner_id: str) -> bool:

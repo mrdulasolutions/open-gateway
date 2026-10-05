@@ -733,10 +733,13 @@ def test_job_lifecycle_duplicate_and_delete(tmp_path, monkeypatch):
         "metadata",
     }
     assert "command" not in json.dumps(join["json"])
-    assert not any(
-        req["path"].endswith("/messages")
+    posts = [
+        req
         for req in hub.requests
-    )
+        if req["path"].endswith("/messages") and req["method"] == "POST"
+    ]
+    assert len(posts) == 1
+    assert posts[0]["json"].get("metadata", {}).get("checkin") is True
     wake = runtime.starts[0]["on_wake"]
     wake(
         [
@@ -891,7 +894,9 @@ def test_empty_harness_output_posts_nothing_and_keeps_agent_running(
     posted = [
         req
         for req in hub.requests
-        if req["path"].endswith("/messages") and req["method"] == "POST"
+        if req["path"].endswith("/messages")
+        and req["method"] == "POST"
+        and not (req.get("json") or {}).get("metadata", {}).get("checkin")
     ]
     assert len(posted) == 0
     record = get_managed_seat("agent-1")
@@ -1117,3 +1122,62 @@ def test_runner_service_matches_live_rest_contract(tmp_path, monkeypatch):
         ]
         assert len(matches) == 1
         assert matches[0]["id"] == participant_id
+
+
+def test_start_agent_not_idempotent_when_seat_lock_is_for_other_room(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    from opengateway.seat_registry import SeatRecord, upsert_seat
+
+    agent_id = "managed-move-test"
+    upsert_seat(
+        SeatRecord(
+            room_id="room-old",
+            participant_id="seat-old",
+            name="mover",
+            harness="claude-code",
+            wake="harness",
+            base_url="https://hub.example",
+            auth_token="tok",
+            managed_agent_id=agent_id,
+            runner_id="runner-1",
+            desired_state="running",
+            runtime_status="running",
+        )
+    )
+
+    def fake_lock_active(room_id: str, participant_id: str) -> bool:
+        return room_id == "room-old" and participant_id == "seat-old"
+
+    monkeypatch.setattr("opengateway.runner.seat_lock_active", fake_lock_active)
+
+    api = FakeRunnerApi(
+        [ClaimResult(agent_token="ogk_move_agent", hub_url="https://hub.example")]
+    )
+    hub = FakeHub()
+    runtime = FakeRuntimeManager()
+    service = RunnerService(
+        RunnerConfig(
+            runner_id="runner-1",
+            hub_url="https://hub.example",
+            name="runner",
+        ),
+        "ogk_runner",
+        api=api,
+        adapter_factory=lambda _: FakeAdapter(),
+        hub_request=hub,
+        runtime_manager=runtime,  # type: ignore[arg-type]
+    )
+
+    spec = ManagedAgentSpec(
+        managed_agent_id=agent_id,
+        name="mover",
+        harness="claude-code",
+        room_id="room-new",
+        runner_id="runner-1",
+    )
+    result = service._start_agent(spec, api.claim_job("job-move"))
+    assert result.get("note") != "already_running_other_process"
+    assert len(runtime.starts) == 1
+    assert runtime.starts[0]["room_id"] == "room-new"

@@ -955,6 +955,7 @@ class RunnerService:
         self._capabilities: dict[str, Any] | None = None
         self._capabilities_at = 0.0
         self._terminal_state = ""
+        self._agent_activity: dict[str, str] = {}
 
     def __repr__(self) -> str:
         return (
@@ -1204,6 +1205,7 @@ class RunnerService:
                 desired_state="running",
                 leave=True,
             )
+            self._release_seat_for_room_change(job.agent.managed_agent_id)
             moved = ManagedAgentSpec(
                 managed_agent_id=job.agent.managed_agent_id,
                 name=job.agent.name,
@@ -1240,6 +1242,7 @@ class RunnerService:
             record
             and record.participant_id
             and record.desired_state == "running"
+            and record.room_id == spec.room_id
             and seat_lock_active(record.room_id, record.participant_id)
         ):
             return {
@@ -1398,11 +1401,56 @@ class RunnerService:
         }
 
     def _post_checkin(self, runtime: ManagedRuntime) -> None:
-        self._log(
-            runtime.spec.managed_agent_id,
-            "info",
-            "listening on room (presence only; no check-in chat line)",
-        )
+        harness = self._canonical_harness(runtime.spec.harness)
+        body = {
+            "from_participant_id": runtime.participant_id,
+            "content": (
+                f"{runtime.spec.name} ({harness}) joined and is listening."
+            ),
+            "metadata": {
+                "checkin": True,
+                "managed_agent_id": runtime.spec.managed_agent_id,
+            },
+        }
+        try:
+            self._hub_request(
+                "POST",
+                runtime.hub_url,
+                f"/v1/rooms/{runtime.spec.room_id}/messages",
+                runtime.agent_token,
+                body,
+                None,
+            )
+            self._log(
+                runtime.spec.managed_agent_id,
+                "info",
+                "posted room check-in line",
+            )
+        except Exception as exc:
+            self._log(
+                runtime.spec.managed_agent_id,
+                "warning",
+                f"check-in line failed: {self._sanitize(str(exc))}",
+            )
+
+    def _release_seat_for_room_change(self, managed_agent_id: str) -> None:
+        """Drop stale locks/cursors so a move can join a new room."""
+        record = get_managed_seat(managed_agent_id)
+        if not record or not record.participant_id:
+            return
+        clear_cursor(record.room_id, record.participant_id)
+        release_seat_lock(record.room_id, record.participant_id, force=True)
+        try:
+            lock_path(record.room_id, record.participant_id).unlink(missing_ok=True)
+        except OSError:
+            pass
+        metadata = dict(record.metadata)
+        metadata.pop("harness_session_id", None)
+        metadata.pop("harness_session_used", None)
+        record.metadata = metadata
+        record.participant_id = ""
+        record.updated_at = _utcnow_iso()
+        upsert_seat(record)
 
     def _stop_agent(
         self,
@@ -1604,6 +1652,9 @@ class RunnerService:
                     f"invoking {self._canonical_harness(runtime.spec.harness)} "
                     f"for {len(events)} addressed message(s)",
                 )
+                self._set_agent_activity(
+                    runtime.spec.managed_agent_id, "thinking"
+                )
                 result = self._invoke_harness_turn(runtime, events)
                 if result.cancelled:
                     self._log(
@@ -1689,6 +1740,7 @@ class RunnerService:
                     runtime.last_error,
                 )
             finally:
+                self._set_agent_activity(runtime.spec.managed_agent_id, None)
                 self._turn_slots.release()
                 self._flush_logs(runtime.spec.managed_agent_id)
 
@@ -1927,6 +1979,15 @@ If the inbound message is empty, system traffic, or only an acknowledgement, ret
             "agent_hop": agent_hop,
         }
 
+    def _set_agent_activity(
+        self, managed_agent_id: str, activity: str | None
+    ) -> None:
+        with self._lock:
+            if activity:
+                self._agent_activity[managed_agent_id] = activity
+            else:
+                self._agent_activity.pop(managed_agent_id, None)
+
     def _persist_runtime_status(
         self,
         runtime: ManagedRuntime,
@@ -1977,11 +2038,14 @@ If the inbound message is empty, system traffic, or only an acknowledgement, ret
                 "max_concurrency": self._max_concurrency,
             }
             self._capabilities_at = now
+        with self._lock:
+            activity = dict(self._agent_activity)
         self.api.heartbeat(
             {
                 "version": PACKAGE_VERSION,
                 "capabilities": self._capabilities,
                 "agent_statuses": statuses,
+                "agent_activity": activity,
             }
         )
         for managed_agent_id in list(self._logs):

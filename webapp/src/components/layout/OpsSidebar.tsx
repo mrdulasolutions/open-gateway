@@ -97,6 +97,8 @@ type Props = {
   onRoleChange: (role: string) => void;
   onRoleCommit: (role: string) => void;
   onAuthTokenChange: (token: string) => void;
+  addAgentOpen?: boolean;
+  onAddAgentOpenChange?: (open: boolean) => void;
 };
 
 function Accordion({
@@ -244,6 +246,8 @@ export function OpsSidebar({
   onRoleChange,
   onRoleCommit,
   onAuthTokenChange,
+  addAgentOpen,
+  onAddAgentOpenChange,
 }: Props) {
   const online = ping?.status === "ok";
   const [openRooms, setOpenRooms] = useState(false);
@@ -259,7 +263,9 @@ export function OpsSidebar({
   const [openVault, setOpenVault] = useState(false);
   const [openWorkspace, setOpenWorkspace] = useState(false);
   const [pairGateway, setPairGateway] = useState<GatewayCard | null>(null);
-  const [showAddAgent, setShowAddAgent] = useState(false);
+  const [showAddAgentInternal, setShowAddAgentInternal] = useState(false);
+  const showAddAgent = addAgentOpen ?? showAddAgentInternal;
+  const setShowAddAgent = onAddAgentOpenChange ?? setShowAddAgentInternal;
   const [managedRefreshKey, setManagedRefreshKey] = useState(0);
   const [managedAgentCount, setManagedAgentCount] = useState(0);
 
@@ -386,7 +392,7 @@ export function OpsSidebar({
   if (collapsed) {
     return (
       <>
-        <aside className="flex w-12 shrink-0 flex-col items-center gap-3 border-r border-zinc-200 bg-white py-3 dark:border-white/[0.06] dark:bg-zinc-950">
+        <aside className="flex h-full min-h-0 w-12 shrink-0 flex-col items-center gap-3 self-stretch border-r border-zinc-200 bg-white py-3 dark:border-white/[0.06] dark:bg-zinc-950">
           <img
             src={`${import.meta.env.BASE_URL}og-logo.png`}
             alt="OG"
