@@ -1,5 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Moon, Sun, PanelRightOpen, PanelRightClose } from "lucide-react";
+import {
+  FolderOpen,
+  Moon,
+  Sun,
+  PanelRightOpen,
+  PanelRightClose,
+  X,
+} from "lucide-react";
 import { AgentChat, type AgentMessage } from "@/components/agent-chat/AgentChat";
 import { GlobalSearch, type SearchHit } from "@/components/GlobalSearch";
 import {
@@ -7,6 +14,7 @@ import {
   type AppNotification,
 } from "@/components/NotificationBell";
 import { OpsSidebar, type LeftSection } from "@/components/layout/OpsSidebar";
+import { WorkspacePanel } from "@/components/layout/opsSidebarPanels";
 import { SideRail } from "@/components/layout/SideRail";
 import { LoginPage } from "@/components/LoginPage";
 import { api, getAuthToken, isAllCall, setAuthToken } from "@/lib/api";
@@ -246,6 +254,7 @@ export default function App() {
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
   const [searchPaletteOpen, setSearchPaletteOpen] = useState(false);
   const [addAgentOpen, setAddAgentOpen] = useState(false);
+  const [workspaceOpen, setWorkspaceOpen] = useState(false);
   const [managedAgents, setManagedAgents] = useState<
     import("@/lib/types").ManagedAgent[]
   >([]);
@@ -300,12 +309,22 @@ export default function App() {
     const now = Date.now();
     const thinkingNames = new Set<string>();
     for (const agent of managedAgents) {
+      if (!roomId) continue;
+      const byRoom = agent.metadata?.activity_by_room;
+      let thinkingHere = false;
+      if (byRoom && typeof byRoom === "object" && !Array.isArray(byRoom)) {
+        thinkingHere =
+          String((byRoom as Record<string, string>)[roomId] || "").toLowerCase() ===
+          "thinking";
+      }
       if (
+        !thinkingHere &&
         agent.room_id === roomId &&
         String(agent.metadata?.activity || "").toLowerCase() === "thinking"
       ) {
-        thinkingNames.add(agent.name);
+        thinkingHere = true;
       }
+      if (thinkingHere) thinkingNames.add(agent.name);
     }
     for (const [pid, until] of Object.entries(pendingThinkers)) {
       if (until > now) {
@@ -506,7 +525,7 @@ export default function App() {
   }, [showArchivedRooms, authGate, refreshRooms]);
 
   useEffect(() => {
-    if (authGate !== "app" || !roomId) return;
+    if (authGate !== "app") return;
     const load = () => {
       void api
         .listManagedAgents()
@@ -516,7 +535,7 @@ export default function App() {
     load();
     const id = window.setInterval(load, 4000);
     return () => window.clearInterval(id);
-  }, [authGate, roomId]);
+  }, [authGate]);
 
   useEffect(() => {
     const id = window.setInterval(() => {
@@ -933,18 +952,7 @@ export default function App() {
         isAllCall(content) ||
         mentionIds.includes("__all__") ||
         mentionIds.some((id) => id === "__all__");
-      let to = activeDmPeerId || undefined;
-      if (
-        !to &&
-        !allCall &&
-        mentionIds.length === 1 &&
-        mentionIds[0] &&
-        mentionIds[0] !== "__all__"
-      ) {
-        to = mentionIds[0];
-        setActiveDmPeerId(to);
-        setLeftSection("dms");
-      }
+      const to = activeDmPeerId || undefined;
 
       const res = await api.postMessage(roomId, {
         from_participant_id: participantId,
@@ -1143,6 +1151,8 @@ export default function App() {
           dmThreads={dmThreads}
           forks={forks}
           gateways={gateways}
+          managedAgents={managedAgents}
+          notifications={notifications}
           activeDmPeerId={activeDmPeerId}
           section={leftSection}
           collapsed={!isMobile && !leftOpen}
@@ -1218,6 +1228,15 @@ export default function App() {
                 });
               }
             })();
+          }}
+          onMarkRoomRead={(rid) => {
+            setNotifications((prev) =>
+              prev.map((n) =>
+                n.kind === "mention" && n.roomId === rid
+                  ? { ...n, read: true }
+                  : n
+              )
+            );
           }}
         />
       </div>
@@ -1344,6 +1363,16 @@ export default function App() {
                 <Moon className="h-4 w-4" />
               )}
             </button>
+            {roomId && !activeDmPeerId && (
+              <button
+                type="button"
+                onClick={() => setWorkspaceOpen(true)}
+                className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-zinc-200 bg-white text-zinc-600 dark:border-white/10 dark:bg-zinc-900 dark:text-zinc-300"
+                title="Room workspace"
+              >
+                <FolderOpen className="h-4 w-4" />
+              </button>
+            )}
             <button
               type="button"
               onClick={() => {
@@ -1510,6 +1539,40 @@ export default function App() {
           )}
         </div>
       </main>
+
+      {workspaceOpen && roomId && (
+        <div className="fixed inset-0 z-[60] flex justify-end bg-black/40 backdrop-blur-sm">
+          <div
+            className="flex h-full w-full max-w-md flex-col border-l border-zinc-200 bg-white shadow-2xl dark:border-white/10 dark:bg-zinc-950"
+            role="dialog"
+            aria-label="Room workspace"
+          >
+            <div className="flex items-center justify-between border-b border-zinc-200 px-4 py-3 dark:border-white/10">
+              <div className="flex items-center gap-2 text-sm font-semibold">
+                <FolderOpen className="h-4 w-4 text-orange-600" />
+                Room workspace
+              </div>
+              <button
+                type="button"
+                onClick={() => setWorkspaceOpen(false)}
+                className="rounded-lg p-1.5 text-zinc-500 hover:bg-zinc-100 dark:hover:bg-white/10"
+                aria-label="Close"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="min-h-0 flex-1 overflow-y-auto p-4">
+              <WorkspacePanel
+                hasAuthToken={Boolean(authToken?.trim())}
+                requireAuth={Boolean(ping?.require_auth)}
+                onOpenSettings={() => setWorkspaceOpen(false)}
+                roomId={roomId}
+                updatedBy={participantId || displayName}
+              />
+            </div>
+          </div>
+        </div>
+      )}
 
       {showNewRoom && (
         <NewRoomModal

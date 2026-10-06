@@ -1504,6 +1504,7 @@ class Store:
         capabilities: Optional[dict[str, Any]] = None,
         agent_statuses: Optional[dict[str, ManagedAgentStatus]] = None,
         agent_activity: Optional[dict[str, str]] = None,
+        agent_activity_by_room: Optional[dict[str, dict[str, str]]] = None,
     ) -> Runner:
         async with self._lock:
             runner = self.runners.get(runner_id)
@@ -1539,6 +1540,29 @@ class Store:
                     meta["activity"] = cleaned[:32]
                 else:
                     meta.pop("activity", None)
+                agent.metadata = meta
+                agent.updated_at = utcnow()
+                self._persist_managed_agent(agent)
+            for agent_id, room_map in (agent_activity_by_room or {}).items():
+                agent = self.managed_agents.get(agent_id)
+                if not agent or agent.runner_id != runner_id or agent.deleted_at:
+                    continue
+                meta = dict(agent.metadata)
+                cleaned_map: dict[str, str] = {}
+                for rid, act in (room_map or {}).items():
+                    room_key = str(rid or "").strip()
+                    if not room_key:
+                        continue
+                    cleaned_act = (act or "").strip().lower()
+                    if cleaned_act:
+                        cleaned_map[room_key] = cleaned_act[:32]
+                if cleaned_map:
+                    meta["activity_by_room"] = cleaned_map
+                    meta["activity"] = "thinking"
+                else:
+                    meta.pop("activity_by_room", None)
+                    if not (agent_activity or {}).get(agent_id):
+                        meta.pop("activity", None)
                 agent.metadata = meta
                 agent.updated_at = utcnow()
                 self._persist_managed_agent(agent)

@@ -962,7 +962,7 @@ class RunnerService:
         self._capabilities: dict[str, Any] | None = None
         self._capabilities_at = 0.0
         self._terminal_state = ""
-        self._agent_activity: dict[str, str] = {}
+        self._agent_activity_by_room: dict[str, dict[str, str]] = {}
 
     def __repr__(self) -> str:
         return (
@@ -1768,7 +1768,9 @@ class RunnerService:
                     f"for {len(events)} addressed message(s)",
                 )
                 self._set_agent_activity(
-                    runtime.spec.managed_agent_id, "thinking"
+                    runtime.spec.managed_agent_id,
+                    "thinking",
+                    runtime.spec.room_id,
                 )
                 result = self._invoke_harness_turn(runtime, events)
                 if result.cancelled:
@@ -1855,7 +1857,11 @@ class RunnerService:
                     runtime.last_error,
                 )
             finally:
-                self._set_agent_activity(runtime.spec.managed_agent_id, None)
+                self._set_agent_activity(
+                    runtime.spec.managed_agent_id,
+                    None,
+                    runtime.spec.room_id,
+                )
                 self._turn_slots.release()
                 self._flush_logs(runtime.spec.managed_agent_id)
 
@@ -2095,13 +2101,24 @@ If the inbound message is empty, system traffic, or only an acknowledgement, ret
         }
 
     def _set_agent_activity(
-        self, managed_agent_id: str, activity: str | None
+        self,
+        managed_agent_id: str,
+        activity: str | None,
+        room_id: str | None = None,
     ) -> None:
         with self._lock:
+            if not room_id:
+                self._agent_activity_by_room.pop(managed_agent_id, None)
+                return
+            rooms = self._agent_activity_by_room.setdefault(
+                managed_agent_id, {}
+            )
             if activity:
-                self._agent_activity[managed_agent_id] = activity
+                rooms[room_id] = activity
             else:
-                self._agent_activity.pop(managed_agent_id, None)
+                rooms.pop(room_id, None)
+                if not rooms:
+                    self._agent_activity_by_room.pop(managed_agent_id, None)
 
     def _persist_runtime_status(
         self,
@@ -2157,13 +2174,21 @@ If the inbound message is empty, system traffic, or only an acknowledgement, ret
             }
             self._capabilities_at = now
         with self._lock:
-            activity = dict(self._agent_activity)
+            by_room = {
+                agent_id: dict(rooms)
+                for agent_id, rooms in self._agent_activity_by_room.items()
+            }
+        legacy_activity: dict[str, str] = {}
+        for agent_id, rooms in by_room.items():
+            if any((v or "").strip() for v in rooms.values()):
+                legacy_activity[agent_id] = "thinking"
         self.api.heartbeat(
             {
                 "version": PACKAGE_VERSION,
                 "capabilities": self._capabilities,
                 "agent_statuses": statuses,
-                "agent_activity": activity,
+                "agent_activity": legacy_activity,
+                "agent_activity_by_room": by_room,
             }
         )
         for managed_agent_id in list(self._logs):

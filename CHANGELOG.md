@@ -4,6 +4,13 @@ Versioning: git tags `v0.0.1`, `v0.1.0`, …
 
 ## Unreleased
 
+## 0.1.10 — 2026-10-05
+
+- **Live Ops** — Slack-style left nav: **Now** strip (agent thinking + room), pinned rooms, DM and @mention badges, per-agent room chips, settings sheet (General, People, gateways, vault, keys), room workspace from the chat header.
+- **Runner** — `agent_activity_by_room` on heartbeats so thinking state is scoped per room (Now strip and nav stay accurate when one agent sits in several rooms).
+- **Settings** — hub auth token field has show/hide and copy.
+- **Chat** — `@mention` in a room stays in the public transcript and uses server mention nudges; it no longer flips the UI into a private DM.
+
 ## 0.1.9 — 2026-10-05
 
 - **Chat** — the thinking row is a bouncing three-dot indicator in the same orange and violet bubble as other messages.
