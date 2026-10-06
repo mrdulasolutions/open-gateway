@@ -1465,6 +1465,114 @@ class Store:
         )
         return runner, token
 
+    def _runner_dead(self, runner: Optional[Runner]) -> bool:
+        if runner is None:
+            return True
+        if runner.revoked_at is not None or runner.status == RunnerStatus.REVOKED:
+            return True
+        return False
+
+    async def recover_abandoned_runner_jobs(self) -> int:
+        """Requeue work left CLAIMED when the hub or runner died mid-flight.
+
+        Also queue a fresh start for agents stuck in starting/restarting with
+        no live job, and for agents whose runner is gone once a replacement
+        exists (see embedded heartbeat adoption).
+        """
+        recovered = 0
+        async with self._lock:
+            for job in list(self.runner_jobs.values()):
+                if job.status != RunnerJobStatus.CLAIMED:
+                    continue
+                job.status = RunnerJobStatus.QUEUED
+                job.claimed_at = None
+                job.error = None
+                self._persist_runner_job(job)
+                self._runner_job_events.setdefault(
+                    job.runner_id, asyncio.Event()
+                ).set()
+                recovered += 1
+            for agent in list(self.managed_agents.values()):
+                if agent.deleted_at is not None:
+                    continue
+                if agent.status not in {
+                    ManagedAgentStatus.STARTING,
+                    ManagedAgentStatus.RESTARTING,
+                }:
+                    continue
+                runner = self.runners.get(agent.runner_id)
+                if self._runner_dead(runner):
+                    continue
+                if self._pending_runner_job(
+                    agent.id, RunnerJobAction.START
+                ) or self._pending_runner_job(agent.id, RunnerJobAction.RESTART):
+                    continue
+                agent.status = ManagedAgentStatus.STARTING
+                agent.last_error = None
+                agent.updated_at = utcnow()
+                self._persist_managed_agent(agent)
+                self._enqueue_runner_job_locked(agent, RunnerJobAction.START)
+                recovered += 1
+        return recovered
+
+    def _adopt_orphaned_agents_locked(self, runner_id: str) -> None:
+        """Point agents at a live embedded runner after the previous one died."""
+        runner = self.runners.get(runner_id)
+        if not runner or self._runner_dead(runner):
+            return
+        # A new embedded worker replaces the previous embedded identity immediately.
+        # The old record can still look online for up to RUNNER_STALE_SECONDS.
+        for other in list(self.runners.values()):
+            if other.id == runner_id or other.revoked_at is not None:
+                continue
+            if (other.capabilities or {}).get("embedded") is True:
+                other.status = RunnerStatus.REVOKED
+                other.revoked_at = utcnow()
+                self._persist_runner(other)
+        for agent in list(self.managed_agents.values()):
+            if agent.deleted_at is not None or agent.runner_id == runner_id:
+                continue
+            if agent.status in {
+                ManagedAgentStatus.STOPPED,
+                ManagedAgentStatus.STOPPING,
+                ManagedAgentStatus.DELETING,
+                ManagedAgentStatus.DELETED,
+            }:
+                continue
+            previous = self.runners.get(agent.runner_id)
+            if previous is not None and not self._runner_dead(previous):
+                if not self._runner_stale(previous):
+                    continue
+            agent.runner_id = runner_id
+            agent.status = ManagedAgentStatus.STARTING
+            agent.last_error = None
+            agent.updated_at = utcnow()
+            if agent.active_key_id:
+                agent.retiring_key_ids = list(agent.retiring_key_ids) + [
+                    agent.active_key_id
+                ]
+                agent.active_key_id = None
+            self._persist_managed_agent(agent)
+            for job in self.runner_jobs.values():
+                if (
+                    job.managed_agent_id == agent.id
+                    and job.status
+                    in {RunnerJobStatus.QUEUED, RunnerJobStatus.CLAIMED}
+                ):
+                    job.runner_id = runner_id
+                    job.status = RunnerJobStatus.QUEUED
+                    job.claimed_at = None
+                    self._persist_runner_job(job)
+            if not (
+                self._pending_runner_job(agent.id, RunnerJobAction.START)
+                or self._pending_runner_job(agent.id, RunnerJobAction.RESTART)
+            ):
+                self._enqueue_runner_job_locked(agent, RunnerJobAction.START)
+            else:
+                self._runner_job_events.setdefault(
+                    runner_id, asyncio.Event()
+                ).set()
+
     def _runner_stale(self, runner: Runner) -> bool:
         seen = runner.last_seen_at
         if seen.tzinfo is None:
@@ -1521,15 +1629,25 @@ class Store:
                 agent = self.managed_agents.get(agent_id)
                 if not agent or agent.runner_id != runner_id or agent.deleted_at:
                     continue
-                if reported in {
+                if reported not in {
                     ManagedAgentStatus.STARTING,
                     ManagedAgentStatus.RUNNING,
                     ManagedAgentStatus.STOPPED,
                     ManagedAgentStatus.ERROR,
                 }:
-                    agent.status = reported
-                    agent.updated_at = utcnow()
-                    self._persist_managed_agent(agent)
+                    continue
+                # A queued/claimed start must not be flipped to stopped/error
+                # by a heartbeat from a registry that has not launched yet.
+                if reported != ManagedAgentStatus.RUNNING and (
+                    self._pending_runner_job(agent.id, RunnerJobAction.START)
+                    or self._pending_runner_job(
+                        agent.id, RunnerJobAction.RESTART
+                    )
+                ):
+                    continue
+                agent.status = reported
+                agent.updated_at = utcnow()
+                self._persist_managed_agent(agent)
             for agent_id, activity in (agent_activity or {}).items():
                 agent = self.managed_agents.get(agent_id)
                 if not agent or agent.runner_id != runner_id or agent.deleted_at:
@@ -1566,6 +1684,8 @@ class Store:
                 agent.metadata = meta
                 agent.updated_at = utcnow()
                 self._persist_managed_agent(agent)
+            if (capabilities or {}).get("embedded") is True:
+                self._adopt_orphaned_agents_locked(runner_id)
         return runner
 
     async def revoke_runner(self, runner_id: str) -> bool:

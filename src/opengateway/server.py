@@ -205,6 +205,7 @@ def create_app(
         else:
             app.state.redis_bus = None
         await _ensure_self_gateway()
+        await st.recover_abandoned_runner_jobs()
         yield
         if bus is not None:
             await bus.close()

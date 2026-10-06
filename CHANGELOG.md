@@ -4,6 +4,12 @@ Versioning: git tags `v0.0.1`, `v0.1.0`, …
 
 ## Unreleased
 
+## 0.1.11 — 2026-10-05
+
+- **Runner** — hub startup requeues start jobs left claimed when the process died, and queues a fresh start for agents stuck in starting or restarting.
+- **Embedded runner** — a rejected pairing token is dropped and the worker pairs again. The new embedded runner adopts agents whose previous runner is revoked, stale, or gone.
+- **Heartbeat** — a runner heartbeat cannot mark an agent stopped or error while a start or restart job is still queued.
+
 ## 0.1.10 — 2026-10-05
 
 - **Live Ops** — Slack-style left nav: **Now** strip (agent thinking + room), pinned rooms, DM and @mention badges, per-agent room chips, settings sheet (General, People, gateways, vault, keys), room workspace from the chat header.

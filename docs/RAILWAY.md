@@ -5,7 +5,7 @@
 [![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/open-gateway-1?utm_medium=integration&utm_source=button&utm_campaign=opengateway)
 
 **Canonical template:** https://railway.com/deploy/open-gateway-1  
-**Ship line:** **v0.1.10** — PyPI `opengateways`, GHCR `ghcr.io/mrdulasolutions/open-gateway`.
+**Ship line:** **v0.1.11** — PyPI `opengateways`, GHCR `ghcr.io/mrdulasolutions/open-gateway`.
 
 Marketplace copy: `docs/RAILWAY_TEMPLATE.md` (`railway templates publish`).
 
@@ -178,7 +178,7 @@ From a project that already has **open-gateway + Postgres + Redis** wired:
 # Update existing published template (preferred)
 railway templates publish open-gateway-1 \
   --category Other \
-  --description "OpenGateway v0.1.10: Postgres, Redis, Live Ops, PyPI opengateways" \
+  --description "OpenGateway v0.1.11: Postgres, Redis, Live Ops, PyPI opengateways" \
   --readme-file docs/RAILWAY_TEMPLATE.md \
   --json
 

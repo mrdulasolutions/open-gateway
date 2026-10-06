@@ -851,3 +851,99 @@ async def test_invite_list_and_member_cannot_manage(tmp_path: Path):
         )
         assert used["uses"] == 1
     store._db.close()
+
+
+@pytest.mark.asyncio
+async def test_claimed_jobs_requeue_and_embedded_runner_adopts_agents(
+    tmp_path: Path,
+):
+    from opengateway.models import RunnerJobStatus
+
+    db_path = tmp_path / "runner-recover.db"
+    store = Store(db_path=db_path, audit=True)
+    app = create_app(store=store, config=_config())
+    transport = ASGITransport(app=app)
+    admin = _master_headers()
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        room = (
+            await client.post(
+                "/v1/rooms",
+                json={"name": "general", "goal": "work"},
+                headers=admin,
+            )
+        ).json()
+        _pair, runner_a, token_a = await _pair_and_redeem(
+            client, admin_headers=admin, name="embedded-a"
+        )
+        beat = await client.post(
+            f"/v1/runners/{runner_a}/heartbeat",
+            json={"capabilities": {"embedded": True, "harnesses": {}}},
+            headers={"Authorization": f"Bearer {token_a}"},
+        )
+        assert beat.status_code == 200, beat.text
+        created = (
+            await client.post(
+                "/v1/managed-agents",
+                json={
+                    "name": "Grok",
+                    "harness": "grok",
+                    "room_id": room["id"],
+                    "runner_id": runner_a,
+                },
+                headers=admin,
+            )
+        ).json()
+        job_id = created["job"]["id"]
+        agent_id = created["agent"]["id"]
+        job = store.runner_jobs[job_id]
+        job.status = RunnerJobStatus.CLAIMED
+        store._persist_runner_job(job)
+        recovered = await store.recover_abandoned_runner_jobs()
+        assert recovered >= 1
+        assert store.runner_jobs[job_id].status == RunnerJobStatus.QUEUED
+
+        waiting = await client.get(
+            f"/v1/runners/{runner_a}/jobs/wait",
+            params={"timeout": 0},
+            headers={"Authorization": f"Bearer {token_a}"},
+        )
+        assert waiting.status_code == 200
+        assert waiting.json()["job"]["id"] == job_id
+
+        # Heartbeat must not mark the agent stopped while that start is queued.
+        held = await client.post(
+            f"/v1/runners/{runner_a}/heartbeat",
+            json={
+                "capabilities": {"embedded": True},
+                "agent_statuses": {agent_id: "stopped"},
+            },
+            headers={"Authorization": f"Bearer {token_a}"},
+        )
+        assert held.status_code == 200
+        assert store.managed_agents[agent_id].status.value == "starting"
+
+        revoked = await client.delete(
+            f"/v1/runners/{runner_a}", headers=admin
+        )
+        assert revoked.status_code == 200, revoked.text
+        _pair_b, runner_b, token_b = await _pair_and_redeem(
+            client, admin_headers=admin, name="embedded-b"
+        )
+        adopted = await client.post(
+            f"/v1/runners/{runner_b}/heartbeat",
+            json={"capabilities": {"embedded": True, "harnesses": {}}},
+            headers={"Authorization": f"Bearer {token_b}"},
+        )
+        assert adopted.status_code == 200, adopted.text
+        agent = store.managed_agents[agent_id]
+        assert agent.runner_id == runner_b
+        assert agent.status.value == "starting"
+        taken = await client.get(
+            f"/v1/runners/{runner_b}/jobs/wait",
+            params={"timeout": 0},
+            headers={"Authorization": f"Bearer {token_b}"},
+        )
+        assert taken.status_code == 200
+        assert taken.json()["job"]["managed_agent_id"] == agent_id
+        assert taken.json()["job"]["action"] == "start"
+    store._db.close()

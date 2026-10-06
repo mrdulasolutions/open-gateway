@@ -2512,8 +2512,17 @@ def start_embedded_runner(
                                 "agent_statuses": {},
                             }
                         )
-                    except Exception:
+                    except Exception as exc:
                         config, token = None, ""
+                        if RunnerService._is_terminal_api_error(exc):
+                            for path in (
+                                embedded_runner_config_path(),
+                                embedded_runner_credential_path(),
+                            ):
+                                try:
+                                    path.unlink(missing_ok=True)
+                                except OSError:
+                                    pass
                     finally:
                         api.close()
                 if not config or not token:
