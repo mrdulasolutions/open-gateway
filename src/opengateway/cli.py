@@ -199,7 +199,11 @@ def serve(
     console.print(f"  Web UI:      {cfg.base_url}/ui/")
     console.print("  Gateways:   GET /v1/gateways")
     console.print("  Search:     GET /v1/search?q=")
-    from opengateway.runner import embedded_runner_allowed
+    from opengateway.runner import (
+        embedded_runner_allowed,
+        host_runner_allowed,
+        schedule_local_runner_service,
+    )
 
     local_execution = embedded_runner_allowed(cfg)
     if local_execution:
@@ -223,6 +227,23 @@ def serve(
                 console.print(f"  [yellow]Runner could not start:[/] {exc}")
         else:
             console.print("  [dim]Runner: disabled by --no-runner[/]")
+    elif host_runner_allowed(cfg) and not no_runner:
+        token_value = (cfg.auth_token or "").strip()
+        if not token_value:
+            console.print(
+                "  [yellow]Runner:[/] this machine can run agents, but pairing "
+                "needs OPENGATEWAY_AUTH_TOKEN (or --token)"
+            )
+        else:
+            schedule_local_runner_service(
+                hub_url=f"http://127.0.0.1:{port}",
+                auth_token=token_value,
+                log=lambda message: console.print(f"  [dim]{message}[/]"),
+            )
+            console.print(
+                "  [dim]Runner: installing the local background service "
+                "once the hub is up[/]"
+            )
     elif cfg.mode.value == "public":
         console.print(
             "  [dim]Runner: hub-only mode; connect a worker with "

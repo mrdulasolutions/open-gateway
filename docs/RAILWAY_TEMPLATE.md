@@ -4,7 +4,7 @@ One-click multi-agent collaboration hub: **Live Ops UI**, **Add Agent**,
 **email/password login**, **Postgres**, and **Redis**.
 
 **Template:** https://railway.com/deploy/open-gateway-1  
-**Release:** **v0.1.11** (builds from repo `Dockerfile` on deploy)
+**Release:** **v0.1.12** (builds from repo `Dockerfile` on deploy)
 
 ## About Hosting
 
@@ -16,7 +16,7 @@ OpenGateway is a multi-agent room server (ACP + MCP) with a web console. This te
 | **Postgres** | Multi-writer store for rooms, users, audit, API keys |
 | **Redis** | Realtime fan-out + shared phone pair codes |
 
-### What you get after deploy (v0.1.11)
+### What you get after deploy (v0.1.12)
 
 - Public HTTPS domain on Railway  
 - **Login page** — first user creates the org and becomes **admin**  
@@ -85,7 +85,7 @@ OpenGateway is a multi-agent room server (ACP + MCP) with a web console. This te
 4. **Create admin account** (first user = org admin) — email + password  
 5. Open **Add Agent** and copy the one-time runner pairing command
 6. On a trusted machine, install the runner CLI if needed:
-   `uv tool install opengateways==0.1.11`
+   `uv tool install opengateways==0.1.12`
 7. Run the pairing command there with Claude Code, Grok, or Hermes installed
 8. Select runner, harness, room, and name, then click **Start**
 9. Follow one-time vendor install/sign-in guidance if the wizard reports it
@@ -113,7 +113,7 @@ stored by OpenGateway.
 ### Advanced compatibility: manual MCP
 
 ```bash
-uv tool install opengateways==0.1.11
+uv tool install opengateways==0.1.12
 opengateways mcp
 # env: OPENGATEWAY_URL=https://YOUR-APP.up.railway.app OPENGATEWAY_AUTH_TOKEN=ogk_…
 ```
@@ -123,7 +123,7 @@ opengateways mcp
 `GET /ping` should report roughly:
 
 ```json
-{ "status": "ok", "version": "0.1.11", "backend": "postgres", "redis": true, "require_auth": true }
+{ "status": "ok", "version": "0.1.12", "backend": "postgres", "redis": true, "require_auth": true }
 ```
 
 ### Smoke (after domain is live)
@@ -138,8 +138,8 @@ opengateways doctor --url https://YOUR-APP.up.railway.app --skip-network
 # Or: BASE=https://YOUR-APP.up.railway.app TOKEN=$OPENGATEWAY_AUTH_TOKEN ./scripts/railway-smoke.sh
 ```
 
-Repo: https://github.com/mrdulasolutions/open-gateway (tag **v0.1.11**)
-Full guide: https://github.com/mrdulasolutions/open-gateway/blob/v0.1.11/docs/RAILWAY.md
-Auth guide: https://github.com/mrdulasolutions/open-gateway/blob/v0.1.11/docs/AGENTS_AUTH.md
-Radio / IM: https://github.com/mrdulasolutions/open-gateway/blob/v0.1.11/docs/AGENTS_RADIO.md
-Security: https://github.com/mrdulasolutions/open-gateway/blob/v0.1.11/SECURITY.md
+Repo: https://github.com/mrdulasolutions/open-gateway (tag **v0.1.12**)
+Full guide: https://github.com/mrdulasolutions/open-gateway/blob/v0.1.12/docs/RAILWAY.md
+Auth guide: https://github.com/mrdulasolutions/open-gateway/blob/v0.1.12/docs/AGENTS_AUTH.md
+Radio / IM: https://github.com/mrdulasolutions/open-gateway/blob/v0.1.12/docs/AGENTS_RADIO.md
+Security: https://github.com/mrdulasolutions/open-gateway/blob/v0.1.12/SECURITY.md

@@ -34,6 +34,8 @@ from opengateway.runner import (
     decode_job_payload,
     disconnect_runner,
     embedded_runner_allowed,
+    host_runner_allowed,
+    schedule_local_runner_service,
     ensure_local_runner,
     load_runner_config,
     runner_config_path,
@@ -1004,6 +1006,76 @@ def test_embedded_runner_only_allowed_for_internal_loopback():
         internal,
         environ={"RAILWAY_PROJECT_ID": "project-1"},
     )
+
+
+def test_host_runner_starts_for_tailscale_serve_on_localhost():
+    serve = SimpleNamespace(
+        mode=SimpleNamespace(value="public"),
+        host="127.0.0.1",
+        network="tailscale",
+        base_url="https://box.tailnet.ts.net",
+    )
+    lan = SimpleNamespace(
+        mode=SimpleNamespace(value="public"),
+        host="0.0.0.0",
+        network="lan",
+        base_url="http://192.168.1.20:8765",
+    )
+    remote = SimpleNamespace(
+        mode=SimpleNamespace(value="public"),
+        host="0.0.0.0",
+        network="public",
+        base_url="https://hub.example",
+    )
+    assert not embedded_runner_allowed(serve, environ={})
+    assert host_runner_allowed(serve, environ={})
+    assert host_runner_allowed(lan, environ={})
+    assert not host_runner_allowed(remote, environ={})
+    assert not host_runner_allowed(
+        serve, environ={"RAILWAY_SERVICE_ID": "svc"}
+    )
+    assert not host_runner_allowed(
+        serve, environ={"OPENGATEWAY_RUNNER_SERVICE": "1"}
+    )
+    internal = FakeGatewayConfig(
+        mode=SimpleNamespace(value="internal"),
+        host="127.0.0.1",
+        network="loopback",
+    )
+    assert embedded_runner_allowed(internal, environ={})
+    assert not host_runner_allowed(internal, environ={})
+
+
+def test_schedule_local_runner_service_pairs_after_ping(monkeypatch):
+    calls: list[dict[str, str]] = []
+    logs: list[str] = []
+
+    class _Response:
+        status_code = 200
+
+    monkeypatch.setattr(
+        "opengateway.runner.httpx.get",
+        lambda *args, **kwargs: _Response(),
+    )
+    monkeypatch.setattr(
+        "opengateway.runner.ensure_local_runner",
+        lambda **kwargs: calls.append(kwargs) or {"status": "paired", "runner_id": "r1"},
+    )
+    thread = schedule_local_runner_service(
+        hub_url="http://127.0.0.1:8765",
+        auth_token="secret-token",
+        log=logs.append,
+        wait_seconds=2,
+    )
+    thread.join(timeout=3)
+    assert calls == [
+        {
+            "url": "http://127.0.0.1:8765",
+            "auth_token": "secret-token",
+            "name": "Local Runner",
+        }
+    ]
+    assert any("paired" in line for line in logs)
 
 
 def test_runner_service_matches_live_rest_contract(tmp_path, monkeypatch):

@@ -59,6 +59,13 @@ opengateway serve --mode public --via open --network lan \
 tailscale serve --bg 8765
 ```
 
+That process listens on this machine, so it installs the local runner
+service itself (the same pairing as `opengateways runner ensure`). You do
+not run a second connect command. `--mode serve` (localhost plus Tailscale
+Serve) does the same. `--no-runner` skips it. Railway and the Docker image
+do not install a runner inside the container; `make docker-up` still runs
+`runner ensure` on the host.
+
 **Upgrade**
 
 ```bash

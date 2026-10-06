@@ -4,6 +4,11 @@ Versioning: git tags `v0.0.1`, `v0.1.0`, …
 
 ## Unreleased
 
+## 0.1.12 — 2026-10-05
+
+- **Runner** — Tailscale Serve, Funnel, and a LAN bind on this machine install the local background runner when the hub starts. A fresh install no longer stays hub-only until `runner ensure` is run by hand.
+- **Add Agent** — `/ping` reports `local_runner` for those hubs, so the wizard waits for the local runner instead of asking for a connect command.
+
 ## 0.1.11 — 2026-10-05
 
 - **Runner** — hub startup requeues start jobs left claimed when the process died, and queues a fresh start for agents stuck in starting or restarting.

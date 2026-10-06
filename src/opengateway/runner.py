@@ -2440,21 +2440,33 @@ def disconnect_runner() -> dict[str, Any]:
     return {"connected": False, "state": "disconnected"}
 
 
+_RAILWAY_ENV_KEYS = (
+    "RAILWAY_ENVIRONMENT",
+    "RAILWAY_ENVIRONMENT_ID",
+    "RAILWAY_PROJECT_ID",
+    "RAILWAY_SERVICE_ID",
+)
+_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+
+
+def _hosted_elsewhere(env: Mapping[str, str]) -> bool:
+    """True when this process must not launch a local harness worker."""
+    if any(env.get(name) for name in _RAILWAY_ENV_KEYS):
+        return True
+    if env.get("OPENGATEWAY_RUNNER_SERVICE"):
+        return True
+    if Path("/.dockerenv").is_file():
+        return True
+    return False
+
+
 def embedded_runner_allowed(
     gateway_config: Any,
     *,
     environ: Mapping[str, str] | None = None,
 ) -> bool:
     env = environ if environ is not None else os.environ
-    if any(
-        env.get(name)
-        for name in (
-            "RAILWAY_ENVIRONMENT",
-            "RAILWAY_ENVIRONMENT_ID",
-            "RAILWAY_PROJECT_ID",
-            "RAILWAY_SERVICE_ID",
-        )
-    ):
+    if _hosted_elsewhere(env):
         return False
     mode = getattr(gateway_config, "mode", "")
     mode_value = getattr(mode, "value", mode)
@@ -2468,10 +2480,89 @@ def embedded_runner_allowed(
     )
     return (
         str(mode_value).lower() == "internal"
-        and host in {"127.0.0.1", "localhost", "::1"}
+        and host in _LOOPBACK_HOSTS
         and network == "loopback"
-        and advertised_host in {"127.0.0.1", "localhost", "::1"}
+        and advertised_host in _LOOPBACK_HOSTS
     )
+
+
+def host_runner_allowed(
+    gateway_config: Any,
+    *,
+    environ: Mapping[str, str] | None = None,
+) -> bool:
+    """True when `serve` should install the OS runner on this machine.
+
+    Tailscale Serve and Funnel stay bound to localhost, so the embedded worker
+    stays off, but the harnesses still run here. The same is true for a LAN
+    bind on the host. Railway, Docker, and the runner service itself do not
+    install another worker.
+    """
+    env = environ if environ is not None else os.environ
+    if _hosted_elsewhere(env):
+        return False
+    if embedded_runner_allowed(gateway_config, environ=env):
+        return False
+    host = str(getattr(gateway_config, "host", "") or "").lower()
+    network = str(getattr(gateway_config, "network", "") or "").lower()
+    if host in _LOOPBACK_HOSTS:
+        return True
+    return host in {"0.0.0.0", "::"} and network == "lan"
+
+
+def schedule_local_runner_service(
+    *,
+    hub_url: str,
+    auth_token: str,
+    name: str = "Local Runner",
+    log: Callable[[str], None] | None = None,
+    wait_seconds: float = 45.0,
+) -> threading.Thread:
+    """Pair and install the background runner after this hub accepts /ping."""
+
+    def _log(message: str) -> None:
+        if log is not None:
+            log(message)
+
+    def _wait_and_ensure() -> None:
+        deadline = time.monotonic() + max(1.0, wait_seconds)
+        ping_url = f"{hub_url.rstrip('/')}/ping"
+        while time.monotonic() < deadline:
+            try:
+                response = httpx.get(ping_url, timeout=2.0)
+                if response.status_code == 200:
+                    break
+            except Exception:
+                pass
+            time.sleep(0.4)
+        else:
+            _log(
+                "Runner: hub did not answer /ping; "
+                "run `opengateways runner ensure` after it is up"
+            )
+            return
+        try:
+            result = ensure_local_runner(
+                url=hub_url,
+                auth_token=auth_token,
+                name=name,
+            )
+        except Exception as exc:
+            _log(f"Runner: background service was not installed: {exc}")
+            return
+        _log(
+            "Runner: "
+            f"{result.get('status', 'ok')} "
+            f"({result.get('runner_id', '')}) · {hub_url}"
+        )
+
+    thread = threading.Thread(
+        target=_wait_and_ensure,
+        name="opengateway-host-runner",
+        daemon=True,
+    )
+    thread.start()
+    return thread
 
 
 def start_embedded_runner(

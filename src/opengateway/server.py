@@ -371,7 +371,7 @@ def create_app(
 
     @app.get("/ping")
     async def ping() -> dict[str, Any]:
-        from opengateway.runner import embedded_runner_allowed
+        from opengateway.runner import embedded_runner_allowed, host_runner_allowed
 
         return {
             "status": "ok",
@@ -390,7 +390,8 @@ def create_app(
             "network": cfg.network,
             "require_auth": cfg.require_auth,
             "base_url": cfg.base_url,
-            "local_runner": embedded_runner_allowed(cfg),
+            "local_runner": embedded_runner_allowed(cfg)
+            or host_runner_allowed(cfg),
             "audit": st._audit_enabled,
             "redis": bool(getattr(app.state, "redis_bus", None)),
             "push": __import__("opengateway.push", fromlist=["vapid_configured"]).vapid_configured(),
