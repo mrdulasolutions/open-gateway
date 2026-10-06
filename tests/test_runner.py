@@ -607,6 +607,13 @@ def test_prefer_operator_url_when_hub_advertises_loopback():
         )
         == "https://hub.example"
     )
+    assert (
+        _prefer_reachable_hub_url(
+            "http://127.0.0.1:8765",
+            "https://box.tailnet.ts.net",
+        )
+        == "http://127.0.0.1:8765"
+    )
 
 
 def test_disconnect_revokes_remote_identity_before_clearing_local(

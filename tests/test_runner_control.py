@@ -947,3 +947,32 @@ async def test_claimed_jobs_requeue_and_embedded_runner_adopts_agents(
         assert taken.json()["job"]["managed_agent_id"] == agent_id
         assert taken.json()["job"]["action"] == "start"
     store._db.close()
+
+
+@pytest.mark.asyncio
+async def test_admin_sees_runner_paired_before_the_account_exists(tmp_path: Path):
+    db_path = tmp_path / "runner-tenant.db"
+    store = Store(db_path=db_path, audit=True)
+    app = create_app(store=store, config=_config())
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        _pair, runner_id, _token = await _pair_and_redeem(
+            client, admin_headers=_master_headers(), name="Local Runner"
+        )
+        assert store.runners[runner_id].tenant_id is None
+        registered = await client.post(
+            "/v1/auth/register",
+            json={
+                "email": "admin@example.com",
+                "password": "password123",
+                "display_name": "Admin",
+            },
+        )
+        assert registered.status_code == 200, registered.text
+        session = {"Authorization": f"Bearer {registered.json()['token']}"}
+        listed = await client.get("/v1/runners", headers=session)
+        assert listed.status_code == 200, listed.text
+        ids = [item["id"] for item in listed.json()["runners"]]
+        assert runner_id in ids
+        assert store.runners[runner_id].tenant_id
+    store._db.close()

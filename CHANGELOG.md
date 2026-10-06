@@ -4,6 +4,11 @@ Versioning: git tags `v0.0.1`, `v0.1.0`, …
 
 ## Unreleased
 
+## 0.1.13 — 2026-10-05
+
+- **Add Agent** — a runner paired before the admin account exists is attached to that organization, so it shows up after Create admin account instead of leaving every harness "Not reported."
+- **Runner** — a local runner keeps `http://127.0.0.1` even when the hub advertises a Tailscale address, so it can connect before Serve is up.
+
 ## 0.1.12 — 2026-10-05
 
 - **Runner** — Tailscale Serve, Funnel, and a LAN bind on this machine install the local background runner when the hub starts. A fresh install no longer stays hub-only until `runner ensure` is run by hand.

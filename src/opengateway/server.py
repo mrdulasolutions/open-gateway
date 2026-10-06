@@ -740,7 +740,10 @@ def create_app(
     @app.get("/v1/runners")
     async def list_runners(request: Request) -> dict[str, Any]:
         await _require_control_admin(request)
-        runners = await st.list_runners(tenant_id=_control_tenant_id(request))
+        tenant_id = _control_tenant_id(request)
+        if tenant_id:
+            await st.claim_unscoped_runners(tenant_id)
+        runners = await st.list_runners(tenant_id=tenant_id)
         return {"runners": [_public_runner(runner) for runner in runners]}
 
     @app.post("/v1/runners/pair")

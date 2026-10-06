@@ -300,6 +300,7 @@ class Store:
                 self._memory_tenants[tid] = tenant
             tenant_id = tid
             role = "admin"
+            await self.claim_unscoped_runners(tenant_id)
             self._ensure_general_room(tenant_id=tenant_id)
         elif invite_code:
             code_key = (invite_code or "").strip()
@@ -1590,6 +1591,39 @@ class Store:
             runner.status = RunnerStatus.STALE
             self._persist_runner(runner)
         return runner
+
+    async def claim_unscoped_runners(self, tenant_id: str) -> int:
+        """Give hub-installed runners to the only organization.
+
+        `serve` pairs the local runner with the master token before anyone
+        creates an admin account, so those rows have no tenant. The signed-in
+        admin would otherwise not see them in Add Agent.
+        """
+        tenant_id = (tenant_id or "").strip()
+        if not tenant_id:
+            return 0
+        if self._db and hasattr(self._db, "list_tenants"):
+            tenants = self._db.list_tenants() or []
+        else:
+            tenants = list(getattr(self, "_memory_tenants", {}).values())
+        ids = [str(item.get("id") or "") for item in tenants if item.get("id")]
+        if ids != [tenant_id]:
+            return 0
+        claimed = 0
+        async with self._lock:
+            for runner in self.runners.values():
+                if runner.tenant_id is not None or runner.revoked_at is not None:
+                    continue
+                runner.tenant_id = tenant_id
+                self._persist_runner(runner)
+                claimed += 1
+            for agent in self.managed_agents.values():
+                if agent.tenant_id is not None or agent.deleted_at is not None:
+                    continue
+                agent.tenant_id = tenant_id
+                self._persist_managed_agent(agent)
+                claimed += 1
+        return claimed
 
     async def list_runners(
         self, *, tenant_id: Optional[str] = None

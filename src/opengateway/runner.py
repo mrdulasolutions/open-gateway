@@ -877,18 +877,20 @@ def _validated_hub_url(url: str) -> str:
 
 
 def _prefer_reachable_hub_url(requested: str, advertised: str) -> str:
-    """Keep the URL the operator used when the hub advertises loopback."""
+    """Keep a loopback URL when the hub also advertises Tailscale or LAN.
+
+    The local runner talks to the process on this machine. The advertised
+    MagicDNS URL is for other devices and is often not proxied yet.
+    """
     requested_url = _validated_hub_url(requested)
     if not advertised:
         return requested_url
     advertised_url = _validated_hub_url(advertised)
-    advertised_host = (urlparse(advertised_url).hostname or "").lower()
     requested_host = (urlparse(requested_url).hostname or "").lower()
-    if advertised_host in {"127.0.0.1", "localhost", "::1"} and requested_host not in {
-        "127.0.0.1",
-        "localhost",
-        "::1",
-    }:
+    if _loopback_host(requested_host):
+        return requested_url
+    advertised_host = (urlparse(advertised_url).hostname or "").lower()
+    if _loopback_host(advertised_host):
         return requested_url
     return advertised_url
 
